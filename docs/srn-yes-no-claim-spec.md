@@ -493,3 +493,452 @@ Network 内部可 claim 候选记录。
 - `Hot Claim Index` 与 `Cold Event Store` 必须分离。
 - `claim_token` 是协议中非常关键的约束点。
 - 前台尽量只暴露 yes/no，后台再使用 PJC / PI-Sum 做聚合验证与结算。
+
+## 16. Worked Examples
+
+本节用具体样例把前文中的抽象结构落地，便于产品、后端、SDK 与算法团队讨论。
+
+### 16.1 端到端单条样例
+
+假设：
+
+- 用户在 2026-04-16 10:01:12 点击了 Network A 的广告
+- 用户在 2026-04-16 10:04:35 点击了 Network B 的广告
+- 用户在 2026-04-16 10:20:08 完成了一次 purchase conversion
+- MMP 需要向 Network A、Network B、Network C 发起 claim request
+- 归因规则是：
+  - 仅 click-through
+  - 归因窗口 7 天
+  - 多家都 claim 时按 last click 选 winner
+
+#### 16.1.1 设备侧触达事件
+
+Network A 在设备侧生成：
+
+```json
+{
+  "network_id": "netA",
+  "token_version": "v1",
+  "touch_type": "click",
+  "touch_time_bucket": "2026-04-16T10:00:00Z/5m",
+  "campaign_ref": "cmp_A_42",
+  "adset_ref": "adset_A_9",
+  "creative_ref": "creative_A_3",
+  "opaque_match_key": "omk_b8db2f5d7d2a",
+  "expiry_ts": "2026-04-23T10:01:12Z",
+  "sdk_signature": "sig_netA_dev_001"
+}
+```
+
+Network B 在设备侧生成：
+
+```json
+{
+  "network_id": "netB",
+  "token_version": "v1",
+  "touch_type": "click",
+  "touch_time_bucket": "2026-04-16T10:00:00Z/5m",
+  "campaign_ref": "cmp_B_91",
+  "adset_ref": "adset_B_4",
+  "creative_ref": "creative_B_6",
+  "opaque_match_key": "omk_b8db2f5d7d2a",
+  "expiry_ts": "2026-04-23T10:04:35Z",
+  "sdk_signature": "sig_netB_dev_001"
+}
+```
+
+说明：
+
+- 为了便于示例，这里两家 network 最终都能对同一个 `opaque_match_key` 建立匹配。
+- 实际实现中，这个 key 不一定长这样，但应该是 task-specific、短生命周期、不可逆的。
+
+#### 16.1.2 MMP 形成 conversion query
+
+```json
+{
+  "conversion_id": "conv_20260416_00017",
+  "app_id": "com.example.shop",
+  "event_name": "purchase",
+  "conversion_ts": "2026-04-16T10:20:08Z",
+  "conversion_time_bucket": "2026-04-16T10:20:00Z/5m",
+  "value": 59.99,
+  "currency": "USD",
+  "device_scoped_query_key": "qk_9f2e1d5174",
+  "query_nonce": "n_7d2a8e",
+  "query_schema_version": "claim_v1"
+}
+```
+
+#### 16.1.3 MMP 向三家 network 询问
+
+- Network A：命中候选 click，返回 `yes`
+- Network B：命中候选 click，返回 `yes`
+- Network C：无候选记录，返回 `no`
+
+MMP 收到的结果：
+
+```json
+[
+  {
+    "network_id": "netA",
+    "claim": "yes",
+    "claim_token": "ctok_netA_a1"
+  },
+  {
+    "network_id": "netB",
+    "claim": "yes",
+    "claim_token": "ctok_netB_b1"
+  },
+  {
+    "network_id": "netC",
+    "claim": "no",
+    "claim_token": null
+  }
+]
+```
+
+#### 16.1.4 MMP 裁决
+
+MMP 按 last click 模型比较：
+
+- Network A click time: `10:01:12Z`
+- Network B click time: `10:04:35Z`
+
+因此 winner 为 Network B。
+
+最终只向 Network B 发送 finalize。
+
+#### 16.1.5 这个样例暴露了什么
+
+MMP 知道：
+
+- A 和 B 都 claim
+- C 没有 claim
+- 最终 B 赢
+
+MMP 不应知道：
+
+- A、B 的原始日志明细
+- loser 的更多 metadata
+- A 或 B 内部为什么 claim 的全部规则细节
+
+### 16.2 API 请求/响应样例
+
+### 16.2.1 ClaimRequest 示例
+
+```json
+{
+  "request_id": "req_20260416_1001_00017_netA",
+  "mmp_id": "mmp_demo",
+  "network_id": "netA",
+  "conversion_id": "conv_20260416_00017",
+  "query_hash": "qh_26f4ad7d",
+  "query_schema_version": "claim_v1",
+  "conversion_ts_bucket": "2026-04-16T10:20:00Z/5m",
+  "event_name": "purchase",
+  "app_id": "com.example.shop",
+  "device_scoped_query_key": "qk_9f2e1d5174",
+  "query_nonce": "n_7d2a8e",
+  "sent_at": "2026-04-16T10:20:11Z",
+  "request_signature": "sig_mmp_44f1"
+}
+```
+
+### 16.2.2 ClaimResponse yes 示例
+
+```json
+{
+  "request_id": "req_20260416_1001_00017_netA",
+  "network_id": "netA",
+  "claim": "yes",
+  "claim_token": "eyJuZXR3b3JrX2lkIjoibmV0QSIsInJlcXVlc3RfaWQiOiJyZXFfMjAyNjA0MTZfMTAwMV8wMDAxN19uZXRBIiwiY29udmVyc2lvbl9pZCI6ImNvbnZfMjAyNjA0MTZfMDAwMTciLCJwb2xpY3lfdmVyc2lvbiI6InB2XzIwMjYwNDE2XzAxIiwiZXhwaXJ5X3RzIjoiMjAyNi0wNC0xNlQxMDoyNTowMFoiLCJ0b2tlbl9ub25jZSI6InRuX2ExIn0=.sigA",
+  "policy_version": "pv_20260416_01",
+  "response_expiry_ts": "2026-04-16T10:25:00Z",
+  "response_signature": "sig_netA_resp_7c1"
+}
+```
+
+### 16.2.3 ClaimResponse no 示例
+
+```json
+{
+  "request_id": "req_20260416_1001_00017_netC",
+  "network_id": "netC",
+  "claim": "no",
+  "claim_token": null,
+  "policy_version": "pv_20260416_01",
+  "response_expiry_ts": "2026-04-16T10:25:00Z",
+  "response_signature": "sig_netC_resp_0d8"
+}
+```
+
+### 16.2.4 FinalizeRequest 示例
+
+```json
+{
+  "request_id": "fin_20260416_00017_netB",
+  "conversion_id": "conv_20260416_00017",
+  "network_id": "netB",
+  "claim_token": "eyJuZXR3b3JrX2lkIjoibmV0QiIsInJlcXVlc3RfaWQiOiJyZXFfMjAyNjA0MTZfMTAwMV8wMDAxN19uZXRCIiwiY29udmVyc2lvbl9pZCI6ImNvbnZfMjAyNjA0MTZfMDAwMTciLCJwb2xpY3lfdmVyc2lvbiI6InB2XzIwMjYwNDE2XzAxIiwiZXhwaXJ5X3RzIjoiMjAyNi0wNC0xNlQxMDoyNTowMFoiLCJ0b2tlbl9ub25jZSI6InRuX2IxIn0=.sigB",
+  "winner_model": "last_click_v1",
+  "finalized_at": "2026-04-16T10:20:16Z",
+  "request_signature": "sig_mmp_fin_2a4"
+}
+```
+
+### 16.2.5 FinalizeResponse 示例
+
+```json
+{
+  "request_id": "fin_20260416_00017_netB",
+  "accepted": true,
+  "settlement_ref": "set_20260416_7751",
+  "response_signature": "sig_netB_fin_8a2"
+}
+```
+
+### 16.3 ad network 内部索引样例
+
+假设 Network A 的 `Hot Claim Index` 中存在如下三条记录：
+
+```json
+[
+  {
+    "opaque_match_key": "omk_b8db2f5d7d2a",
+    "touch_type": "click",
+    "touch_ts": "2026-04-16T10:01:12Z",
+    "touch_time_bucket": "2026-04-16T10:00:00Z/5m",
+    "campaign_ref": "cmp_A_42",
+    "attribution_priority": 100,
+    "eligibility_expiry_ts": "2026-04-23T10:01:12Z",
+    "fraud_state": "clear",
+    "dedupe_state": "unused",
+    "record_mac": "mac_1"
+  },
+  {
+    "opaque_match_key": "omk_b8db2f5d7d2a",
+    "touch_type": "impression",
+    "touch_ts": "2026-04-16T09:55:00Z",
+    "touch_time_bucket": "2026-04-16T09:55:00Z/5m",
+    "campaign_ref": "cmp_A_42",
+    "attribution_priority": 10,
+    "eligibility_expiry_ts": "2026-04-17T09:55:00Z",
+    "fraud_state": "clear",
+    "dedupe_state": "unused",
+    "record_mac": "mac_2"
+  },
+  {
+    "opaque_match_key": "omk_ffffeeee1111",
+    "touch_type": "click",
+    "touch_ts": "2026-04-16T10:03:45Z",
+    "touch_time_bucket": "2026-04-16T10:00:00Z/5m",
+    "campaign_ref": "cmp_A_99",
+    "attribution_priority": 100,
+    "eligibility_expiry_ts": "2026-04-23T10:03:45Z",
+    "fraud_state": "clear",
+    "dedupe_state": "unused",
+    "record_mac": "mac_3"
+  }
+]
+```
+
+对于 `device_scoped_query_key = qk_9f2e1d5174`，Network A 内部映射到 `opaque_match_key = omk_b8db2f5d7d2a`，于是 claim service 的判断过程是：
+
+1. 找到两条候选记录：一条 click、一条 impression
+2. conversion 时间是 `10:20:08Z`
+3. click 在 7 天 click-through 窗口内
+4. fraud_state = `clear`
+5. dedupe_state = `unused`
+6. 因为 click 已足够支持 claim，所以返回 `yes`
+
+如果内部 policy 是 click 优先于 impression，则：
+
+- yes/no 决策不需要把两条记录都暴露给 MMP
+- MMP 也不需要知道这里其实还有一条 impression 候选
+
+### 16.4 replay / probing 攻击反例
+
+下面是一个 MMP 试图探测 attribution boundary 的错误做法。
+
+假设同一个 conversion 被重复询问三次，只是轻微修改时间：
+
+```json
+[
+  {
+    "conversion_id": "conv_probe_01",
+    "conversion_ts_bucket": "2026-04-16T10:20:00Z/5m",
+    "device_scoped_query_key": "qk_9f2e1d5174"
+  },
+  {
+    "conversion_id": "conv_probe_01",
+    "conversion_ts_bucket": "2026-04-16T10:25:00Z/5m",
+    "device_scoped_query_key": "qk_9f2e1d5174"
+  },
+  {
+    "conversion_id": "conv_probe_01",
+    "conversion_ts_bucket": "2026-04-16T10:30:00Z/5m",
+    "device_scoped_query_key": "qk_9f2e1d5174"
+  }
+]
+```
+
+如果 network 每次都老实回答，那么 MMP 可能逐步推断出：
+
+- click 离 conversion 有多远时还会 claim
+- 某个 network 的 attribution window 或内部 gate 边界
+
+推荐防护：
+
+1. `query_hash` 绑定标准化后的 conversion query
+2. 同一个 `conversion_id` 只能接受一次或有限次 claim 查询
+3. 时间戳必须桶化，不能接受任意精细度探测
+4. 命中 replay cache 时直接拒绝或打低信任分
+
+推荐的拒绝响应示例：
+
+```json
+{
+  "request_id": "req_probe_002",
+  "network_id": "netA",
+  "claim": "no",
+  "claim_token": null,
+  "policy_version": "pv_20260416_01",
+  "response_expiry_ts": "2026-04-16T10:31:00Z",
+  "response_signature": "sig_netA_probe_blocked"
+}
+```
+
+说明：
+
+- 对外仍然维持简单响应结构
+- 但内部会把这类行为记录到 probing audit log
+
+### 16.5 后台 PJC 对账样例
+
+前台 yes/no claim 只能解决“谁有资格 claim”，并不适合解决 campaign-level 的对账与结算。
+
+假设某个 campaign 在一天内的数据如下。
+
+MMP 持有的 conversions：
+
+```text
+u1 -> value 10
+u2 -> value 20
+u3 -> value 30
+u4 -> value 40
+```
+
+Network B 持有的已归因 touch 用户集合：
+
+```text
+u2
+u3
+u5
+```
+
+如果双方直接交换明文集合：
+
+- MMP 会知道 network 的覆盖集合
+- network 会知道 MMP 的全部转化用户
+
+使用后台 PJC / PI-Sum 时，目标只输出：
+
+```text
+intersection cardinality = 2
+intersection value sum = 50
+```
+
+因为交集是：
+
+```text
+u2 -> 20
+u3 -> 30
+```
+
+这个例子说明：
+
+- 前台 claim API 适合逐条资格判断
+- 后台 PJC 更适合做聚合验证与 settlement
+- 两者并不冲突，而是互补
+
+### 16.6 claim token 验证样例
+
+假设 Network B 收到一个 finalize 请求，其中 `claim_token` 解码后的载荷为：
+
+```json
+{
+  "network_id": "netB",
+  "request_id": "req_20260416_1001_00017_netB",
+  "conversion_id": "conv_20260416_00017",
+  "query_hash": "qh_26f4ad7d",
+  "policy_version": "pv_20260416_01",
+  "issued_at": "2026-04-16T10:20:12Z",
+  "expiry_ts": "2026-04-16T10:25:00Z",
+  "token_nonce": "tn_b1"
+}
+```
+
+Network B 的 finalize service 会检查：
+
+1. 签名是否正确
+2. `network_id` 是否是自己
+3. `conversion_id` 是否与请求一致
+4. token 是否过期
+5. `token_nonce` 是否已被消费
+6. `policy_version` 是否仍被允许 finalize
+
+全部通过后：
+
+- 写入 finalize cache
+- 将 `token_nonce` 标记为已使用
+- 返回 `accepted = true`
+
+如果 token 被重放，则返回：
+
+```json
+{
+  "request_id": "fin_20260416_00017_netB_retry",
+  "accepted": false,
+  "settlement_ref": null,
+  "response_signature": "sig_netB_fin_reject_replay"
+}
+```
+
+### 16.7 最小伪代码样例
+
+下面是一段足够接近真实实现、但又不依赖具体语言框架的伪代码。
+
+```text
+function eligible_to_claim(claim_request):
+    assert verify_signature(claim_request.request_signature)
+    normalized_query = normalize(claim_request)
+    query_hash = hash(normalized_query)
+
+    if replay_cache.contains(query_hash):
+        return no_response()
+
+    opaque_match_key = map_query_key_to_match_key(
+        claim_request.device_scoped_query_key
+    )
+
+    candidates = hot_claim_index.lookup(opaque_match_key)
+    candidates = filter_by_window(candidates, claim_request.conversion_ts_bucket)
+    candidates = filter_by_fraud_state(candidates, "clear")
+    candidates = filter_by_dedupe_state(candidates, "unused")
+    candidates = apply_touch_precedence(candidates)
+
+    replay_cache.put(query_hash)
+
+    if candidates.is_empty():
+        return no_response()
+
+    token = mint_claim_token(claim_request, candidates.best_policy_version)
+    return yes_response(token)
+```
+
+这段伪代码想说明的不是实现细节，而是顺序：
+
+- 先做请求校验和 replay 防护
+- 再查最小化索引
+- 再应用 eligibility 规则
+- 最后才决定 yes/no 和是否铸造 token
