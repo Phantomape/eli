@@ -778,6 +778,607 @@ DP 需要明确：
 - MPC
 - HE
 
+## 16A. 隐私技术选型表
+
+这一节把常见技术放到一张更适合产品和工程讨论的表里。为了方便理解，这里的“性能”是粗粒度判断，不是严格 benchmark。
+
+| 技术 | 核心优点 | 核心缺点 | 性能/工程代价 | 最适合场景 | 不适合单独解决的问题 |
+| --- | --- | --- | --- | --- | --- |
+| 去标识化 / 数据最小化 | 简单、直观、低成本、几乎所有项目都该先做 | 不能提供强数学保证，仍可能被重识别 | 低 | 内部分析、共享前预处理、低风险数据交换 | 高敏感多方协作、强攻击者场景 |
+| 差分隐私 DP | 有数学保证，适合安全发布统计结果 | 参数难、预算难、样本小或维度高时噪声大 | 中 | 聚合报表、benchmark、模型/统计发布 | 私密匹配、执行环境保护 |
+| TEE / Confidential Computing | 非常适合“要算但不想暴露明文”的场景，工程上比纯 MPC 更易落地 | 依赖硬件和实现边界，输出仍可能泄露，需要 attestation 和治理 | 中 | clean room、联合计算、机密分析、受控执行 | 单靠它不能保证发布结果安全 |
+| Data Clean Room | 业务上容易理解，便于多方合作，能承载治理规则 | 不是单一强隐私原语，强度取决于规则、阈值、是否叠加 TEE/DP | 中 | 广告测量、联合分析、合作报表 | 没有强查询限制时容易泄露 |
+| PSM | 很适合 yes/no 资格判断，信息暴露面小 | 只能回答 membership，不适合复杂聚合 | 中 | 私密查名单、资格校验、claim gating | 求交集大小、求和、复杂归因 |
+| PSI | 适合私密求交，适合先做安全匹配 | 常常只够做第一步，业务上经常还要继续算值 | 中到高 | 用户重合分析、受众 overlap、对账前匹配 | 交集求和、复杂 value attribution |
+| PJC / PI-Sum | 很贴近广告测量和联合结算，能在交集上求和/聚合 | 协议更复杂、工程成本更高 | 高 | conversion measurement、matched outcome、settlement | 实时、高频、低延迟的通用分析 |
+| MPC / Secure Computation | 多方信任假设最弱，适合强隐私联合计算 | 实现复杂、成本高、延迟高、产品团队不易理解 | 高 | 多方结算、联合分析、私密归因 | 低预算、强实时、快速试点 |
+| 同态加密 HE | 可以对密文直接计算，隐私故事很强 | 通常更重、更慢、适用运算受限 | 高 | 某些求和、统计、固定结构查询 | 通用实时系统、复杂任意业务逻辑 |
+| 联邦学习 FL | 不必集中原始训练数据，适合分布式训练 | 不自带完全隐私，需要 secure aggregation / DP 等配套 | 中到高 | 设备侧模型训练、分布式学习 | 私密数据共享、报表发布 |
+| 联邦分析 FA | 适合不集中数据的统计分析 | 粒度和查询形式受限，仍需 secure aggregation/DP | 中 | 分布式指标统计、设备侧分析 | 复杂多方匹配、任意交互式分析 |
+
+### 16A.1 一个非常实用的简化结论
+
+如果你只想先抓住每类技术最典型的“擅长点”，可以先记成下面这几句：
+
+- 去标识化：`先把敏感程度降下来`
+- DP：`安全发布统计结果`
+- TEE：`让数据在运行时也尽量受保护`
+- clean room：`让多方能在受控环境里合作`
+- PSM：`安全地回答 yes/no`
+- PSI：`安全地找共同集合`
+- PJC / PI-Sum：`安全地匹配后再算总和`
+- MPC：`多方一起算，但尽量不暴露输入`
+- HE：`对加密数据直接算`
+- FL / FA：`数据不集中，计算结果回来`
+
+## 16B. Mock 数据例子：用数据流理解这些技术
+
+这一节不追求数学严谨，而是用最小 mock 数据把“data flow 长什么样”讲清楚。
+
+### 16B.1 去标识化 / 数据最小化
+
+原始表：
+
+```text
+user_id | email              | city        | exact_ts             | purchase_value
+u1      | a@example.com      | San Jose    | 2026-04-19 10:01:12  | 9.99
+u2      | b@example.com      | San Jose    | 2026-04-19 10:03:44  | 19.99
+u3      | c@example.com      | Santa Clara | 2026-04-19 10:04:10  | 4.99
+```
+
+做完最小化后可能变成：
+
+```text
+pseudo_id | region     | time_bucket        | purchase_bucket
+p_u1      | Bay Area   | 2026-04-19 10:00h  | 0-10
+p_u2      | Bay Area   | 2026-04-19 10:00h  | 10-20
+p_u3      | Bay Area   | 2026-04-19 10:00h  | 0-10
+```
+
+你能直观看到：
+
+- 邮箱没了
+- 精确城市变成大区域
+- 秒级时间变成小时桶
+- 精确金额变成区间
+
+它的作用是：
+
+- 减少直接敏感度
+
+但注意：
+
+- 这仍然不是最强隐私
+
+### 16B.2 差分隐私 DP
+
+真实统计：
+
+```text
+campaign A purchases = 100
+campaign B purchases = 12
+```
+
+发布时可能变成：
+
+```text
+campaign A purchases = 103
+campaign B purchases = 9
+```
+
+Data flow 可以理解为：
+
+1. 先算真实聚合值
+2. 控制每个用户最大贡献
+3. 再按 DP 机制加噪声
+4. 对外只发加噪结果
+
+适合你脑子里的画面是：
+
+```text
+Raw data -> Aggregate count -> Clip contribution -> Add noise -> Publish
+```
+
+### 16B.3 TEE / Confidential Computing
+
+假设两家公司 A 和 B 都不想直接把明文给对方，但想算联合报表。
+
+公司 A 数据：
+
+```text
+user_id | campaign | value
+u1      | c1       | 10
+u2      | c1       | 20
+```
+
+公司 B 数据：
+
+```text
+user_id | retained_d7
+u1      | 1
+u2      | 0
+```
+
+在 TEE 模式下，直觉式 data flow 是：
+
+1. A 把受限输入送入 TEE
+2. B 把受限输入送入 TEE
+3. TEE 内部跑批准过的 join/aggregate 逻辑
+4. 只输出：
+
+```text
+campaign c1:
+- users = 2
+- retained_d7 = 1
+- average_value = 15
+```
+
+关键点：
+
+- 明细不是直接给对方
+- 但最终仍然能算出联合结果
+
+### 16B.4 Clean Room
+
+可以把 clean room 想象成“带规则的联合分析房间”。
+
+公司 A：
+
+```text
+campaign | installs
+c1       | 1000
+c2       | 500
+```
+
+公司 B：
+
+```text
+campaign | d7_retained
+c1       | 300
+c2       | 220
+```
+
+clean room 中允许的 SQL/分析结果可能只有：
+
+```text
+campaign | installs | d7_retained | d7_retention
+c1       | 1000     | 300         | 0.30
+c2       | 500      | 220         | 0.44
+```
+
+但不允许：
+
+- 导出原始 user-level rows
+- 查样本太小的群体
+- 任意组合探测
+
+所以 clean room 的 data flow 更像：
+
+```text
+Party A data \
+             -> governed environment -> approved aggregate query -> result
+Party B data /
+```
+
+### 16B.5 PSM
+
+服务端集合：
+
+```text
+{token_1, token_3, token_9}
+```
+
+客户端想问：
+
+```text
+Is token_3 in the set?
+```
+
+输出只有：
+
+```text
+yes
+```
+
+理想情况下：
+
+- 服务端不知道你查的是 `token_3`
+- 客户端也不知道集合里还有 `token_1` 和 `token_9`
+
+这就是最典型的 yes/no data flow。
+
+### 16B.6 PSI
+
+公司 A 集合：
+
+```text
+{u1, u2, u3, u4}
+```
+
+公司 B 集合：
+
+```text
+{u2, u4, u5}
+```
+
+输出交集：
+
+```text
+{u2, u4}
+```
+
+或者只输出交集大小：
+
+```text
+2
+```
+
+这是最基础的“先匹配上谁重合了”。
+
+### 16B.7 PJC / PI-Sum
+
+公司 A：
+
+```text
+u1
+u2
+u3
+u4
+```
+
+公司 B：
+
+```text
+u2 -> 10
+u3 -> 20
+u5 -> 5
+```
+
+输出可能是：
+
+```text
+intersection cardinality = 2
+intersection sum = 30
+```
+
+其中交集是 `u2, u3`，对应 value sum 是 `10 + 20`。
+
+这就是：
+
+- 先 join
+- 再 compute
+
+### 16B.8 联邦学习
+
+假设 3 台设备各自本地训练一个小更新。
+
+设备 1：
+
+```text
+gradient = [0.2, -0.1]
+```
+
+设备 2：
+
+```text
+gradient = [0.0, -0.2]
+```
+
+设备 3：
+
+```text
+gradient = [0.1, 0.1]
+```
+
+服务端最终看到的理想结果是聚合值：
+
+```text
+sum = [0.3, -0.2]
+```
+
+而不是单台设备的明细梯度。
+
+这就是联邦学习最经典的 data flow：
+
+```text
+local training -> local update -> secure aggregation -> global update
+```
+
+## 16C. 这些技术怎么用到 Ad Network 里
+
+这一节把前面的技术直接放到 ad network 场景里来看。
+
+### 16C.1 Model Optimization
+
+#### 目标
+
+- 更早识别高质量用户
+- 更稳地训练 pLTV / pROAS / churn / fraud 模型
+
+#### 可用技术
+
+##### 去标识化 + clean room
+
+适合：
+
+- ad network 与广告主或平台先做安全协作分析
+- 生成 cohort-level 训练标签或 benchmark
+
+##### 联邦学习 + secure aggregation
+
+适合：
+
+- 数据分散在设备或多个合作方，不适合直接集中
+
+##### TEE / confidential analytics
+
+适合：
+
+- 在不暴露明文特征表的情况下做特征拼接、标签生成或联合训练前处理
+
+##### DP
+
+适合：
+
+- 发布模型效果 benchmark
+- 对外共享学习结果或统计指标
+
+#### 一个 ad network 的典型例子
+
+目标：
+
+- 训练“高质量安装预测模型”
+
+传统做法：
+
+- 只用 click、device、geo、publisher placement
+
+引入隐私技术后可升级为：
+
+- 在 clean room / TEE 中与广告主或游戏平台联合生成
+  - tutorial completion bucket
+  - d3 retention bucket
+  - ad-engagement bucket
+- 再把这些 bucket 作为标签或监督信号输入 ad network 模型
+
+这样得到的是：
+
+- 更丰富的质量信号
+- 但不必直接拿到合作方原始明细
+
+### 16C.2 Bidding
+
+#### 目标
+
+- 决定一个展示值多少钱
+- 值不值得出价
+- 该给什么 value bucket
+
+#### 可用技术
+
+##### clean room + matched aggregate analysis
+
+适合：
+
+- 先找出什么样的 source / creative / app context 真正带来高质量用户
+
+##### PJC / PI-Sum
+
+适合：
+
+- 与合作方做 matched value measurement
+- 得到更准确的后链路价值估计
+
+##### 联邦学习
+
+适合：
+
+- 多设备或多方共同更新价值模型
+
+#### 一个直观例子
+
+假设 ad network 原本只知道：
+
+- publisher X 的 CTR 很高
+
+但通过隐私保护联合分析后知道：
+
+- publisher X 的 tutorial completion 很低
+- publisher Y 的 CTR 稍低，但 matched D7 quality 更高
+
+那 bidding 策略就可以从：
+
+- `bid on highest CTR`
+
+升级成：
+
+- `bid on highest quality-adjusted expected value`
+
+### 16C.3 Attribution
+
+#### 目标
+
+- 确认哪个 network / campaign / touch 应获得转化 credit
+
+#### 可用技术
+
+##### PSM
+
+适合：
+
+- 在 yes/no claim 流程里做资格判断
+
+##### PSI / PJC
+
+适合：
+
+- 私密求交
+- 转化求和
+- aggregate conversion measurement
+
+##### TEE
+
+适合：
+
+- 把 adjudication 或聚合逻辑放在受保护环境里执行
+
+#### 一个直观例子
+
+MMP 有 conversion 集合，network 有 touch 集合。
+
+如果只是判断：
+
+- “这个转化你要不要 claim？”
+
+那 PSM 风格就很自然。
+
+如果还要算：
+
+- “你一共匹配上多少转化？”
+- “匹配上的 value sum 是多少？”
+
+那更适合用 PJC / PI-Sum。
+
+### 16C.4 流量策略（Traffic Strategy）
+
+#### 目标
+
+- 决定哪些流量值得多买
+- 哪些 source 要限量
+- 哪些 publisher / app / geo / creative 组合应该被优先或降权
+
+#### 可用技术
+
+##### clean room + 聚合洞察
+
+适合：
+
+- source quality ranking
+- publisher quality benchmarking
+- creative-to-app fit analysis
+
+##### DP
+
+适合：
+
+- 安全共享群体层级流量表现
+
+##### TEE / confidential clean room
+
+适合：
+
+- 与大媒体、游戏平台、引擎公司做更深层联合流量分析
+
+#### 一个直观例子
+
+ad network 可能从联合分析中发现：
+
+```text
+Source A:
+- install 高
+- CTR 高
+- D7 retained quality 低
+
+Source B:
+- install 中
+- CTR 中
+- tutorial completion 高
+- hybrid value 高
+```
+
+那流量策略可以改成：
+
+- 降低 Source A 的预算
+- 提高 Source B 的预算
+- 对 Source A 只保留某些高质量 app 或 creative 组合
+
+### 16C.5 Fraud 与质量风控
+
+#### 目标
+
+- 筛掉无效流量
+- 识别虚假转化和异常行为
+
+#### 可用技术
+
+##### PSM / PSI
+
+适合：
+
+- 某些黑名单、资格判断、风险交集分析
+
+##### clean room / TEE
+
+适合：
+
+- 多方联合风险建模
+- 不互发明细的风险相关性分析
+
+##### 联邦学习
+
+适合：
+
+- 分散设备端或合作方联合训练风控模型
+
+#### 一个直观例子
+
+广告主看到异常购买行为，ad network 看到异常点击模式。
+
+双方不直接交换用户明细，而是在受控环境里输出：
+
+```text
+publisher P:
+- suspicious overlap score = high
+- confirmed low-quality segment rate = elevated
+```
+
+这就足够指导流量收缩和风控策略。
+
+## 16D. 对 Ad Network 的一个简单选型建议
+
+如果你是 ad network，从落地顺序看，我建议这样理解：
+
+### 第一阶段：先做能产生业务价值的聚合合作
+
+优先上：
+
+- 去标识化
+- clean room
+- TEE
+- 阈值 / DP 发布
+
+原因：
+
+- 最容易落地
+- 最容易让商业团队理解
+- 最容易验证合作值不值得做
+
+### 第二阶段：再做私密匹配与联合归因/结算
+
+优先上：
+
+- PSM
+- PSI
+- PJC / PI-Sum
+
+原因：
+
+- 更贴近 measurement、对账、归因和 matched value
+
+### 第三阶段：最后做协同学习
+
+优先上：
+
+- 联邦学习
+- secure aggregation
+- confidential federated analytics
+
+原因：
+
+- 这是上限最高，但工程和治理最复杂的一层
+
+## 17. 给初学者的推荐学习顺序
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
