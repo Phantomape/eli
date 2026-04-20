@@ -629,6 +629,39 @@ Unity 可从中获得：
 - level progression
 - session quality score
 
+#### Mock Data Flow 示例
+
+ad network 侧原始 cohort 输入：
+
+```text
+campaign_id | creative_id | installs
+C_A         | CR_X        | 1000
+C_A         | CR_Y        | 400
+C_B         | CR_Z        | 900
+```
+
+Unity 侧原始 cohort 输入：
+
+```text
+campaign_id | tutorial_complete | crash_free_d1 | early_core_loop_users
+C_A         | 620               | 780           | 510
+C_B         | 410               | 640           | 300
+```
+
+在隐私协作层中的联合输出：
+
+```text
+campaign_id | hq_user_rate | tutorial_completion_rate | crash_adjusted_quality
+C_A         | 0.52         | 0.62                     | high
+C_B         | 0.33         | 0.46                     | medium-low
+```
+
+业务含义：
+
+- 虽然 `C_A` 和 `C_B` 都可能带来大量安装
+- 但 `C_A` 带来的用户更可能真正进入核心玩法，且早期体验更稳定
+- ad network 可以更早把预算向 `C_A` 倾斜，而不必等更慢的 purchase/ROAS 信号
+
 #### 产品输出
 
 - `High-Quality User Rate`
@@ -655,6 +688,21 @@ Campaign B:
 含义：
 
 - 这时 ad network 可以更早判断 Campaign A 的真实质量更高，而不是等更长周期的 purchase / ROAS 数据。
+
+#### 输出粒度与边界
+
+允许输出：
+
+- campaign-level HQ rate
+- creative-family-level quality bucket
+- geo / genre 层级的 aggregate quality
+
+不允许输出：
+
+- raw player-level tutorial event
+- exact gameplay trajectory
+- cross-party matched player list
+- 小样本群体的未阈值化结果
 
 #### 端到端流程
 
@@ -687,6 +735,16 @@ flowchart LR
 第二阶段：
 
 - PSI / PJC for matched aggregate quality
+
+第三阶段：
+
+- federated quality modeling
+
+不推荐一开始就做：
+
+- full MPC
+- 用户级原始日志互传
+- 直接输出精细 cross-party player join
 
 #### 商业化方式
 
@@ -741,6 +799,38 @@ flowchart LR
 - purchase events
 - retention-adjusted playtime
 
+#### Mock Data Flow 示例
+
+ad network 侧原始输入：
+
+```text
+source | installs | click_to_install_rate | ad_side_value_bucket
+S1     | 500      | high                  | medium
+S2     | 520      | medium                | medium
+```
+
+Unity 侧原始输入：
+
+```text
+source | rewarded_completion_users | iap_users | d7_playtime_bucket
+S1     | 260                       | 40        | high
+S2     | 110                       | 55        | medium
+```
+
+联合输出：
+
+```text
+source | hybrid_ltv_bucket | ad_engagement_adjusted_quality
+S1     | high              | high
+S2     | medium            | medium
+```
+
+业务含义：
+
+- `S2` 的购买人数可能略高
+- 但 `S1` 的广告互动和长期活跃更强
+- 对 hybrid monetization 游戏来说，`S1` 反而更值得加预算
+
 #### 产品输出
 
 - `Hybrid LTV Bucket`
@@ -769,6 +859,20 @@ Source Y:
 - 传统 purchase 视角可能更偏向 Source Y
 - 但从真实混合价值看，Source X 更值得加预算
 
+#### 输出粒度与边界
+
+允许输出：
+
+- source-level hybrid value bucket
+- genre-level monetization mix recommendation
+- campaign-level value uplift bucket
+
+不允许输出：
+
+- player-level ad watch history
+- 精确 IAP 明细账单
+- 用户级 ad + IAP 组合轨迹
+
 #### 端到端流程
 
 1. ad network 输出 source / campaign 维度的 install 和 ad-side value bucket
@@ -793,6 +897,15 @@ flowchart LR
 - 优先使用 matched aggregate analysis
 - 中期引入 PJC / PI-Sum 计算 cohort-level mixed value
 - 报表层继续使用阈值和 DP
+
+后期可选：
+
+- federated value modeling
+
+不推荐一开始就做：
+
+- 逐用户价值明细共享
+- 高频实时的 cross-party raw join
 
 #### 商业化方式
 
@@ -854,6 +967,37 @@ flowchart LR
 - session interruption sensitivity
 - retention after exposure
 
+#### Mock Data Flow 示例
+
+ad network 侧输入：
+
+```text
+format       | ecpm_bucket | frequency_bucket | demand_density
+rewarded     | high        | medium           | high
+interstitial | medium      | high             | high
+```
+
+Unity 侧输入：
+
+```text
+player_stage       | device_tier    | interruption_sensitivity | post_ad_retention_bucket
+early_progression  | low_end        | high                     | low_if_interstitial_heavy
+mid_progression    | mid_high_end   | medium                   | stable
+```
+
+联合输出：
+
+```text
+segment                              | recommended_policy
+early_progression_low_end_users      | rewarded_yes_interstitial_low
+mid_progression_mid_high_end_users   | rewarded_yes_interstitial_medium
+```
+
+业务含义：
+
+- 对早期玩家和低端设备用户，激进插屏虽然短期能赚钱，但长期 retention penalty 太高
+- 因此更适合 reward-first 的 monetization 策略
+
 #### 产品输出
 
 - `Ad Load Safe Zone`
@@ -877,6 +1021,20 @@ Reasoning summary:
 - High interruption sensitivity
 - Strong rewarded completion
 - High retention penalty on aggressive interstitial pacing
+
+#### 输出粒度与边界
+
+允许输出：
+
+- segment-level placement recommendation
+- genre/device/player-stage 层级的 safe ad load bucket
+- format-by-context fit score
+
+不允许输出：
+
+- 用户级实时游戏行为明细
+- 单个玩家的广告耐受画像原始特征
+- 可反推个体行为路径的未聚合上下文结果
 ```
 
 #### 端到端流程
@@ -903,6 +1061,16 @@ flowchart LR
 - 第一阶段用聚合 cohort 分析即可
 - 第二阶段用 TEE-based confidential aggregation 做更细分的 context join
 - 若做实时推荐，需把在线部分控制在 bucket/segment 级别，而不是用户级 raw feature 共享
+
+后期可选：
+
+- confidential context scoring
+- federated recommendation modeling
+
+不推荐一开始就做：
+
+- 个体级实时联合决策
+- 高维原始行为特征直接共享
 
 #### 商业化方式
 
@@ -976,6 +1144,449 @@ flowchart LR
 
 - 隐私技术是底层能力
 - 产品卖点是更高质量的增长与变现决策
+
+## 9AA. Dashboard / Mock 输出页设计
+
+这一节的目标是把前面的 use case 进一步产品化，回答一个更具体的问题：
+
+- 如果这真的是一个会卖给客户的产品页面，它长什么样？
+
+这里不追求视觉设计，而是定义：
+
+- 页面模块
+- 核心指标
+- 推荐文案
+- 客户一眼能看懂的价值表达
+
+### 9AA.1 页面一：Quality Beyond Attribution Dashboard
+
+#### 页面定位
+
+面向：
+
+- UA manager
+- Publisher growth lead
+- ad network account team
+
+核心问题：
+
+- 哪些 campaign / creative 带来的不是“表面转化”，而是真正高质量玩家
+
+#### 页面结构
+
+##### 模块 A：Executive Summary
+
+建议展示：
+
+```text
+Headline:
+Your top-quality acquisition source is not the same as your top-volume source.
+
+Highlights:
+- HQ User Rate uplift: +23%
+- Best campaign by game-native quality: Campaign A
+- Best creative family by early retention quality: Creative Family 3
+```
+
+##### 模块 B：Campaign Quality Table
+
+Mock 表格：
+
+| Campaign | Installs | Purchase Rate | Tutorial Completion | Crash-Adjusted D1 Quality | HQ User Rate | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- |
+| C_A | 1000 | Medium | 62% | High | 52% | Increase budget |
+| C_B | 900 | Medium | 46% | Medium-Low | 33% | Review creative / source mix |
+| C_C | 700 | Low | 58% | High | 47% | Test for scale |
+
+##### 模块 C：Creative Family Insights
+
+建议展示：
+
+```text
+Creative Family 3:
+- Lower CTR than Family 1
+- Higher tutorial completion
+- Higher early core-loop entry
+- Better crash-adjusted quality
+
+Insight:
+This creative appears to attract fewer clicks but better-fitting users.
+```
+
+##### 模块 D：Quality Funnel
+
+Mock 漏斗：
+
+```text
+Installs -> First Session -> Tutorial Complete -> Core Loop Entry -> HQ User
+1000        910             620                 510                520
+```
+
+#### 页面核心价值
+
+这个页面最想让客户看到的是：
+
+- “量大”不等于“质量高”
+- MMP-only 看不出来的游戏内质量差异，现在可以看出来
+
+### 9AA.2 页面二：Monetization-Aware UA Dashboard
+
+#### 页面定位
+
+面向：
+
+- Growth lead
+- UA team
+- Monetization lead
+
+核心问题：
+
+- 哪些 source / campaign 带来的是综合价值高的用户，而不是只在单一指标上表现好
+
+#### 页面结构
+
+##### 模块 A：Hybrid Value Summary
+
+建议展示：
+
+```text
+Headline:
+Source S1 delivers stronger hybrid value than Source S2 despite lower direct purchase signals.
+
+Highlights:
+- Best source for hybrid LTV: S1
+- Best source for ad-engagement-adjusted value: S1
+- Most overvalued by purchase-only view: S2
+```
+
+##### 模块 B：Source Comparison Table
+
+Mock 表格：
+
+| Source | Installs | Purchase Rate | Rewarded Completion | D7 Playtime | Hybrid LTV Bucket | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- |
+| S1 | 500 | Medium | High | High | High | Increase budget |
+| S2 | 520 | Medium-High | Low | Medium | Medium | Cap / segment more aggressively |
+| S3 | 430 | Low | Medium | High | Medium-High | Test new creative routing |
+
+##### 模块 C：Value Mix Panel
+
+建议展示：
+
+```text
+Source S1 Value Mix:
+- IAP contribution: medium
+- IAA contribution: high
+- Retention-adjusted value: high
+
+Source S2 Value Mix:
+- IAP contribution: medium-high
+- IAA contribution: low
+- Retention-adjusted value: medium
+```
+
+##### 模块 D：Budget Action Panel
+
+建议展示：
+
+```text
+Recommended actions for next 7 days:
+- Increase spend on S1 by 15%
+- Hold S2 flat unless purchase CPA improves
+- Expand S3 only for hybrid monetization titles
+```
+
+#### 页面核心价值
+
+这个页面最想让客户理解的是：
+
+- 单看 purchase 很容易低估 hybrid monetization 游戏的真实价值结构
+- ad network 现在可以帮助客户做更聪明的预算配置
+
+### 9AA.3 页面三：Ad Experience Intelligence Dashboard
+
+#### 页面定位
+
+面向：
+
+- Monetization team
+- LiveOps team
+- Unity monetization success team
+
+核心问题：
+
+- 什么广告策略既能赚钱，又不会明显伤害玩家体验和长期留存
+
+#### 页面结构
+
+##### 模块 A：Experience Health Summary
+
+建议展示：
+
+```text
+Headline:
+Interstitial pressure is likely too high for early-stage low-end users.
+
+Highlights:
+- Safest monetization format: Rewarded
+- Highest retention penalty segment: Early progression + low-end devices
+- Largest optimization opportunity: Reduce interstitial load in segment E1
+```
+
+##### 模块 B：Segment Policy Table
+
+Mock 表格：
+
+| Segment | Current Policy | Revenue Impact | Retention Risk | Recommended Policy |
+| --- | --- | --- | --- | --- |
+| Early progression / low-end | Interstitial medium-high | Medium | High | Rewarded heavy, interstitial low |
+| Mid progression / mid-high-end | Interstitial medium | Medium-High | Medium | Balanced mix |
+| Late progression / high intent | Rewarded medium | High | Low | Increase rewarded opportunities |
+
+##### 模块 C：Format-by-Context Heatmap
+
+建议展示：
+
+```text
+Context Fit Score:
+- Rewarded x Early Progression = High
+- Interstitial x Early Progression = Low
+- Rewarded x Mid Progression = High
+- Interstitial x Late Progression = Medium
+```
+
+##### 模块 D：Policy Recommendation Feed
+
+建议展示：
+
+```text
+Recommended policy changes:
+- Reduce interstitial frequency for early-stage low-end users by one bucket
+- Keep rewarded placements unchanged
+- Test a low-pressure monetization strategy in Puzzle Tier-2 markets
+```
+
+#### 页面核心价值
+
+这个页面最想让客户看到的是：
+
+- 变现优化不是单纯追求 eCPM 更高
+- 最优策略是收益、体验、长期留存三者的平衡
+
+### 9AA.4 面向客户的页面设计原则
+
+为了让产品更容易被市场接受，这类 dashboard 应遵循几个原则。
+
+#### 原则 1：先讲业务结论，再讲指标
+
+客户不想先看一堆指标定义，他们更想先知道：
+
+- 我该把预算加到哪里
+- 我该把广告频控改成什么
+- 哪个 creative 更值得放量
+
+#### 原则 2：不要把隐私技术放在页面中心
+
+隐私是底层必要能力，但页面不应该写成：
+
+- “我们用了 TEE / PJC / DP”
+
+而应该写成：
+
+- “这些洞察在不共享原始用户数据的前提下生成”
+
+#### 原则 3：每页必须有明确动作建议
+
+如果页面只有图和表，没有 action，则产品会看起来更像研究报告。
+
+建议每页至少提供：
+
+- budget recommendation
+- source recommendation
+- creative recommendation
+- ad load recommendation
+
+#### 原则 4：不要把粒度做得过细
+
+客户当然总会想看更细的数据，但从隐私和产品稳定性角度：
+
+- 优先展示 campaign / creative family / source / segment 级别
+- 不要轻易下钻到接近用户级或极小样本群体
+
+### 9AA.5 这类 Dashboard 如何与销售话术配合
+
+这类页面最好的销售方式不是强调“技术先进”，而是强调：
+
+- 传统归因告诉你谁带来了安装
+- 我们告诉你谁带来了真正适合你游戏的玩家
+- 而且这种洞察不需要交换原始用户数据
+
+如果要把三页 dashboard 收敛成一句价值主张，可以写成：
+
+- `Measure quality beyond installs, optimize value beyond purchases, and monetize beyond short-term eCPM.`
+
+## 9B. 这些输出如何进入 Ad Network 内部系统
+
+这一节回答一个非常关键的问题：
+
+- 即使我们从 Unity 拿到了隐私保护后的联合输出，这些东西在 ad network 内部到底怎么被消费？
+
+从 ad network 视角，最合理的是把这些输出接入四层系统。
+
+### 9B.1 Measurement Layer
+
+作用：
+
+- 增强 campaign / source / creative 维度的质量报表
+
+可接入的输出：
+
+- HQ user rate
+- tutorial completion bucket
+- crash-adjusted quality
+- hybrid LTV bucket
+- ad experience safety bucket
+
+用途：
+
+- 替代“只看 install / purchase”的单薄视角
+- 帮客户理解为什么某些 source 看似量大，长期质量却差
+
+### 9B.2 Model Layer
+
+作用：
+
+- 给 ad network 内部模型提供更好的标签、弱监督或 bucket 特征
+
+可接入的输出：
+
+- campaign-level high quality label
+- source-level hybrid value label
+- creative-to-genre fit bucket
+
+可增强的模型：
+
+- pLTV
+- pROAS
+- churn risk
+- quality score
+- fraud risk
+
+推荐方式：
+
+- 初期把这些结果作为 offline label enrichment
+- 中期再进入 online scoring / nearline feature pipeline
+
+### 9B.3 Bidding Layer
+
+作用：
+
+- 影响出价和预算分配逻辑
+
+可接入的输出：
+
+- quality-adjusted expected value
+- source quality multiplier
+- hybrid value multiplier
+
+典型用法：
+
+- 对 HQ user rate 高的 source 提高 bid multiplier
+- 对 crash-adjusted quality 低的 segment 降低出价
+- 对 creative-to-genre fit 高的组合加大预算
+
+### 9B.4 Traffic Strategy Layer
+
+作用：
+
+- 做更宏观的流量配置和供给策略
+
+可接入的输出：
+
+- source-by-genre quality matrix
+- segment-level monetization recommendation
+- retention-safe ad load policy
+
+典型用法：
+
+- publisher whitelist / blacklist 调整
+- 预算重新分层
+- creative routing
+- game genre / region / device tier 层级的投放策略切换
+
+### 9B.5 一个完整的内部消费链路
+
+可以把 ad network 内部消费链路理解为：
+
+```mermaid
+flowchart LR
+    A["Privacy Collaboration Outputs\nHQ rate / hybrid value / safe ad load"] --> B["Measurement Layer"]
+    A --> C["Offline Label Store"]
+    C --> D["Model Training"]
+    D --> E["Bid & Budget Optimizer"]
+    A --> F["Traffic Strategy Console"]
+    B --> G["Advertiser Reporting"]
+```
+
+一句话总结：
+
+- 这些联合输出不应该只停留在 dashboard
+- 它们应该变成 ad network 内部 measurement、model、bidding、traffic strategy 的共同输入
+
+## 9C. Use Case 与隐私技术选型映射
+
+为了让整份方案更容易执行，这里把三个 use case 对应的隐私技术路线收成一张表。
+
+| Use Case | Phase 1 推荐 | Phase 2 推荐 | Phase 3 推荐 | 不建议起手式 |
+| --- | --- | --- | --- | --- |
+| Quality Beyond Attribution | TEE clean room + aggregate cohort analysis + thresholding | PSI / PJC for matched aggregate quality | Federated quality modeling | full MPC、raw user log sharing |
+| Monetization-Aware UA | Aggregate clean room + governed reporting | PJC / PI-Sum for matched value | Federated value modeling | player-level value sharing、实时 raw join |
+| Ad Experience Intelligence | Aggregate contextual analysis | TEE-based confidential context join | Confidential / federated recommendation modeling | 个体级实时联合决策、高维 raw feature 共享 |
+
+### 9C.1 简化理解
+
+- 如果目标是“先证明商业价值”，优先 clean room / TEE / 聚合分析
+- 如果目标是“更强 measurement 和 value attribution”，优先 PSI / PJC
+- 如果目标是“更强自动优化”，最后再上 federated modeling
+
+## 9D. 为什么 Unity 也会愿意合作
+
+虽然这份文档是站在 ad network 视角写的，但真正的合作必须是双赢。
+
+Unity 愿意合作的原因，不应该被简单理解成“帮助 ad network 更赚钱”，而应该是：
+
+### 9D.1 对 Unity Grow / Ads / Mediation 生态的增强
+
+合作能让 Unity 提供更强的：
+
+- growth insights
+- monetization insights
+- benchmark 产品
+- ad experience recommendations
+
+### 9D.2 对开发者价值的增强
+
+Unity 可以对开发者讲的故事会变得更强：
+
+- 你不只知道买来了多少用户
+- 你还能知道这些用户在游戏里是否真正有价值
+- 还能知道广告怎么放更不伤体验
+
+### 9D.3 对商业模式的增强
+
+Unity 可以把这些能力做成：
+
+- premium insight package
+- monetization advisory
+- growth intelligence module
+- benchmark subscription
+
+### 9D.4 对战略位置的增强
+
+更重要的是，Unity 会更接近一种更强的定位：
+
+- 不只是游戏引擎
+- 而是“游戏增长与变现操作系统”的一部分
 
 ## 10. 从 Ad Network 视角的价值
 
