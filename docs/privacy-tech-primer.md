@@ -1084,6 +1084,568 @@ sum = [0.3, -0.2]
 local training -> local update -> secure aggregation -> global update
 ```
 
+### 16B.9 Confidential Federated Analytics / Provably Private Insights
+
+这是 2025-2026 很值得初学者关注的一层，因为它把：
+
+- 设备侧数据最小化
+- TEE 中的受控处理
+- 可验证的软件供应链 / attestation
+- 最终 DP 发布
+
+叠成了一个可以真正落地的 AI 时代分析链路。
+
+一个最小 mock 例子：
+
+设备端原始数据：
+
+```json
+{
+  "device_id": "dev_7f3a",
+  "feature": "recorder_summary",
+  "user_opt_in": true,
+  "local_artifact": {
+    "transcript": "need to buy charger before flight",
+    "lang": "en",
+    "ts_bucket": "2026-04-20T10"
+  }
+}
+```
+
+设备实际上传的不是“开放式原文给分析师”，而更像：
+
+```json
+{
+  "ciphertext": "base64:7Yh...",
+  "workflow_digest": "sha256:ppi-workflow-v3",
+  "policy": {
+    "allowed_purpose": "topic_histogram",
+    "retention": "ephemeral",
+    "approved_output": "dp_histogram_only"
+  }
+}
+```
+
+TEE 内允许执行的步骤：
+
+```json
+[
+  {"step": 1, "name": "decrypt_in_tee"},
+  {"step": 2, "name": "llm_classify_topic", "model": "gemma-3-4b"},
+  {"step": 3, "name": "clip_user_contribution", "max_topics": 1},
+  {"step": 4, "name": "dp_histogram", "epsilon": 1.0},
+  {"step": 5, "name": "publish_aggregate_only"}
+]
+```
+
+最终对外输出：
+
+```json
+{
+  "feature": "recorder_summary",
+  "window": "2026-W16",
+  "topic_histogram_dp": {
+    "reminder": 128,
+    "meeting": 94,
+    "travel": 51
+  }
+}
+```
+
+它最值得你记住的 data flow 是：
+
+```text
+device local raw data
+-> device chooses what to upload
+-> encrypt with workflow constraint
+-> TEE attests approved code
+-> LLM or analytics step runs inside TEE
+-> DP aggregate only
+-> publish
+```
+
+### 16B.10 Private Cloud AI Inference
+
+如果你想理解 Apple PCC 或类似 private AI compute 方案，可以先看最小请求格式。
+
+设备请求：
+
+```json
+{
+  "request_id": "req_20260420_001",
+  "task": "rewrite_email",
+  "prompt": "rewrite this to sound more concise",
+  "private_context": {
+    "draft": "Hi team, I wanted to follow up regarding the launch timeline..."
+  },
+  "target_model": "large-cloud-model",
+  "policy": {
+    "no_storage": true,
+    "no_training_use": true
+  }
+}
+```
+
+发送前，设备会先验证远端节点身份与可验证软件版本；到服务端后，理想化的处理边界是：
+
+```json
+{
+  "attested_node": "pcc-node-18",
+  "build_measurement": "pcc-release-2025-10-24",
+  "allowed_runtime": [
+    "request_decrypt",
+    "model_inference",
+    "response_encrypt"
+  ],
+  "disallowed_runtime": [
+    "shell_access",
+    "general_purpose_logging",
+    "debug_dump_user_payload"
+  ]
+}
+```
+
+最终返回：
+
+```json
+{
+  "request_id": "req_20260420_001",
+  "output": "Following up on the launch timeline. Please share the latest target date and blockers.",
+  "server_trace": "ephemeral"
+}
+```
+
+对初学者来说，这类方案的关键不是“云上 AI 也能算”，而是：
+
+- 设备先验真再发送
+- 节点只能跑被公开/可验证的软件
+- 管理员权限不应等于可读用户明文
+- 输出仍然要单独治理，不能把“执行安全”误当成“结果天然安全”
+
+### 16B.11 DP Synthetic Data with LLM Inference
+
+Google Research 在 2025 年给了一个很适合写进 primer 的方向：不用重新训练大模型，也能用推理式流程做 DP synthetic data。
+
+敏感种子样本：
+
+```json
+[
+  {"age_band": "25-34", "condition": "asthma", "drug": "A"},
+  {"age_band": "35-44", "condition": "asthma", "drug": "B"},
+  {"age_band": "25-34", "condition": "diabetes", "drug": "C"}
+]
+```
+
+推理式生成链路可以抽象成：
+
+```text
+sensitive seed rows
+-> many parallel prompts to base LLM
+-> candidate synthetic rows
+-> DP aggregation / filtering
+-> release synthetic dataset
+```
+
+一个极简输出例子：
+
+```json
+[
+  {"age_band": "25-34", "condition": "asthma", "drug": "A_like", "count_dp": 11},
+  {"age_band": "35-44", "condition": "asthma", "drug": "B_like", "count_dp": 8},
+  {"age_band": "25-34", "condition": "diabetes", "drug": "C_like", "count_dp": 7}
+]
+```
+
+### 16B.12 组合式系统的 End-to-End Mock Data
+
+很多初学者看懂单个 PET 之后，还是不知道真实系统里“数据到底怎么流”。下面给 3 个更接近生产系统的 mock data。
+
+#### 例子 A：Confidential Federated Analytics / PPI
+
+设备侧事件：
+
+```json
+{
+  "device_id": "dev_e91f",
+  "feature": "smart_reply",
+  "event_ts": "2026-04-21T08:15:00Z",
+  "raw_artifact": {
+    "prompt_class": "email_reply",
+    "draft_language": "en",
+    "llm_output": "Thanks, I can do Thursday afternoon."
+  }
+}
+```
+
+上传到服务端前，设备把原始内容压成受策略约束的密文包：
+
+```json
+{
+  "ciphertext": "base64:AbCd...",
+  "policy_id": "ppi-smart-reply-v1",
+  "allowed_workflow_digest": "sha256:workflow_20260421",
+  "privacy_unit": "device_week",
+  "max_contribution": 1
+}
+```
+
+TEE 中允许执行的步骤：
+
+```json
+[
+  {"step": 1, "name": "decrypt"},
+  {"step": 2, "name": "llm_extract_topic", "output_schema": {"topic": "string"}},
+  {"step": 3, "name": "clip", "rule": "one topic per privacy unit"},
+  {"step": 4, "name": "aggregate"},
+  {"step": 5, "name": "release_dp_histogram", "epsilon": 1.1, "delta": 1e-6}
+]
+```
+
+最终可发布结果：
+
+```json
+{
+  "feature": "smart_reply",
+  "window": "2026-W17",
+  "topic_histogram_dp": {
+    "meeting_coordination": 183,
+    "follow_up": 91,
+    "travel_planning": 24
+  }
+}
+```
+
+这里最重要的是把数据流拆成 4 层：
+
+- `原始内容在设备侧`
+- `上传的是受限密文包`
+- `TEE 中只允许运行白名单 workflow`
+- `对外只放 DP 聚合结果`
+
+#### 例子 B：Clean Room + Analysis Rules
+
+广告主侧表：
+
+```text
+hashed_email | campaign_id | purchase_value | purchase_date
+h1           | c7          | 39.99          | 2026-04-20
+h2           | c7          | 14.50          | 2026-04-20
+h3           | c9          | 72.10          | 2026-04-21
+```
+
+媒体侧表：
+
+```text
+hashed_email | placement_id | impression_cnt | click_cnt
+h1           | p3           | 12             | 1
+h3           | p9           | 5              | 1
+h4           | p3           | 8              | 0
+```
+
+clean room 规则：
+
+```json
+{
+  "join_key": "hashed_email",
+  "analysis_rule": "differential_privacy",
+  "aggregation_threshold": 50,
+  "allowed_dimensions": ["campaign_id", "placement_id"],
+  "disallowed_outputs": ["hashed_email", "row_level_export"],
+  "epsilon_budget": 8.0,
+  "delta_budget": 1e-6
+}
+```
+
+允许的查询形态：
+
+```sql
+SELECT
+  campaign_id,
+  placement_id,
+  COUNT(*) AS matched_users,
+  SUM(purchase_value) AS revenue
+FROM joined_view
+GROUP BY 1, 2
+```
+
+外部能拿到的结果更像：
+
+```text
+campaign_id | placement_id | matched_users_dp | revenue_dp
+c7          | p3           | 86               | 2419.3
+c9          | p9           | 64               | 1930.8
+```
+
+这说明 clean room 不是“数据不动就安全了”，而是：
+
+- `join 怎么做` 被约束
+- `query 怎么写` 被约束
+- `什么不能导出` 被约束
+- `预算能用多少次` 被约束
+
+### 16B.13 Clean Room Synthetic Data / 协作建模的 Mock Data
+
+如果你想把 privacy tech 用到“联合建模、但又不共享原始训练样本”的场景，可以把系统想成下面这条链路。
+
+参与方原始表：
+
+```json
+{
+  "airline_bookings": [
+    {"join_id": "h:01", "tier": "gold", "route": "SFO-HND", "spend_usd": 1800, "booked": 1},
+    {"join_id": "h:02", "tier": "silver", "route": "LAX-JFK", "spend_usd": 420, "booked": 1}
+  ],
+  "hotel_stays": [
+    {"join_id": "h:01", "city": "Tokyo", "nights": 3, "ancillary_spend_usd": 260, "converted": 1},
+    {"join_id": "h:77", "city": "New York", "nights": 1, "ancillary_spend_usd": 90, "converted": 0}
+  ]
+}
+```
+
+进入 clean room 后，双方通常不会直接导出 join 后明细，而是先声明模板和输出边界：
+
+```json
+{
+  "template_id": "joint-promo-synth-v1",
+  "join_key": "join_id",
+  "output_mode": "synthetic_only",
+  "column_types": {
+    "tier": "categorical",
+    "route": "categorical",
+    "city": "categorical",
+    "spend_usd": "numerical",
+    "nights": "numerical",
+    "converted": "categorical"
+  },
+  "privacy_controls": {
+    "epsilon": 3.0,
+    "privacy_threshold": 20,
+    "data_access_budget": {
+      "lifetime_runs": 10,
+      "monthly_runs": 4
+    }
+  }
+}
+```
+
+平台执行时更像是在跑一个受控作业，而不是把明细表交给训练代码：
+
+```json
+[
+  {"step": 1, "name": "join_under_policy"},
+  {"step": 2, "name": "apply_thresholding_and_preprocessing"},
+  {"step": 3, "name": "generate_synthetic_training_rows"},
+  {"step": 4, "name": "emit_synthetic_output_only"},
+  {"step": 5, "name": "decrement_access_budget"},
+  {"step": 6, "name": "publish_audit_metrics"}
+]
+```
+
+训练代码真正看到的可能是下面这种 synthetic dataset：
+
+```json
+[
+  {"tier": "gold", "route": "SFO-HND", "city": "Tokyo", "spend_usd_bucket": "1500-1999", "nights": 3, "converted": 1},
+  {"tier": "silver", "route": "LAX-JFK", "city": "New York", "spend_usd_bucket": "300-499", "nights": 1, "converted": 0},
+  {"tier": "gold", "route": "SEA-HND", "city": "Tokyo", "spend_usd_bucket": "1500-1999", "nights": 4, "converted": 1}
+]
+```
+
+而治理/运维侧更关心的是这类元数据：
+
+```json
+{
+  "job_id": "crml_job_20260422_01",
+  "template_id": "joint-promo-synth-v1",
+  "result_type": "synthetic_dataset",
+  "rows_emitted": 50000,
+  "remaining_access_budget": {
+    "lifetime_runs": 9,
+    "monthly_runs": 3
+  },
+  "monitoring": {
+    "cloudwatch_metrics_enabled": true,
+    "query_runtime_ms": 8420
+  }
+}
+```
+
+这个例子要帮助初学者看懂 5 件事：
+
+- `训练代码` 不一定接触真实 join 后样本
+- `synthetic output only` 是产品策略，不只是模型技巧
+- `epsilon / threshold` 和 `access budget` 是两种不同控制面
+- `审计与监控` 已经是生产 clean room 的一部分
+- `可落地 privacy tech` 往往同时包含数据、策略、执行和运维
+
+#### 例子 C：Private Cloud AI Inference
+
+设备提交请求：
+
+```json
+{
+  "request_id": "req_20260421_019",
+  "attested_service": "private-cloud-ai-v2",
+  "task": "summarize_notes",
+  "private_context": {
+    "notes": [
+      "Customer asked to delay renewal to May 1.",
+      "Security review still blocked on DPA."
+    ]
+  },
+  "policy": {
+    "retain_logs": false,
+    "allow_training": false,
+    "max_ttl_seconds": 300
+  }
+}
+```
+
+服务端执行策略：
+
+```json
+{
+  "measurement": "sha256:pcc_style_build_202604",
+  "debug_interfaces": [],
+  "egress_filters": ["model_output_only"],
+  "audit_record": "ephemeral_request_metadata_only"
+}
+```
+
+返回结果：
+
+```json
+{
+  "request_id": "req_20260421_019",
+  "summary": "Renewal moved to May 1; security review is blocked on the DPA.",
+  "retention": "not_stored"
+}
+```
+
+如果你从系统设计角度看，这类方案的关键不是“模型在云上”，而是：
+
+- `请求前先验真`
+- `执行镜像可审计`
+- `运行时接口受限`
+- `日志和训练回流默认被禁`
+
+它适合写进你的心智模型里，因为它说明：
+
+- synthetic data 不是天然安全
+- LLM 也不是天然隐私
+- 真正可落地的是“LLM inference + DP aggregation/filtering”的组合
+
+### 16B.14 Reasoning-Driven Synthetic Data / Dataset Mechanism Design 的 Mock Data
+
+如果你想理解 2026 年 synthetic data 的一个新趋势，可以把它想成：不是“从几条 seed row 出发，逐条仿写”，而是先设计整个数据集该长什么样，再去生成样本。
+
+一个面向隐私敏感客服场景的输入，不一定直接是原始聊天记录，也可能先被抽象成一个“数据集设计任务”：
+
+```json
+{
+  "dataset_goal": "train_support_classifier",
+  "domain": "refund_and_account_recovery",
+  "privacy_mode": "synthetic_first",
+  "target_axes": {
+    "coverage": ["refund", "chargeback", "account_lock", "2fa_reset"],
+    "complexity": ["simple", "multi-turn", "policy_edge_case"],
+    "quality": ["schema_valid", "policy_consistent", "label_verified"]
+  },
+  "hard_constraints": {
+    "forbid_raw_chat_export": true,
+    "allow_seedless_generation": true,
+    "release_format": "jsonl"
+  }
+}
+```
+
+系统先产出的可能不是样本，而是一个 taxonomy / scaffold：
+
+```json
+{
+  "taxonomy": [
+    {
+      "topic": "refund",
+      "subtopics": ["duplicate_charge", "late_delivery", "policy_exception"]
+    },
+    {
+      "topic": "account_lock",
+      "subtopics": ["suspicious_login", "device_change", "travel_false_positive"]
+    }
+  ],
+  "sampling_plan": {
+    "global_diversity_target": 0.9,
+    "local_variants_per_leaf": 8,
+    "complex_case_ratio": 0.35
+  }
+}
+```
+
+随后才进入 meta-prompt 和实例化阶段：
+
+```json
+[
+  {
+    "leaf": "refund.policy_exception",
+    "meta_prompt": "customer asks for refund outside standard window after a delivery outage",
+    "variants": 8
+  },
+  {
+    "leaf": "account_lock.travel_false_positive",
+    "meta_prompt": "customer locked out after travel-triggered risk rule",
+    "variants": 8
+  }
+]
+```
+
+最终给训练或评测系统的 synthetic rows 可能长这样：
+
+```json
+[
+  {
+    "scenario_id": "syn_001",
+    "intent": "refund",
+    "complexity": "multi-turn",
+    "user_message": "I am outside the refund window, but the outage delayed the shipment by 9 days.",
+    "policy_label": "manual_review",
+    "quality_checks": ["schema_valid", "critic_pass"]
+  },
+  {
+    "scenario_id": "syn_002",
+    "intent": "account_recovery",
+    "complexity": "policy_edge_case",
+    "user_message": "I changed phones while traveling and now every login looks suspicious.",
+    "policy_label": "step_up_auth",
+    "quality_checks": ["schema_valid", "critic_pass"]
+  }
+]
+```
+
+而真正决定它能不能落地的，往往是这类控制与评测元数据：
+
+```json
+{
+  "generation_run_id": "simula_style_20260424_01",
+  "release_decision": "internal_only",
+  "evaluation": {
+    "taxonomic_coverage": 0.93,
+    "complexity_score": 0.71,
+    "critic_disagreement_rate": 0.04
+  },
+  "governance": {
+    "seed_data_required": false,
+    "human_review_sample_rate": 0.05,
+    "raw_sensitive_logs_retained": false
+  }
+}
+```
+
+这个 mock data 要说明的是：
+
+- 新一代 synthetic data 系统越来越像 `dataset control plane`
+- 控制点从“单条像不像真数据”转向“覆盖、复杂度、质量能不能分别调”
+- 对 privacy-sensitive AI 来说，`不导出原始语料 + 先设计数据集结构` 往往比单纯仿写几条样本更重要
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -1377,7 +1939,348 @@ publisher P:
 
 - 这是上限最高，但工程和治理最复杂的一层
 
-## 17. 给初学者的推荐学习顺序
+## 17A. AI 时代补充：把治理与 Private AI 也纳入学习顺序
+
+如果你是第一次系统接触 privacy tech，我建议按这个顺序建立心智模型：
+
+1. 先学 threat model，而不是先背缩写。
+2. 再区分三个层面：输入侧最小化、执行侧受控、输出侧匿名化。
+3. 先理解产品形态：clean room / confidential analytics / on-device analytics / federated systems。
+4. 再学匹配类协议：PSM、PSI、PJC / PI-Sum。
+5. 再学执行保护：TEE / Confidential Computing 与 attestation。
+6. 再学输出保护：DP、aggregation threshold、privacy budget。
+7. 最后再学协同学习：federated learning、secure aggregation、confidential federated analytics。
+
+如果你是做产品或平台落地，可以把问题简化成下面 5 句：
+
+- 我到底想少收什么数据？
+- 我到底不想让谁看到明文？
+- 我到底允许系统输出多细的结果？
+- 我到底要不要跨组织 / 跨设备联合计算？
+- 我到底能不能把 attestation、budget、query policy 这些治理机制工程化？
+
+一个实用的学习路线是：
+
+```text
+de-identification
+-> clean room / analysis rules
+-> TEE / attestation
+-> DP / privacy budget
+-> PSM / PSI / PJC
+-> federated analytics / federated learning
+-> AI-era private analytics / private cloud AI
+```
+
+到这一步你再看各种新名词，就不容易迷路。
+
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-04-24）
+
+这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
+
+### 18A.1 差分隐私从“学术概念”进入更明确的工程评估框架
+
+2025-03-06，NIST 正式发布 `SP 800-226 Guidelines for Evaluating Differential Privacy Guarantees`。
+
+它对初学者最重要的意义不是又发了一篇 DP 文档，而是明确强调：
+
+- 不能只盯着 epsilon
+- 要看完整的 privacy pyramid
+- 要看 privacy hazards，也就是那些在工程实现里把 DP 做“名义上成立、实际很脆弱”的坑
+
+如果你在评估任何“我们做了 DP”的产品，这份文档现在应该是最实用的起点之一。
+
+### 18A.2 Private AI 的主线开始清晰：不是单点 PET，而是组合栈
+
+2025-01-22，Google Research 把 `Parfait` 明确成一个面向 private AI 的开源技术栈，把：
+
+- federated learning / analytics
+- secure aggregation
+- DP
+- TEE 中的 externally verifiable workflows
+
+放在同一个工程框架里。
+
+这很重要，因为它代表行业前沿不再把 privacy tech 看成孤立工具，而是把它们当成一条可组合的数据路径。
+
+### 18A.3 “非结构化 AI 数据也能做可验证隐私分析”开始从概念走向实证
+
+2025-10-30，Google Research 发布 `Provably Private Insights (PPI)`，把：
+
+- LLM 结构化摘要 / 分类
+- TEE 中受控执行
+- 用户级 DP 直方图发布
+
+组合起来，用于分析 Pixel Recorder 这类生成式 AI / 语音转写场景。
+
+这代表一个非常新的拐点：
+
+- 以前 privacy analytics 主要处理结构化表
+- 现在开始处理 transcript、summary、topic 这类非结构化 AI 数据
+
+对做 AI 产品的人，这比传统 cohort 报表更值得关注。
+
+### 18A.4 Synthetic data 的前沿也在转向“推理式 + DP”
+
+2025-03-18，Google Research 提出 `Generating synthetic data with differentially private LLM inference`。
+
+它的工程启发非常直接：
+
+- 不一定要重训一个 DP 模型
+- 可以用现成 LLM 做并行推理
+- 再用 DP 聚合/筛选把输出变成可发布数据
+
+这给很多想做内部数据协作、测试数据、建模沙箱的团队提供了更现实的路线。
+
+### 18A.5 TEE 仍然关键，但 2026 的研究再次提醒它不是“隐私魔法盒”
+
+NDSS 2026 的 `SNPeek` 直接把结论讲清楚了：
+
+- confidential VM / TEE 很重要
+- 但 side-channel 仍然是实在存在的风险
+
+所以今天更成熟的写法应该是：
+
+- `TEE 是执行保护层`
+- `不是完整隐私保证本身`
+
+工程上仍然要叠加：
+
+- 输出限制
+- DP / aggregation threshold
+- 可验证构建与 attestation
+- workload 级的 side-channel review
+
+### 18A.6 DP synthetic data 的路线开始分叉：不仅是推理式 LLM，也包括更轻量的 conditional generator
+
+如果你只看 2025 上半年，很容易把 “DP synthetic data” 理解成一条单一路线：`off-the-shelf LLM inference + DP aggregation`。
+
+但 Google Research 在 2025-08-14 又公开了 `Beyond billion-parameter burdens: Unlocking data synthesis with a conditional generator`，给出另一条很值得工程团队关注的信号：
+
+- 不一定非要上 billion-scale LLM
+- 可以用更小的 conditional generator
+- 用 topic / cluster / metadata 作为控制信号
+- 在强隐私预算下也尽量保持下游可用性
+
+这对 primer 很重要，因为它把 “可落地 synthetic data” 从一个偏前沿、偏重算力的方向，拉回到了更现实的工程问题：
+
+- 你是不是一定需要生成自由文本？
+- 你能不能接受结构化或半结构化输出？
+- 你最关心的是 `time-to-first-sample`、`GPU 成本`，还是 `downstream utility`？
+
+对多数业务团队来说，2025 年后的更成熟理解应该是：
+
+- `DP synthetic data` 不是一条算法
+- 而是一组路线选择：`DP fine-tuning`、`DP inference`、`conditional generator`
+- 具体选型要看数据形态、预算、部署成本和下游任务
+
+### 18A.7 前沿重点开始从“有没有 PET”转向“能不能审计、配额化、持续运营”
+
+如果说 2024 年前后的关键词还是 `TEE / DP / clean room` 本身，那到 2025 下半年到 2026 年初，一个更成熟的信号已经很明显：
+
+- 不只是“有隐私增强技术”
+- 而是“这些技术能不能被预算化、模板化、审计化、监控化”
+
+这里有三条特别值得 primer 记住的产品/研究信号：
+
+- BigQuery 当前文档已经明确写到：`differential privacy enforcement in BigQuery data clean rooms` 已 GA，而 `parameter-driven privacy budgeting` 仍在 preview
+- AWS Clean Rooms 在 2025-10-02 上线 `data access budgets`，把“这份数据还能被跑多少次”变成一等治理对象
+- AWS Clean Rooms 又在 2026-01-02 上线 collaboration query 的详细监控，把 clean room 从“能跑”推进到“可观测、可运维”
+
+与之对应，研究侧也在补“可验证性”短板：Google Research 的 `DP-Auditorium` 与 `Sequentially Auditing Differential Privacy` 这条线都说明，DP 不该只停留在参数宣称，还要有黑盒审计与持续验证能力。
+
+对初学者来说，这一节真正要记住的不是更多缩写，而是一个工程判断标准：
+
+- `成熟的 privacy system = 保护机制 + 发布约束 + 配额控制 + 审计/监控`
+
+### 18A.8 Synthetic data 的前沿继续前移：从“生成几条像样样本”转向“把整个数据集当作可设计对象”
+
+2026-04-16，Google Research 发布了 `Designing synthetic datasets for the real world: Mechanism design and reasoning from first principles`，介绍 `Simula` 这条路线。
+
+它对 primer 很重要，不只是因为又多了一个 synthetic data 框架，而是因为它把问题重新定义了：
+
+- 不是先拿一些 seed row 再逐条仿写
+- 而是先定义数据集要覆盖哪些概念空间
+- 再分别控制全局覆盖、本地多样性、复杂度和质量校验
+
+这和很多团队正在做的 privacy-sensitive AI 非常契合，因为真实需求往往不是“像真数据”，而是：
+
+- 能不能不导出原始敏感语料
+- 能不能系统性覆盖长尾 edge case
+- 能不能把质量与复杂度变成可审计、可调参的控制面
+
+更值得注意的是，Google 在同一篇文章里明确说 Simula 已被用于 Gemma 生态、Gemini safety classifiers，以及 Android scam detection / Google Messages spam filtering 这类实际产品线。对初学者来说，这说明 synthetic data 的前沿已经不只是“研究论文里的数据增强”，而是在进入：
+
+- `privacy-sensitive AI training`
+- `safety classifier bootstrapping`
+- `没有足够真实数据、又不适合直接碰原始数据` 的生产工程
+
+这也补充了前面 2025 年的两条路线：
+
+- `DP inference / DP aggregation`
+- `conditional generator`
+
+到 2026，视角进一步升级为：
+
+- `dataset-level mechanism design`
+
+也就是把 synthetic data 做成一个可以运营、评估、约束的数据控制平面，而不只是一个采样器。
+
+## 18B. 已落地场景与可引用案例
+
+这一节只放已经明确能引用到产品、平台或云能力的案例。
+
+### 18B.1 Gboard：confidential federated analytics 已用于新词发现
+
+Google Research 在 2025-03-04 公开了 Gboard 的 confidential federated analytics 落地。
+
+它很适合作为 primer 里的“生产级 cross-device private analytics”案例，因为它同时体现了：
+
+- 设备侧原始数据不集中到普通分析平台
+- 服务器侧处理步骤是受约束、可验证的
+- 最终结果以 DP 形式发布
+
+而且这不是 demo，文中直接给出了跨 `900+` 语言的新词发现背景，以及 “两天发现 3600 个印尼语缺失词” 这种具体效果信号。
+
+### 18B.2 Pixel Recorder：PPI 已开始处理 AI 时代的非结构化使用洞察
+
+Google Research 在 2025-10-30 公开说明，PPI 已部署到 Pixel 的 Recorder 应用，用 Gemma 3 4B 在 TEE 中对 transcript 做 topic classification，再用 DP 输出聚合洞察。
+
+这很值得引用，因为它说明：
+
+- private analytics 已不只是 count / sum
+- 可以开始处理 transcript、summary、user intent 这种 AI 原生数据
+- 但仍然保持“只发 DP 聚合结果，不放出原始明文”
+
+### 18B.3 Apple Private Cloud Compute：private cloud AI 的代表性架构
+
+Apple 在 2024-06-10 首次公开 PCC 架构，并在 2024-10-24 进一步公开 Security Guide、Virtual Research Environment 与部分关键源码。
+
+它可作为“private cloud AI”最典型的引用案例，因为它把以下东西一起做了出来：
+
+- 设备验真后再发送请求
+- 生产镜像透明化 / 可验证
+- 无通用 shell、无通用日志
+- 允许研究者自行检查二进制、透明日志与虚拟化运行环境
+
+即使你不采用 Apple 的具体实现，这种“可验证云上 AI”模式已经是一个明确产品方向。
+
+### 18B.4 BigQuery Data Clean Rooms：云上受控协作环境的典型产品形态
+
+Google Cloud 的 BigQuery data clean rooms 已经是非常适合 business / analytics 团队理解的落地形态。
+
+它值得写进 primer，不是因为“clean room 很新”，而是因为它把治理做成了具体产品能力：
+
+- analysis rules
+- aggregation threshold
+- differential privacy analysis rule
+- query templates
+
+这让 clean room 从“概念上的安全协作房间”变成了可操作的平台控件集合。
+
+截至 2026-04-22，BigQuery 文档还给了一个很实用的状态信号：
+
+- `differential privacy enforcement in BigQuery data clean rooms` 已 GA
+- `parameter-driven privacy budgeting` 仍是 preview
+
+这提醒你在设计方案时要区分：
+
+- 已稳定可依赖的发布控制
+- 仍在演进中的预算控制接口
+
+### 18B.5 AWS Clean Rooms：把 privacy budget 与访问次数预算产品化
+
+AWS Clean Rooms 已有 DP 能力；到 2025-10-02 又新增 `data access budgets`，可限制表在 SQL、PySpark、训练或推理场景下被分析的次数；到 2026-01-02 又新增 collaboration query 的详细监控，支持把查询指标发布到 CloudWatch。
+
+这很值得引用，因为它说明工业界开始把两种预算都产品化：
+
+- `privacy budget`
+- `access budget`
+
+前者约束“能泄露多少统计信息”，后者约束“这份数据总共能被碰多少次”。
+
+而 2026 年初的监控能力又补上了第三层：
+
+- `operational observability`
+
+对很多真实合作来说，这三层缺一不可，因为没有观测就很难把 clean room 当成长期运行的生产系统。
+
+### 18B.6 AWS Clean Rooms ML synthetic data：联合建模但不暴露真实训练样本
+
+2025-11-30，AWS Clean Rooms 又把 `privacy-enhancing synthetic datasets` 做成了可直接用于 custom ML training 的产品能力。
+
+这很值得写进 primer，因为它对应的是很多团队真正会遇到的场景：
+
+- 双方想联合训练回归 / 分类模型
+- 但不愿意把 join 后明细直接交给训练代码
+- 希望平台只发 synthetic output，并把隐私参数和阈值留在治理层
+
+这类场景说明 synthetic data 已经不只是研究论文中的“可能方向”，而是开始进入：
+
+- campaign optimization
+- fraud detection
+- medical research
+
+这类可以直接落到业务预算和模型训练流程里的产品能力。
+
+### 18B.7 Android Private Compute Core / PCC-compliant on-device AI：已经不是概念，而是大规模产品约束
+
+如果你希望 primer 不只覆盖“云上的 privacy tech”，那 Android 体系里的 `Private Compute Core (PCC)` 也值得保留为已落地案例。
+
+Android Developers 在 2024-10-24 公开说明 Gemini Nano / AICore 的隐私与安全设计时，明确写到 AICore 是 `PCC compliant`，只能与有限的合规系统组件交互，且不能直接访问互联网。
+
+这类案例的价值在于它说明：
+
+- on-device private AI 不只是“模型放在端上”
+- 还包括进程隔离、网络出口限制、受控模型下载路径
+- 以及把 AI runtime 放进更严格的系统级隐私边界
+
+如果再结合 Android 官方虚拟化 use case 文档里 `Content Safety On-device` 的案例，你会发现 “privacy-preserving on-device inference” 已经不是论文概念，而是服务于超大规模终端的产品工程实践。
+
+### 18B.8 Snowflake Data Clean Rooms：template-driven clean room 已成为主流平台形态之一
+
+如果你希望 primer 里的 clean room 案例不只来自单一云厂商，那 Snowflake 也是很值得补进去的已落地平台。
+
+Snowflake 官方文档明确把 Data Clean Rooms 描述为可配置、隔离的协作环境，参与方可以指定：
+
+- 哪些查询能跑
+- 哪些列可 join / 可投影
+- 是否启用 differential privacy
+
+而且它已经不是“只能做 provider-consumer 的静态房间”这种早期形态。文档当前状态显示，新 collaboration experience 已经可用，能力也覆盖：
+
+- inventory forecasting
+- last touch attribution
+- multi-party insights
+- machine learning
+
+这对 primer 很有价值，因为它让读者更容易建立一个现实判断：
+
+- clean room 不是某一家公司的专有术语
+- 主流产品形态正在收敛到 `template + join policy + projection policy + optional DP + controlled activation`
+- 工程重点不在“有没有一个神秘算法”，而在“能不能把查询能力产品化为受控模板”
+
+### 18B.9 Microsoft Viva Insights：DP 已经进入企业组织分析产品，而不只是研究工具
+
+Microsoft 的 Viva Insights 也值得作为一个“DP 已落地”的引用案例保留。
+
+Microsoft Learn 的技术隐私指南明确写到，organization insights 通过三层机制保护聚合结果：
+
+- minimum group sizes
+- differential privacy
+- distribution masking
+
+更具体地说，文档直接说明 differential privacy 已用于 organization insights，目标是让管理者看见群体层面的协作模式，但不能有把握地推出某个个体的具体情况。
+
+这个案例的重要性在于：
+
+- 它不是 clean room，也不是研究 demo
+- 它说明 DP 已经进入日常企业分析产品
+- 它把 DP 放在一个非常典型的“高敏感、强解释、面向非隐私专家用户”的产品环境里
+
+对初学者来说，这个例子能帮助建立一个很实用的直觉：
+
+- DP 不只属于 census、学术 benchmark 或广告测量
+- 它同样适合组织分析、Copilot 使用度量、员工协作指标这类容易引发个体可识别风险的场景
 
 ## 18. 一页式总结
 
@@ -1410,6 +2313,19 @@ publisher P:
 5. TensorFlow Federated, Federated Learning overview
 6. OpenDP, What is Differential Privacy?
 7. Microsoft Research, Microsoft SEAL
+8. Apple Security Research, Security research on Private Cloud Compute
+9. Google Research, Parfait: Enabling private AI with research tools
+10. AWS Clean Rooms, Differential Privacy
+11. BigQuery, Restrict data access using analysis rules
+12. BigQuery, Use differential privacy
+13. BigQuery, Extend differential privacy
+14. Android Developers Blog, An introduction to privacy and safety for Gemini Nano
+15. Android Open Source Project, Virtualization use cases
+16. AWS Clean Rooms, Privacy-enhanced synthetic dataset generation
+17. Google Research, DP-Auditorium
+18. Snowflake Documentation, Snowflake Data Clean Rooms overview
+19. Microsoft Learn, Viva Insights technical privacy guide
+20. Google Research, Designing synthetic datasets for the real world
 
 ### 论文与研究资料
 
@@ -1420,6 +2336,14 @@ publisher P:
 5. Google Research, Private Intersection-Sum Protocols with Applications to Attributing Aggregate Ad Conversions
 6. NIST, De-Identification of Personal Information
 7. NIST, Guidelines for Evaluating Differential Privacy Guarantees
+8. Google Research, Discovering new words with confidential federated analytics
+9. Google Research, Toward provably private insights into AI use
+10. Google Research, Generating synthetic data with differentially private LLM inference
+11. Google Research, SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs
+12. Google Research, Beyond billion-parameter burdens: Unlocking data synthesis with a conditional generator
+13. Google Research, Sequentially Auditing Differential Privacy
+14. AWS Clean Rooms, Privacy-enhanced synthetic dataset generation
+15. Google Research / TMLR, Reasoning-Driven Synthetic Data Generation and Evaluation
 
 ## 20. 参考链接
 
@@ -1432,10 +2356,32 @@ publisher P:
 - OpenDP, What is Differential Privacy?: https://opendp.org/what-is-differential-privacy/
 - OpenDP, Typical Workflow: https://docs.opendp.org/en/stable/getting-started/typical-workflow.html
 - Microsoft SEAL: https://www.microsoft.com/en-us/research/project/microsoft-seal/
+- Apple Security Research, Security research on Private Cloud Compute: https://security.apple.com/blog/pcc-security-research/
+- Apple Security Research, Private Cloud Compute overview: https://security.apple.com/com/blog/private-cloud-compute/
+- Google Research, Parfait: Enabling private AI with research tools: https://research.google/blog/parfait-enabling-private-ai-with-research-tools/
+- AWS Clean Rooms Differential Privacy: https://docs.aws.amazon.com/clean-rooms/latest/userguide/differential-privacy.html
+- AWS Clean Rooms data access budgets announcement: https://aws.amazon.com/about-aws/whats-new/2025/10/aws-clean-rooms-data-access-budgets/
+- BigQuery analysis rules: https://cloud.google.com/bigquery/docs/analysis-rules
+- BigQuery, Use differential privacy: https://cloud.google.com/bigquery/docs/differential-privacy
+- BigQuery, Extend differential privacy: https://cloud.google.com/bigquery/docs/extend-differential-privacy
+- Android Developers Blog, An introduction to privacy and safety for Gemini Nano: https://android-developers.googleblog.com/2024/10/introduction-to-privacy-and-safety-gemini-nano.html
+- Android Open Source Project, Virtualization use cases: https://source.android.com/docs/core/virtualization/usecases
+- AWS Clean Rooms synthetic data generation: https://docs.aws.amazon.com/clean-rooms/latest/userguide/synthetic-data-generation.html
+- Google Research, DP-Auditorium: https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/
+- Snowflake Data Clean Rooms overview: https://docs.snowflake.com/en/user-guide/cleanrooms/getting-started
+- Microsoft Learn, Viva Insights technical privacy guide: https://learn.microsoft.com/en-us/viva/insights/advanced/privacy/privacy
+- Google Research, Designing synthetic datasets for the real world: https://research.google/blog/designing-synthetic-datasets-for-the-real-world-mechanism-design-and-reasoning-from-first-principles/
 - Google Research, Practical Secure Aggregation for Federated Learning on User-Held Data: https://research.google/pubs/practical-secure-aggregation-for-federated-learning-on-user-held-data/
 - Google Research, Confidential Federated Computations: https://research.google/pubs/confidential-federated-computations/
 - Google Research, Privacy-Preserving Secure Cardinality and Frequency Estimation: https://research.google/pubs/privacy-preserving-secure-cardinality-and-frequency-estimation/
 - Google Research, Private Join and Compute from PIR with Default: https://research.google/pubs/private-join-and-compute-from-pir-with-default/
 - Google Research, Private Intersection-Sum Protocols with Applications to Attributing Aggregate Ad Conversions: https://research.google/pubs/private-intersection-sum-protocols-with-applications-to-attributing-aggregate-ad-conversions/
+- Google Research, Discovering new words with confidential federated analytics: https://research.google/blog/discovering-new-words-with-confidential-federated-analytics/
+- Google Research, Toward provably private insights into AI use: https://research.google/blog/toward-provably-private-insights-into-ai-use/
+- Google Research, Generating synthetic data with differentially private LLM inference: https://research.google/blog/generating-synthetic-data-with-differentially-private-llm-inference/
+- Google Research, Beyond billion-parameter burdens: Unlocking data synthesis with a conditional generator: https://research.google/blog/beyond-billion-parameter-burdens-unlocking-data-synthesis-with-a-conditional-generator/
+- Google Research, Sequentially Auditing Differential Privacy: https://research.google/pubs/sequentially-auditing-differential-privacy/
+- Google Research, SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs: https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/
+- Google Research / TMLR, Reasoning-Driven Synthetic Data Generation and Evaluation: https://openreview.net/forum?id=QtSI0l2Xsb
 - NIST, De-Identification of Personal Information: https://www.nist.gov/publications/de-identification-personal-information
 - NIST, Guidelines for Evaluating Differential Privacy Guarantees: https://www.nist.gov/publications/guidelines-evaluating-differential-privacy-guarantees
