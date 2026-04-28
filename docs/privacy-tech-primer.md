@@ -1646,6 +1646,336 @@ c9          | p9           | 64               | 1930.8
 - 控制点从“单条像不像真数据”转向“覆盖、复杂度、质量能不能分别调”
 - 对 privacy-sensitive AI 来说，`不导出原始语料 + 先设计数据集结构` 往往比单纯仿写几条样本更重要
 
+### 16B.15 Operational Privacy Control Plane / 双预算与事件流的 Mock Data
+
+如果你已经理解了 DP、clean room、synthetic data 和 TEE，下一步最容易缺失的直觉其实不是“还有什么算法”，而是“这些能力怎么变成一个可长期运行的系统”。
+
+下面这个 mock data 故意不强调模型本身，而强调治理与运维面。
+
+协作创建时的控制面配置：
+
+```json
+{
+  "collaboration_id": "cr_20260425_ads_measurement",
+  "members": [
+    {"role": "publisher", "account": "pub-west"},
+    {"role": "advertiser", "account": "adv-central"},
+    {"role": "measurement_partner", "account": "meas-lab"}
+  ],
+  "query_template": {
+    "template_id": "campaign_lift_v4",
+    "join_keys": ["hashed_email", "device_cohort_id"],
+    "allowed_dimensions": ["campaign_id", "geo_region", "week"],
+    "blocked_dimensions": ["raw_timestamp", "full_zip"]
+  },
+  "release_controls": {
+    "aggregation_threshold": 50,
+    "differential_privacy": {
+      "epsilon": 1.2,
+      "delta": 1e-6,
+      "privacy_unit": "user_30d"
+    }
+  },
+  "budgets": {
+    "privacy_budget": {
+      "monthly_epsilon_cap": 8.0,
+      "remaining_epsilon": 5.6
+    },
+    "access_budget": {
+      "monthly_query_cap": 40,
+      "remaining_queries": 27
+    }
+  },
+  "ops": {
+    "cloudwatch_metrics": true,
+    "eventbridge_events": true,
+    "result_receivers": ["publisher", "advertiser"]
+  }
+}
+```
+
+一次分析请求：
+
+```json
+{
+  "analysis_run_id": "run_20260425_0042",
+  "template_id": "campaign_lift_v4",
+  "requested_breakdown": ["campaign_id", "week"],
+  "filters": {
+    "geo_region": ["US-WEST", "US-SOUTH"],
+    "campaign_type": ["video"]
+  },
+  "requested_metrics": [
+    "matched_reach",
+    "dp_conversion_count",
+    "dp_revenue_sum"
+  ]
+}
+```
+
+执行前的策略检查：
+
+```json
+{
+  "policy_check": "pass",
+  "reasons": [
+    "template_allowed",
+    "dimensions_allowed",
+    "remaining_privacy_budget_sufficient",
+    "remaining_access_budget_sufficient"
+  ],
+  "budget_effect": {
+    "epsilon_to_spend": 0.7,
+    "access_budget_to_spend": 1
+  }
+}
+```
+
+可发布结果：
+
+```json
+[
+  {
+    "campaign_id": "c7",
+    "week": "2026-W17",
+    "matched_reach": 1184,
+    "dp_conversion_count": 86,
+    "dp_revenue_sum": 2419.3
+  },
+  {
+    "campaign_id": "c9",
+    "week": "2026-W17",
+    "matched_reach": 903,
+    "dp_conversion_count": 64,
+    "dp_revenue_sum": 1930.8
+  }
+]
+```
+
+系统发出的事件与监控元数据：
+
+```json
+[
+  {
+    "event_type": "analysis.completed",
+    "analysis_run_id": "run_20260425_0042",
+    "delivered_to": ["publisher", "advertiser"]
+  },
+  {
+    "event_type": "budget.updated",
+    "remaining_epsilon": 4.9,
+    "remaining_queries": 26
+  },
+  {
+    "metric_namespace": "CleanRoom/Queries",
+    "query_runtime_ms": 5310,
+    "bytes_scanned_gb": 12.4
+  }
+]
+```
+
+如果分析不是简单 SQL，而是 PySpark / Spark workload，控制面还会出现算力与运行参数：
+
+```json
+{
+  "analysis_template": "clinical_outcome_model_v2",
+  "engine": "pyspark",
+  "worker_compute": {
+    "instance_type": "r6i.4xlarge",
+    "workers": 8,
+    "spark_properties": {
+      "spark.executor.memoryOverhead": "4096",
+      "spark.sql.shuffle.partitions": "800",
+      "spark.task.maxFailures": "3",
+      "spark.network.timeout": "600s"
+    }
+  },
+  "privacy_controls": {
+    "analysis_rule": "custom",
+    "approved_by_members": ["hospital_a", "pharma_b"],
+    "output_policy": "aggregate_only"
+  }
+}
+```
+
+这类参数看起来像普通数据工程配置，但在 privacy system 里很关键：
+
+- large-scale clean room 不只要“能保护”，还要“跑得完、成本可控、失败可诊断”
+- Spark 参数本身不提供隐私保证，但决定受控分析能不能承载真实生产 workload
+- 这也是为什么 2026 年的 clean room 产品越来越像 `隐私治理 + 数据工程运行时`
+
+这个例子真正要让你记住的是：
+
+- 真实系统里通常不只有 `privacy budget`，还会有 `access budget`
+- `模板约束`、`可发布维度`、`结果接收方` 也是一等控制面
+- `事件流 + 监控` 决定它能不能接进长期运营系统
+- 很多所谓“已落地的 privacy tech”本质上是 `PET + governance + observability`
+
+### 16B.16 Clinical LLM + DP / 医疗文本生成的 Mock Data
+
+2026 年关于 clinical LLM 的研究有一个很现实的信号：隐私控制不再只是“训练时加噪声”，而是开始细化到输入敏感度、分层预算、实时审计和生成过程的泄漏响应。
+
+假设医院想用 LLM 生成出院小结，但不希望模型把患者身份、诊断细节或罕见组合泄漏出去。
+
+原始请求：
+
+```json
+{
+  "request_id": "clin_20260428_019",
+  "patient_id": "p_884291",
+  "task": "discharge_summary",
+  "input_tokens": [
+    {"text": "Jane Doe", "category": "patient_identifier"},
+    {"text": "47-year-old", "category": "demographics"},
+    {"text": "HER2-positive breast cancer", "category": "diagnosis"},
+    {"text": "trastuzumab", "category": "medication"},
+    {"text": "nausea improved after dose adjustment", "category": "clinical_note"}
+  ]
+}
+```
+
+进入模型前，系统先做敏感度标注和预算分配：
+
+```json
+{
+  "privacy_unit": "patient_episode",
+  "dp_accountant": "rdp",
+  "budget_policy": {
+    "patient_identifier": {"epsilon_cap": 0.02, "noise_multiplier": 2.8},
+    "diagnosis": {"epsilon_cap": 0.08, "noise_multiplier": 1.9},
+    "demographics": {"epsilon_cap": 0.05, "noise_multiplier": 2.2},
+    "clinical_note": {"epsilon_cap": 0.12, "noise_multiplier": 1.4}
+  },
+  "sequence_policy": {
+    "max_tokens": 512,
+    "adaptive_clipping": true,
+    "risk_score_threshold": 0.72
+  }
+}
+```
+
+生成中，审计模块持续检查输出风险：
+
+```json
+[
+  {
+    "step": 64,
+    "leakage_risk_score": 0.31,
+    "action": "continue"
+  },
+  {
+    "step": 147,
+    "leakage_risk_score": 0.78,
+    "trigger": "rare_diagnosis_plus_demographic_combo",
+    "action": "increase_noise_and_generalize"
+  }
+]
+```
+
+最终发布的内容不再带可识别细节：
+
+```json
+{
+  "request_id": "clin_20260428_019",
+  "released_summary": "The patient completed treatment for a breast cancer subtype and tolerated therapy after medication adjustment. Follow-up oncology care is recommended.",
+  "privacy_spend": {
+    "epsilon_spent": 0.19,
+    "delta": 1e-6,
+    "privacy_unit": "patient_episode"
+  },
+  "audit_result": {
+    "membership_inference_risk": "low",
+    "pii_detected": false,
+    "rare_combo_generalized": true
+  }
+}
+```
+
+这个 mock data 想表达的不是“医疗 LLM 已经完全解决”，而是一个更稳的工程判断：
+
+- LLM 场景里要先定义 `privacy unit`，否则 example-level DP 很可能保护不到真实患者
+- 文本生成要考虑 token / section / patient episode 的组合消耗
+- 对高敏场景，`实时审计 + 输出泛化 + 预算记账` 比单纯声明“用了 DP”更接近可落地系统
+
+### 16B.17 Federated Credit Risk / 金融联邦风控的 Mock Data
+
+另一个 2026 年研究信号来自金融场景：联邦学习本身不能自动防止梯度泄漏，真实系统往往要在 `standard FL`、`DP-FL` 和 `HE-FL` 之间权衡准确率、计算开销、可审计性和合规要求。
+
+五家银行参与训练时，每家只保留本地贷款数据：
+
+```json
+[
+  {
+    "bank_id": "bank_a",
+    "local_rows": 180000,
+    "features": ["income_bucket", "loan_amount", "credit_score", "asset_value", "default_label"]
+  },
+  {
+    "bank_id": "bank_b",
+    "local_rows": 95000,
+    "features": ["income_bucket", "loan_amount", "credit_score", "asset_value", "default_label"]
+  }
+]
+```
+
+训练配置可以明确写成三种模式：
+
+```json
+{
+  "model": "logistic_regression_credit_risk",
+  "rounds": 5,
+  "local_epochs": 1000,
+  "modes": {
+    "standard_fl": {
+      "privacy_control": "none",
+      "expected_risk": "model_update_leakage"
+    },
+    "dp_fl": {
+      "mechanism": "gaussian",
+      "accountant": "renyi_dp",
+      "candidate_epsilon": [14.13, 8.65, 5.74],
+      "clip_norm": 1.0
+    },
+    "he_fl": {
+      "scheme": "ckks",
+      "encrypted_aggregation": true,
+      "expected_tradeoff": "higher_compute_overhead"
+    }
+  }
+}
+```
+
+一次训练回合里，客户端上传的不是原始申请人数据：
+
+```json
+{
+  "round": 3,
+  "client_update": {
+    "bank_id": "bank_a",
+    "mode": "dp_fl",
+    "clipped_gradient_norm": 1.0,
+    "noise_sigma": 1.35,
+    "epsilon_spent_to_date": 8.65
+  }
+}
+```
+
+聚合后，模型评估报告应该同时写准确率和隐私 / 成本：
+
+```json
+[
+  {"mode": "standard_fl", "accuracy": 0.91, "privacy_guarantee": "none", "compute_overhead": "low"},
+  {"mode": "dp_fl", "accuracy": 0.88, "privacy_guarantee": "formal_dp", "compute_overhead": "medium"},
+  {"mode": "he_fl", "accuracy": 0.90, "privacy_guarantee": "encrypted_aggregation", "compute_overhead": "high"}
+]
+```
+
+这类场景给初学者的关键直觉是：
+
+- FL 解决的是“数据不集中”，不自动解决“更新不泄漏”
+- DP 更像可量化的泄漏上界，HE 更像计算过程中的机密性保护
+- 金融、医疗这类 regulated domain 最终要比较的是 `risk reduction per unit of accuracy / latency / cost`
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -1973,7 +2303,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-04-24）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-04-28）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -2124,6 +2454,80 @@ NDSS 2026 的 `SNPeek` 直接把结论讲清楚了：
 - `dataset-level mechanism design`
 
 也就是把 synthetic data 做成一个可以运营、评估、约束的数据控制平面，而不只是一个采样器。
+
+### 18A.9 主流平台的控制面开始收敛：模板、双预算、监控、事件流正在成为默认配套
+
+如果把 2025-2026 这些一手资料放在一起看，一个非常值得写进 primer 的结论是：主流平台虽然底层实现不同，但控制面正在明显收敛。
+
+当前能直接从官方资料验证到的收敛点至少有四类：
+
+- `模板化查询与分析规则`：BigQuery clean rooms 的 analysis rules / query templates，Snowflake clean rooms 的 join / projection policy
+- `输出保护`：BigQuery clean rooms 与 Snowflake clean rooms 都把 differential privacy 做成平台能力
+- `双预算化`：AWS Clean Rooms 明确把 `privacy budget` 之外的 `data access budgets` 也产品化
+- `运维事件流`：AWS Clean Rooms 已提供 CloudWatch 详细监控与 EventBridge 事件发布
+
+这条信号对工程判断很重要，因为它说明：
+
+- 真正成熟的 privacy platform 不会只回答“能不能隐私增强”
+- 它还必须回答“谁能跑、还能跑几次、结果给谁、出了问题怎么观测”
+
+换句话说，到 2026 年，一个更稳妥的判断标准已经变成：
+
+- `deployable privacy tech = protected execution or protected output + governed query surface + budgets + observability hooks`
+
+### 18A.10 DP LLM 的前沿正在从“能不能做”进入“怎么规模化训练、微调、审计”
+
+2025 下半年到 2026 初，DP + LLM 这条线已经比“给训练加噪声”清晰很多。几条信号可以放在一起看：
+
+- Google Research 在 2025-05-23 讨论 `user-level differential privacy` 微调 LLM，强调当一个用户贡献多条样本时，example-level DP 不一定保护到真正的用户单位
+- 2025-09-12 的 `VaultGemma` 把 1B 参数开源模型从头用 DP 训练出来，并给出 DP scaling laws，说明隐私预算、数据预算和算力预算必须一起设计
+- 2025-11-12 的 `JAX-Privacy 1.0` 把 DP 训练进一步工具链化，目标是让 JAX / Keras 生态里的 DP-ML 更接近可复现实验和可部署工程
+- 2025 NeurIPS 的 `Sequentially Auditing Differential Privacy` 则提醒：DP 机制不能只靠参数声明，还需要黑盒审计和持续验证
+
+这条线对工程团队的启发是：
+
+- 做 LLM 隐私保护时，先问 `privacy unit` 是 sequence、example、user，还是 account / device
+- 再问预算是用在 pretraining、fine-tuning、inference aggregation，还是发布后的统计洞察
+- 最后问能否被工具链复现、被审计器验证、被产品控制面限制
+
+换句话说，DP LLM 的成熟路线正在变成：
+
+- `privacy unit definition + DP training/inference mechanism + privacy accounting + auditing + release policy`
+
+### 18A.11 Clinical LLM 的 DP 研究开始强调“分层预算 + 实时审计”
+
+2026-04-02，Scientific Reports 发表的 clinical LLM DP 框架把几个工程点放在同一个系统里讨论：上下文敏感的噪声校准、按医疗数据类别分配隐私预算、RDP accounting、实时隐私审计，以及当泄漏风险升高时触发自适应缓解。
+
+这条信号值得放进 primer，不是因为某个具体模型已经可以直接复制到生产，而是因为它说明高敏文本生成的隐私工程正在从：
+
+- `训练时做一次 DP-SGD`
+
+转向：
+
+- `输入敏感度分类`
+- `patient / episode 级 privacy unit`
+- `长序列生成中的组合预算`
+- `运行时泄漏监测`
+- `输出泛化或拒绝策略`
+
+对医疗、法务、客服质检这类高敏 LLM 场景来说，真正可落地的设计通常不是单点算法，而是 `DP mechanism + policy-aware prompting / decoding + runtime audit + release control`。
+
+### 18A.12 Regulated FL 的研究正在从“能训练”转向“能比较 DP、HE 与业务成本”
+
+2026-01-02，Scientific Reports 的联邦信用风险模型研究把 standard FL、DP-FL 和 HE-FL 放在同一个贷款审批预测任务里比较。
+
+这个案例的价值在于它非常适合帮助初学者建立 trade-off 直觉：
+
+- standard FL 准确率可以高，但不能自动提供模型更新的机密性保证
+- DP-FL 可以给出可记账的隐私预算，但会牺牲一部分准确率
+- HE-FL 可以保护聚合过程中的密文计算，但通常带来更高计算开销
+
+这也是 regulated domain 的典型判断方式：不要只问“有没有用 FL”，而要问：
+
+- `更新有没有泄漏风险`
+- `隐私预算如何累计`
+- `加密计算保护的是哪个阶段`
+- `准确率、延迟、算力成本和审计证据是否能一起交付`
 
 ## 18B. 已落地场景与可引用案例
 
@@ -2282,6 +2686,89 @@ Microsoft Learn 的技术隐私指南明确写到，organization insights 通过
 - DP 不只属于 census、学术 benchmark 或广告测量
 - 它同样适合组织分析、Copilot 使用度量、员工协作指标这类容易引发个体可识别风险的场景
 
+### 18B.10 AWS Clean Rooms：clean room 已开始接入长期运营与自动化工作流
+
+如果你想给读者一个“clean room 不只是一次性查询房间，而是长期运行系统”的案例，AWS Clean Rooms 现在已经足够典型。
+
+除了前面提到的 DP、data access budgets 和 CloudWatch 详细监控外，AWS 在 2025-07-31 还上线了 EventBridge 事件发布，在 2025-04-30 上线了 multiple results receivers。
+
+这两个点看起来不像密码学论文里的创新，但对真实落地很关键，因为它们说明 clean room 已经开始具备：
+
+- `异步工作流集成`
+- `多方结果分发`
+- `结果校验与协作透明度`
+
+对产品团队来说，这类能力的价值在于：
+
+- 你可以把 clean room 查询接进 activation、报表、告警和审批流
+- 你可以把“谁收到什么结果”做成可配置治理，而不是线下约定
+- 这让 privacy collaboration 更像生产系统，而不是专家手工操作
+
+### 18B.11 AWS Clean Rooms PySpark：隐私协作开始承载真实大规模数据工程 workload
+
+2025-03-18，AWS Clean Rooms 让 PySpark 可用于 clean room；2025-09-04 又支持 PySpark job 的 compute size 配置；2026-01-15 支持 PySpark analysis template 参数；到 2026-04-17，进一步支持为 PySpark job 配置 Spark properties，例如 memory overhead、task concurrency、network timeout。
+
+这条产品演进很值得引用，因为它说明 clean room 的落地边界已经从：
+
+- `固定 SQL 聚合`
+
+扩展到：
+
+- `可参数化分析模板`
+- `自定义 PySpark 算法`
+- `按 workload 调整算力`
+- `按 analysis 调整 Spark runtime 参数`
+
+AWS 官方给的例子包括广告测量和制药 / 医疗机构在真实世界临床试验数据上的协作分析。对 primer 来说，这个案例的重点不是 AWS 某个参数本身，而是一个更大的落地信号：
+
+- privacy tech 真正进入生产后，瓶颈经常不是密码学原语，而是 `runtime tunability`
+- 只有当性能、失败诊断、成本控制、模板审批和输出治理都能一起工作时，clean room 才能从“安全查询环境”变成“可长期使用的数据协作平台”
+
+### 18B.12 AWS Clean Rooms remote Iceberg catalog：clean room 开始贴近企业现有 lakehouse
+
+2026-02-18，AWS Clean Rooms 支持 remote Apache Iceberg REST catalogs。它的落地意义在于：协作方可以把已经在 S3 和远程 catalog 里管理的 Iceberg 表直接接进 clean room，而不是先复制表元数据或额外搭 ETL。
+
+这对 primer 很有价值，因为它说明 clean room 的生产化不只是隐私算法成熟，还包括与现有数据平台的摩擦下降：
+
+- publisher / advertiser 可以用各自已有 catalog 做广告 spend 分析
+- 数据不需要为了协作而先移动到一个新系统
+- governance surface 更接近企业已经在用的 lakehouse / catalog 管理方式
+
+换句话说，clean room 的落地能力正在从 `secure query product` 扩展到 `secure collaboration layer over existing data estate`。
+
+### 18B.13 AWS Clean Rooms incremental ID mapping：always-on measurement 需要增量身份映射
+
+2025-09-26，AWS Clean Rooms 与 AWS Entity Resolution 的集成支持 incremental ID mapping。
+
+这条更新看起来很产品化，但对隐私技术很关键：很多广告测量和受众协作不是一次性 batch join，而是每天都有新用户、新购买、新删除、新 consent 状态。
+
+如果没有增量处理，团队通常会被迫：
+
+- 重跑完整 ID mapping
+- 复制更多中间数据
+- 让协作结果滞后
+- 增加重复访问数据的次数
+
+增量 ID mapping 把 clean room 更明确地推向 always-on collaboration：
+
+- measurement partner 可以持续维护离线购买数据
+- advertiser / publisher 可以更新 campaign outcome 分析
+- privacy controls 仍然留在 collaboration 内，而不是散落到外部手工流程
+
+### 18B.14 AWS Clean Rooms change requests：协作关系本身也进入治理面
+
+2025-12-18，AWS Clean Rooms 支持对已有 collaboration 发起 change request，包括增加成员、修改成员能力、调整 auto-approval 设置，并要求成员审批和记录 change history。
+
+这条案例补足了一个常被忽略的点：隐私系统保护的不只是数据表和查询，也保护协作关系的变化。
+
+典型例子是 publisher 和 advertiser 已经建好 clean room 后，advertiser 想把 marketing agency 加为结果接收方。技术上这不是新算法，但治理上非常关键：
+
+- 新成员不能绕过既有隐私控制
+- 结果接收权需要被显式审批
+- 成员变化需要可追溯
+
+对企业落地来说，这类 capability 往往决定 clean room 能不能长期运行，因为真实业务协作里的成员、角色、数据提供方和结果接收方都会变化。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -2326,6 +2813,17 @@ Microsoft Learn 的技术隐私指南明确写到，organization insights 通过
 18. Snowflake Documentation, Snowflake Data Clean Rooms overview
 19. Microsoft Learn, Viva Insights technical privacy guide
 20. Google Research, Designing synthetic datasets for the real world
+21. Snowflake Documentation, Differential privacy in Snowflake Data Clean Rooms
+22. AWS Clean Rooms, multiple results receivers
+23. AWS Clean Rooms, EventBridge events
+24. Google Research, Differentially Private Insights into AI Use
+25. Google Research, Reasoning-Driven Synthetic Data Generation and Evaluation
+26. Google Research, VaultGemma
+27. Google Research, Differentially private machine learning at scale with JAX-Privacy
+28. AWS Clean Rooms, configurable Spark properties for PySpark
+29. AWS Clean Rooms, remote Apache Iceberg REST catalogs
+30. AWS Clean Rooms, incremental ID mapping with AWS Entity Resolution
+31. AWS Clean Rooms, change requests for existing collaborations
 
 ### 论文与研究资料
 
@@ -2344,6 +2842,12 @@ Microsoft Learn 的技术隐私指南明确写到，organization insights 通过
 13. Google Research, Sequentially Auditing Differential Privacy
 14. AWS Clean Rooms, Privacy-enhanced synthetic dataset generation
 15. Google Research / TMLR, Reasoning-Driven Synthetic Data Generation and Evaluation
+16. Google Research, Differentially Private Insights into AI Use
+17. Google Research, Fine-tuning LLMs with user-level differential privacy
+18. Google Research, Scaling Laws for Differentially Private Language Models
+19. Google Research, JAX-Privacy: A library for differentially private machine learning
+20. Scientific Reports, An adaptive differential privacy framework for clinical LLMs
+21. Scientific Reports, Privacy-preserving federated credit risk models
 
 ## 20. 参考链接
 
@@ -2371,6 +2875,9 @@ Microsoft Learn 的技术隐私指南明确写到，organization insights 通过
 - Snowflake Data Clean Rooms overview: https://docs.snowflake.com/en/user-guide/cleanrooms/getting-started
 - Microsoft Learn, Viva Insights technical privacy guide: https://learn.microsoft.com/en-us/viva/insights/advanced/privacy/privacy
 - Google Research, Designing synthetic datasets for the real world: https://research.google/blog/designing-synthetic-datasets-for-the-real-world-mechanism-design-and-reasoning-from-first-principles/
+- Snowflake, Differential privacy in Snowflake Data Clean Rooms: https://docs.snowflake.com/en/user-guide/cleanrooms/differential-privacy.html
+- AWS Clean Rooms, multiple results receivers: https://aws.amazon.com/about-aws/whats-new/2025/04/aws-clean-rooms-multiple-results-receivers-collaboration/
+- AWS Clean Rooms, EventBridge events: https://aws.amazon.com/about-aws/whats-new/2025/07/aws-clean-rooms-publishes-events-amazon-eventbridge/
 - Google Research, Practical Secure Aggregation for Federated Learning on User-Held Data: https://research.google/pubs/practical-secure-aggregation-for-federated-learning-on-user-held-data/
 - Google Research, Confidential Federated Computations: https://research.google/pubs/confidential-federated-computations/
 - Google Research, Privacy-Preserving Secure Cardinality and Frequency Estimation: https://research.google/pubs/privacy-preserving-secure-cardinality-and-frequency-estimation/
@@ -2380,8 +2887,23 @@ Microsoft Learn 的技术隐私指南明确写到，organization insights 通过
 - Google Research, Toward provably private insights into AI use: https://research.google/blog/toward-provably-private-insights-into-ai-use/
 - Google Research, Generating synthetic data with differentially private LLM inference: https://research.google/blog/generating-synthetic-data-with-differentially-private-llm-inference/
 - Google Research, Beyond billion-parameter burdens: Unlocking data synthesis with a conditional generator: https://research.google/blog/beyond-billion-parameter-burdens-unlocking-data-synthesis-with-a-conditional-generator/
+- Google Research, Differentially Private Insights into AI Use: https://research.google/pubs/differentially-private-insights-into-ai-use/
 - Google Research, Sequentially Auditing Differential Privacy: https://research.google/pubs/sequentially-auditing-differential-privacy/
 - Google Research, SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs: https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/
+- Google Research, Reasoning-Driven Synthetic Data Generation and Evaluation: https://research.google/pubs/reasoning-driven-synthetic-data-generation-and-evaluation/
 - Google Research / TMLR, Reasoning-Driven Synthetic Data Generation and Evaluation: https://openreview.net/forum?id=QtSI0l2Xsb
+- Google Research, VaultGemma: https://research.google/blog/vaultgemma-the-worlds-most-capable-differentially-private-llm/
+- Google Research, Fine-tuning LLMs with user-level differential privacy: https://research.google/blog/fine-tuning-llms-with-user-level-differential-privacy/
+- Google Research, Differentially private machine learning at scale with JAX-Privacy: https://research.google/blog/differentially-private-machine-learning-at-scale-with-jax-privacy/
+- Google DeepMind, JAX-Privacy: https://github.com/google-deepmind/jax_privacy
+- arXiv, Scaling Laws for Differentially Private Language Models: https://arxiv.org/abs/2501.18914
+- arXiv, JAX-Privacy: A library for differentially private machine learning: https://arxiv.org/abs/2602.17861
+- AWS Clean Rooms, configurable Spark properties for PySpark: https://aws.amazon.com/about-aws/whats-new/2026/04/aws-clean-rooms-configurable-properties-pyspark/
+- AWS Clean Rooms API, WorkerComputeConfigurationProperties: https://docs.aws.amazon.com/clean-rooms/latest/apireference/API_WorkerComputeConfigurationProperties.html
+- AWS Clean Rooms, remote Apache Iceberg REST catalogs: https://aws.amazon.com/about-aws/whats-new/2026/02/aws-clean-rooms-remote-iceberg-catalogs/
+- AWS Clean Rooms, incremental ID mapping with AWS Entity Resolution: https://aws.amazon.com/about-aws/whats-new/2025/09/aws-clean-rooms-incremental-id-mapping-entity-resolution/
+- AWS Clean Rooms, change requests for existing collaborations: https://aws.amazon.com/about-aws/whats-new/2025/12/clean-rooms-change-requests-existing-collaborations/
+- Scientific Reports, An adaptive differential privacy framework for clinical LLMs: https://www.nature.com/articles/s41598-026-45883-6
+- Scientific Reports, Privacy-preserving federated credit risk models: https://www.nature.com/articles/s41598-025-34536-9
 - NIST, De-Identification of Personal Information: https://www.nist.gov/publications/de-identification-personal-information
 - NIST, Guidelines for Evaluating Differential Privacy Guarantees: https://www.nist.gov/publications/guidelines-evaluating-differential-privacy-guarantees
