@@ -1,7 +1,7 @@
 # On-Device Measurement RFC
 
-状态: Draft  
-最后更新: 2026-04-29  
+状态: Draft<br>
+最后更新: 2026-04-30<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -13,6 +13,8 @@
 1. `on-device measurement` 不等于“设备上算个 token 再上传”。
 2. 如果要支撑 personalized optimization，就必须保留服务端生成的 `server_request_id` 这类 request-scoped join key，但它只能存在于严格受控的数据面。
 3. MMP 的 SRN 流程仍然是现实世界的主协议形态，因此系统必须围绕 `MMP Ask -> Ad Network Claim -> MMP Confirm` 设计，而不是试图绕过它。
+
+2026-04-30 追加的 ODM / ODC HAR 逆向把第 1 点进一步具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。
 
 本文刻意兼顾生产实用性：
 
@@ -253,6 +255,45 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 - 端上 `impression` / `click` / `first_open` / `purchase` 的来源级别，应该进入 policy；
 - `artifact_auth_level`、`event_provenance`、`sdk_build_fingerprint` 这类字段值得成为正式 contract，而不是埋在风控旁路里。
 
+### 5.13 ODC / ODM 逆向证据把 OPRF / PSM 放回主链路
+
+2026-04-14 的 Google ODC / ODM HAR 样本，以及 2026-04-30 的 wire-format 逆向整理，给了一个比公开产品文档更具体的实现信号。样本来自 `com.underdogsports.fantasy`，SDK 为 `odm-sdk-i-v3.2.0`，`source=aaps`。它不是官方 SDK 文档，但足以改变本 RFC 对 Google ODM 兼容层的默认模型。
+
+可直接从 HAR 确认的链路是：
+
+```text
+GET  /odm/config
+POST /odm/psm
+POST /odm/validate
+```
+
+关键观察：
+
+- `/odm/config` 返回 `matching_id`、`bucketed_date`、`prefix_length=22`、`extension_data`；其中 `extension_data` 在后续请求里以 `odmed` 原样复用。
+- `/odm/psm` request 中的 `psm_request` 解码后为 50 bytes，包含 3-byte prefix-like blob、33-byte compressed EC point、`prefix_length=22` 参数和 `mode=35`。
+- `/odm/psm` response 解码后约 123KB，核心 payload 是 `1009` 条 candidate rows，而不是一个单值 membership result。
+- response header 中有两个 33-byte compressed EC points，第一个与 request 里的 blinded point 一致，第二个很像服务端 OPRF evaluation 或 VOPRF proof element。
+- `/odm/validate` body 是 `mvs + odmed`，response 返回渠道化 measurement values：`mv_ga4f` 与 `mv_aaps`。
+
+因此，Google ODM 的现实路径不应再被描述成“端上算一个 opaque token 后直接上传”。更贴近 HAR 的模型是：
+
+```text
+Config 下发上下文
+  -> Client 生成 prefix bucket + EC blinded query
+  -> Server 对 blinded point 做 OPRF/PSM 评估，并返回该 prefix bucket 下的候选记录集合
+  -> Client 本地 unblind / derive key / filter or decrypt candidate rows
+  -> Client 生成 mvs
+  -> Validate 派生 mv_ga4f / mv_aaps
+  -> SDK 暴露 aggregateConversionInfo / odm_info 给后续归因或上报链路
+```
+
+这也修正了几条旧判断：
+
+- `matching_id` 不是 `/psm` 成功后签发；它在 `/config` 阶段已返回，更像 opaque context / cache key / correlation key。
+- `tfo=1776212580` 按 Unix epoch 秒解释接近抓包本地时间，不像 “time from first open” duration。
+- Paillier / PIR 仍可作为更强隐私设计方案，但当前 HAR 没有 Paillier selection vector 或 2048-bit ciphertext 的形态；主链路更像 `OPRF + prefix bucket candidate retrieval + client-side local filtering`。
+- `boot_time` 仍然可能参与本地 material 或 `mvs` 构造，但当前 HAR 中没有明文字段证明它进入 ODM PSM 主链路。
+
 ## 6. 总体架构
 
 ### 6.1 逻辑平面
@@ -353,6 +394,26 @@ SDK 生成两类对象：
   - 发往 ad network confidential endpoint
 - `ODMInfoEnvelope`
   - 缓存在 app 或 advertiser server，并透传给 MMP / AAP downstream event
+
+### 7.4B Observed Google ODM / ODC Construction Flow
+
+Google ODM / ODC 的逆向样本显示，真实 SDK 可以把 Step D 拆成一个带服务端辅助的本地匹配流程，而不是纯本地 artifact 构造：
+
+1. `GET /odm/config`
+   - SDK 拉取 `prefix_length`、`bucketed_date`、`extension_data/odmed` 和 `matching_id`。
+2. `POST /odm/psm`
+   - SDK 发送 `odmed` 与 `psm_request`。
+   - `psm_request` 包含 prefix bucket、compressed EC blinded point、协议参数和 mode id。
+   - 服务端返回 OPRF-like header 与该 prefix bucket 下的 candidate set。
+3. Local candidate processing
+   - SDK 验证 echoed blinded point。
+   - SDK unblind server evaluation，派生 row key。
+   - SDK 扫描候选行，使用 tag / encrypted package / row meta 完成本地过滤或解密。
+4. `POST /odm/validate`
+   - SDK 提交 opaque `mvs` 与 `odmed`。
+   - 服务端返回 `mv_ga4f`、`mv_aaps` 等渠道化 measurement values。
+
+这意味着本 RFC 的 `OnDeviceMeasurementArtifact` 与 `ODMInfoEnvelope` 应被理解为逻辑对象：具体产品实现可以在生成 envelope 之前先完成一次 `config -> psm -> validate` 子状态机。协议治理上仍然要约束最终外发对象的 TTL、task binding、replay 与用途绑定，但实现层需要给 OPRF/PSM 中间态留出清晰边界。
 
 ### 7.5 Step E: MMP Ask
 
@@ -500,6 +561,54 @@ message ODMInfoEnvelope {
 - `odm_info` `MUST` 是 opaque string。
 - `odm_info` `MUST NOT` 作为 durable user ID 使用。
 - `odm_info` `MUST` 绑定 `measurement_task_id` 和 expiry。
+
+### 8.4B Observed Google ODM Wire Objects
+
+以下对象不是本 RFC 要求外部 partner 直接实现的公开 schema，而是 2026-04-14 HAR 样本中可解析出的 Google ODM / ODC 内部 wire shape。它们用于校准兼容层和威胁模型。
+
+```proto
+message ObservedOdmConfig {
+  bytes matching_id = 1;      // decoded len=32; returned by /odm/config
+  string bucketed_date = 2;   // observed: 2026-04-13
+  uint32 prefix_length = 3;   // observed: 22
+  bytes extension_data = 4;   // decoded len=16; reused as odmed
+}
+
+message ObservedPsmRequest {
+  bytes query_material = 1;   // nested prefix + compressed EC point
+  bytes params = 2;           // includes prefix_length=22
+  uint32 mode = 3;            // observed: 35
+}
+
+message ObservedPsmQueryMaterial {
+  bytes prefix_bucket = 1;    // observed len=3; fits 22-bit prefix
+  bytes blinded_point = 2;    // observed len=33; compressed EC point
+}
+
+message ObservedPsmResponseCore {
+  bytes ec_header = 1;        // two 33-byte compressed EC points
+  uint32 mode = 4;            // observed: 35
+  bytes candidate_payload = 5;// observed len=123098
+  bytes crypto_params = 7;    // mode=35, key_or_curve_size=256, scheme=2
+}
+
+message ObservedCandidatePayload {
+  repeated bytes quick_tag = 1;       // 1009 items x 1 byte
+  repeated bytes crypto_package = 2;  // 1009 items x 77 bytes
+  repeated bytes row_meta = 3;        // 1009 items x 38 bytes
+}
+
+message ObservedValidateRequest {
+  bytes mvs = 1;              // opaque MVS material, decoded envelope len=63
+  bytes odmed = 2;            // same as /odm/config extension_data
+}
+```
+
+Compatibility guidance:
+
+- Treat `matching_id`, `odmed`, `mvs`, `mv_ga4f`, `mv_aaps`, and final `odm_info` as opaque protocol artifacts unless the SDK owner publishes a stable schema.
+- Do not persist `matching_id` or `odmed` as durable user identity. Even if they are stable within a context, their safe interpretation is task-bound control material.
+- Model the PSM stage as candidate retrieval plus local filtering, not as server-returned ground truth. Attribution truth should still be represented by explicit claim / confirm state.
 
 ### 8.5 MmpAskRequest
 
@@ -1279,6 +1388,13 @@ Google 的 [request/response spec](https://developers.google.com/app-conversion-
 - ICM 的 granular event-level view 位于 AAP UI，而不是 Google Ads reporting UI；
 - ODM 对位于 `EEA`、`UK`、`Switzerland` 的用户 inactive，因此协议必须区分 `feature_not_active_by_region`、`feature_not_integrated`、`claim_not_found` 这三类完全不同的状态。
 
+2026-04-14 ODM HAR 逆向进一步说明，Google SDK 的 `odm_info` 兼容路径背后很可能先经历了 `config -> psm -> validate` 子流程。对本 RFC 最重要的兼容含义是：
+
+- 外部 API 里的 `odm_info` 是最终 bridge object，不等同于 `/odm/config.extension_data`、`/odm/psm.psm_request`、`/odm/validate.mvs` 中任何单个内部字段。
+- `matching_id` 在 `/config` 阶段返回，不能被建模为 PSM 命中后才产生的 attribution result。
+- `/validate` 返回的 `mv_ga4f` 与 `mv_aaps` 更像渠道化 measurement values，应进入 compatibility egress cache，而不是直接进入 optimization plane。
+- 如果 partner 只看到 accepted / empty response，仍然不能据此推出 PSM 是否命中、MVS 是否通过、或 MMP winner 是否确认。
+
 因此推荐四层拆分：
 
 1. `compatibility egress cache`
@@ -1668,6 +1784,8 @@ confidential plane `SHOULD` 保留：
 - iOS 侧优先复用 [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 或 Firebase ODM 路线。
 - 用 `Protobuf + buf` 定义 wire schema。
 - 本地仅保留短期加密缓存，不保留长期稳定 token。
+- 如果自研 Google-compatible ODM 子流程，默认按 `OPRF/VOPRF-style PSM + prefix bucket candidate retrieval + local filtering` 建模；不要把 Paillier/PIR 当成当前 HAR 已证实的主路径。
+- SDK 状态机需要显式记录 `config_loaded`、`psm_candidate_set_received`、`local_match_evaluated`、`mvs_validated`，而不是只记录一个布尔 `odm_info_generated`。
 
 ### 16.2 confidential processing
 
@@ -1733,6 +1851,10 @@ confidential plane `SHOULD` 保留：
 
 - install / purchase / ROAS 的 observation window 分别取多少？
 - `boot_time`、`ip`、reinstall hint 的派生策略具体怎么版本化？
+- Google ODM 的 3-byte `psm_request` blob 是否严格等于 `high_22(hash(local_material))`，以及 prefix 拼接里是否包含 `bucketed_date`、`odmed`、app/source context？
+- `/odm/psm` 使用的具体曲线是 P-256、secp256k1 还是其他 curve，response 第二个 EC point 是否就是 `kA` 或 VOPRF proof element？
+- `mvs` 是否由命中 candidate row 派生，`mv_ga4f` / `mv_aaps` 与最终 `aggregateConversionInfo` / `odm_info` 的包装边界在哪里？
+- `matching_id` 的实际消费点是本地缓存、dedupe、report correlation，还是未捕获的后续链路？
 - confirm 缺失时是否允许 provisional label 进入某些在线系统？
 - 多归因场景里 winner-only 与 fractional-credit 的默认策略是什么？
 - 各 region 是否允许 event-level partner-facing reporting？
@@ -1784,6 +1906,7 @@ confidential plane `SHOULD` 保留：
 8. [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model)
 9. [Adjust self-attributing callbacks](https://help.adjust.com/en/article/self-attributing-network-callbacks)
 10. [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743)
+11. Google ODC / ODM On-Device Measurement 技术逆向与实现模型，2026-04-30，基于 2026-04-14 HAR 样本。
 
 ### 20.4 Engineering Components
 

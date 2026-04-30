@@ -61,6 +61,8 @@ Google 在 on-device measurement 方向的公开技术路线，不是单一算�
 - 其底层思路与 Google Research 在 federated analytics、DP、confidential federated computations 以及 measurement sketching/MPC 方向的研究高度一致。
 - 不能把单篇论文直接等同为该产品实现；更合理的做法是将它们视为同一技术路线下的研究与产品化证据。
 
+2026-04-30 补充的 ODM / ODC HAR 逆向把这一判断向前推进了一步：在 `odm-sdk-i-v3.2.0` 样本中，`/odm/psm` 的 33-byte EC point、22-bit prefix 参数、双 EC point response header 与 1009-row candidate payload，都强烈支持 `OPRF/VOPRF-style PSM + prefix-bucket candidate retrieval + client-side local filtering` 作为产品链路中的一个核心子流程。但它仍应被标注为逆向证据，而不是官方 API 承诺。
+
 ## 4. 论文与资料清单
 
 ### 4.1 A 级：直接相关论文与资料
@@ -459,6 +461,32 @@ Google 在 GitHub 上公开了 `google/private-membership` 仓库，并将其定
 
 - 这说明 Google 不只是研究“能不能做私密求交”，而是在优化真正可部署的 measurement 协议。
 
+#### 5A.2.3 2026-04-14 ODM HAR 逆向给出 OPRF/PSM 主链路信号
+
+除公开论文与开源仓库外，2026-04-14 的 Google ODC / ODM HAR 样本提供了一组更贴近产品实现的 wire-format 证据。样本 App 为 `com.underdogsports.fantasy`，SDK 为 `odm-sdk-i-v3.2.0`，`source=aaps`。这不是官方文档，因此应独立标为“逆向证据”，但它对协议推断很关键。
+
+可直接从 HAR 确认：
+
+- 请求顺序为 `/odm/config -> /odm/psm -> /odm/validate`。
+- `/odm/config` 返回 `matching_id`、`bucketed_date`、`prefix_length=22`、`extension_data`，其中 `extension_data` 在后续请求里以 `odmed` 原样复用。
+- `/odm/psm` request 的 `psm_request` 解码后为 50 bytes，含 3-byte prefix-like blob、33-byte compressed EC point、`prefix_length=22` 和 `mode=35`。
+- `/odm/psm` response 解码后约 123KB，核心 payload 可拆成 `1009` 条候选记录，每条包含 1-byte tag、77-byte opaque crypto package、38-byte row metadata。
+- response header 含两个 33-byte compressed EC points；第一个与 request 中的 blinded point 一致，第二个很像服务端 OPRF evaluation 或 VOPRF proof element。
+- `/odm/validate` 接收 `mvs + odmed`，返回 `mv_ga4f` 与 `mv_aaps`。
+
+最自然的解释是：
+
+```text
+Config context
+  -> client sends prefix bucket + EC blinded query
+  -> server evaluates OPRF/PSM and returns candidate rows for that prefix bucket
+  -> client unblinds, derives row key, locally filters/decrypts candidates
+  -> client builds mvs
+  -> validate derives channel-specific measurement values
+```
+
+这让 PSM 不再只是“Google 具备相关技术能力”的泛化推断，而是成为 ODM/ODC 产品链路的强候选主协议。不过，仍需保持证据边界：HAR 支持 OPRF/VOPRF-style PSM 与 prefix-bucket candidate retrieval；它没有直接支持 Paillier-PIR one-hot selection vector，也没有证明 `boot_time` 已进入 PSM 主链路。
+
 ### 5A.3 它和 on-device measurement 的关系
 
 这一点需要谨慎区分“直接证据”和“工程推断”。
@@ -468,18 +496,21 @@ Google 在 GitHub 上公开了 `google/private-membership` 仓库，并将其定
 - Google 公开具备 PSM 技术与实现。
 - Google 公开具备 PSI / PJC / PI-Sum 方向的研究与开源实现。
 - Google Research 论文明确把 PJC / PI-Sum 用于 ads conversion measurement。
+- 逆向 HAR 可确认 Google ODM / ODC SDK 存在 `/config -> /psm -> /validate` 链路，且 `/psm` wire shape 与 EC-OPRF / VOPRF-style PSM 高度吻合。
 
 #### 合理推断
 
 - 推断：如果一个 on-device measurement 系统需要在设备侧判断某个 identifier 是否属于服务端集合，PSM 是很自然的候选原语。
 - 推断：如果一个系统需要做 conversion attribution、aggregate conversion counting 或匹配后求和，PJC / PI-Sum 比纯 PSM 更合适。
 - 推断：Google 的 on-device measurement 产品在某些步骤中可能使用 membership-style 查询，在另一些步骤中使用 join-and-compute 风格的协议。
+- 推断：当前 ODM / ODC 样本更像 `OPRF + prefix bucket candidate retrieval + client-side local filtering`，而不是服务端直接返回最终 attribution truth。
 
 #### 目前不能直接确认的内容
 
 - 不能确认 Google Ads on-device conversion measurement 是否直接使用 `google/private-membership` 仓库中的 PSM 实现。
-- 不能确认产品实现中究竟采用 PSM、PSI、PJC 还是多种协议组合。
+- 不能确认所有产品线和地区是否都采用同一套 OPRF/PSM flow。
 - 不能确认设备侧与服务端各自承担多少密码学计算。
+- 不能确认 Paillier / PIR 是否在其他路径中存在；当前 HAR 不支持把它写成主链路结论。
 
 ### 5A.4 对参考架构的启发
 
@@ -858,12 +889,14 @@ MMP 可能通过大量查询推断：
 - 推断：Google 的 on-device measurement 产品大概率共享了其 federated analytics / DP / confidential computation 的基础设施思想。
 - 推断：对于 analytics 类 measurement，Mayfly 所代表的设备侧窗口化 + streaming DP 路线是非常贴近的参考实现。
 - 推断：对于 reach/frequency 或跨方 measurement，Google 更可能采用 sketch + MPC/HE + DP 的组合，而不是简单的明文上报。
+- 推断：结合 2026-04-14 ODM HAR，iOS App conversion / AAP 路径中的某个子流程很可能采用 OPRF/VOPRF-style PSM：客户端暴露 prefix bucket 和 blinded EC point，服务端返回该 bucket 的候选行，客户端本地完成精确过滤或解密。
 
 ### 7.3 不能从公开资料直接确认的内容
 
-- 不能确认 Google Ads on-device conversion measurement 的内部协议细节。
+- 仅凭公开资料不能确认 Google Ads on-device conversion measurement 的内部协议细节；逆向 HAR 提供了强候选模型，但仍不是官方承诺。
 - 不能确认其是否直接复用某一篇论文的代码实现。
 - 不能确认它在所有国家和产品线中使用相同机制。
+- 不能把 Paillier / PIR、boot time 输入、或 `matching_id` 的最终消费点写成当前 HAR 已证实事实。
 
 ## 8. 对你们项目的落地建议
 
@@ -913,8 +946,10 @@ MMP 可能通过大量查询推断：
 
 以下问题在公开资料中仍不透明，值得继续研究：
 
-- Google Ads on-device conversion measurement 的具体密码学协议是什么。
+- Google Ads on-device conversion measurement 是否在所有路径中都使用 OPRF/VOPRF-style PSM，还是只在特定 source / SDK / region 下使用。
 - `aggregateConversionInfo` 的编码结构、可链接性边界、重放防护与生命周期。
+- `/odm/validate.mvs` 与 `mv_ga4f`、`mv_aaps`、最终 `odm_info` 的包装关系。
+- `/odm/psm` 使用的具体曲线、proof 结构、candidate row 加密格式，以及 3-byte prefix 的 hash 输入。
 - 产品级系统如何做 privacy budget accounting 与 abuse prevention。
 - 在 DP、MPC、TEE 三者之间，Google 在不同 measurement 场景下如何做成本与精度折中。
 - 区域合规策略如何映射到底层技术开关。
@@ -932,6 +967,7 @@ MMP 可能通过大量查询推断：
 7. Private Intersection-Sum Protocols with Applications to Attributing Aggregate Ad Conversions. Google Research, 2020.
 8. Private Join and Compute from PIR with Default. Google Research, 2021.
 9. google/private-membership. Google GitHub repository.
+10. Google ODC / ODM On-Device Measurement 技术逆向与实现模型，2026-04-30，基于 2026-04-14 HAR 样本。
 
 ### 10.2 强相关基础设施
 
