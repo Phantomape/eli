@@ -2,1310 +2,1703 @@
 
 状态: Draft  
 最后更新: 2026-04-29  
-适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, ML Platform, SDK, Data Infra
+适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
-## 1. 目的
+## 1. 摘要
 
-本文把 `on-device measurement` 从概念整理成一份可评审、可实现、可演进的 RFC，面向广告场景，覆盖：
+本文把 `on-device measurement` 整理成一份面向广告场景的工程 RFC。目标不是解释几个公式，而是定义一套从端上采集、MMP/SRN 协同、服务端 confidential join、request-level optimization、aggregate reporting 到后续 DP 加固的完整规范。
 
-- 端上采集与本地最小化处理
-- MMP/SRN 协议协同
-- 服务端 confidential join
-- request-level optimization label 回流
-- aggregate reporting 发布
-- 后续 DP、DAP/VDAF、PJC 等升级路径
+核心结论只有三条：
 
-这不是一个 toy 方案。目标是既要保护隐私，也要保住生产可用性，尤其是：
+1. `on-device measurement` 不等于“设备上算个 token 再上传”。
+2. 如果要支撑 personalized optimization，就必须保留服务端生成的 `server_request_id` 这类 request-scoped join key，但它只能存在于严格受控的数据面。
+3. MMP 的 SRN 流程仍然是现实世界的主协议形态，因此系统必须围绕 `MMP Ask -> Ad Network Claim -> MMP Confirm` 设计，而不是试图绕过它。
 
-- 广告主 App 内嵌 ad network SDK；
-- ad network SDK 在设备侧能看到一部分敏感或半敏感信号，例如 `boot_time`、`ip`、`device_uptime_ms`、网络状态、时区、重装痕迹等；
-- MMP 仍然走 SRN 形态的协议，即 `MMP Ask -> Ad Network Claim -> MMP Confirm`；
-- ad network 服务端仍然需要足够细粒度的信息做个性化优化、训练样本构造、反作弊、reconciliation 和报表。
+本文刻意兼顾生产实用性：
 
-## 2. 非目标
+- 不使用 toy 算法替代生产组件；
+- 优先复用公开可用的 SDK、TEE/CVM、DP、审计和训练库；
+- 在能放松的地方明确放松，例如 Phase 1 不强制 optimization plane 上 DP；
+- 在不能放松的地方明确收紧，例如不允许把 `odm_info` 演化为长期标识符。
 
-本文不试图：
+## 2. 背景与问题定义
 
-- 第一天就消灭所有服务端信任；
-- 要求所有输出面都立刻上严格 DP；
-- 替代 MMP 的产品能力；
-- 把所有优化问题都改造成 federated learning；
-- 定义一个适配所有 ad network 的世界标准。
+在现代移动广告里，存在四个同时成立的现实：
 
-本文的目标是先定义一个现实可落地、边界清晰、能继续加固的系统。
+1. 广告主 App 内嵌 ad network SDK，SDK 在设备侧能观察到 impression、click、install、purchase，以及 `boot_time`、原始 `ip`、网络类型、时区、设备 uptime、重装痕迹等敏感或半敏感信号。
+2. MMP / AAP 与 Self-Reporting Network（SRN）的主协议仍然是“先检测 install，再向广告网络查询，再由网络 claim，再由 MMP confirm”。
+3. 广告网络为了持续优化出价、排序、反作弊和预算分配，仍然需要 request-level 的监督信号，而不仅仅是 aggregate count。
+4. 隐私边界必须比传统 click-ID 或 device-ID 时代更强，尤其不能把原始高敏感信号直接沉入普通数仓。
 
-## 3. 一句话定义
+因此，本文讨论的 `on-device measurement` 不是“纯端上闭环”。更准确地说，它是一个三层系统：
 
-`on-device measurement` 不是“本地 hash 一下再上传”。  
-它是一种三层架构：
+- 设备侧保留原始敏感观察；
+- 设备侧只上送 task-bound、TTL-bound、contribution-bound 的 artifact；
+- 服务端只在 confidential boundary 内完成验证、join、label 物化，再分层释放到 optimization plane 和 aggregate reporting plane。
 
-1. 原始用户事件和敏感设备信号优先留在设备侧；
-2. 设备只上传任务受限、生命周期受限、贡献受限的 artifact；
-3. 服务端只在受控边界内完成 join、label 构造、聚合和对账，再向不同下游释放不同粒度的数据。
+## 3. 设计目标与非目标
 
-### 3.1 工作原理的最小心智模型
+### 3.1 目标
 
-可以把整个系统理解成四句话：
+- 定义广告场景下可落地的 on-device measurement 端到端协议。
+- 支撑 MMP SRN 协议协同，而非脱离 MMP 单独设计。
+- 支撑 request-level personalized optimization，而不只是 aggregate measurement。
+- 定义字段级 schema、mock payload、生命周期、TTL、anti-replay 和治理边界。
+- 为后续 DAP/VDAF、DP、PJC/PSI、verifiable workflow 留出升级路径。
 
-1. 广告请求发生时，ad network 服务端先生成一次性的 `server_request_id`。
-2. 广告主 App 内的 ad network SDK 在设备侧观察 impression、click、install、purchase，以及 `boot_time`、`ip` 这类敏感信号，但原始值尽量不出端。
-3. 设备侧把这些原始观察压缩成两个对象：一个给 ad network confidential backend 的 `OnDeviceMeasurementArtifact`，一个给 MMP/SRN 流程透传的 `ODMInfoEnvelope`。
-4. 服务端收到 MMP 的 `Ask -> Claim -> Confirm` 结果后，只在 confidential plane 里把 `AdRequestContext`、artifact、confirm 结果 join 成 request-level label，再分别喂给 optimization plane 和 aggregate reporting plane。
+### 3.2 非目标
 
-### 3.2 为什么它比“本地算个 token 再上传”更复杂
+- 第一天就把所有服务端信任替换成 MPC。
+- 第一天就让 optimization plane 满足严格 user-level DP。
+- 把所有模型训练改造成 federated learning。
+- 试图定义适配所有 ad network、所有 MMP、所有司法辖区的唯一通用标准。
 
-真正的 on-device measurement 至少同时解决四个问题：
+## 4. 最小心智模型
 
-- 设备侧最小化：原始敏感信号不应该直接上送。
-- 协议桥接：MMP/SRN 仍然要求 `Ask -> Claim -> Confirm` 这样的跨方流程。
-- 优化可用性：服务端仍然必须拿到 request-level label，才能训练出能用的投放模型。
-- 发布治理：最终对外报表又必须和 request-level 明细彻底分层。
+可以用八步理解整个系统：
 
-如果只做“本地 token”，通常会在三个地方失败：
-
-- token 没有 task binding，最终演化成跨请求可复用 ID；
-- token 无法支撑 MMP/SRN claim/replay/confirm；
-- token 只能做 measurement，做不了 request-level optimization。
-
-### 3.3 端到端数据流的文字图
-
-按一次 install 的真实生产路径，数据流可以写成：
-
-1. `Ad Request`
-   ad network backend 生成 `server_request_id=int64`，并把 campaign、creative、region、consent 等上下文写入 `AdRequestContext`。
-2. `Ad Response / Exposure`
-   SDK 在端上记录 impression/click，并拿到最小必要 request metadata，例如 `server_request_id`、`auction_id`、`ad_network_id`。
-3. `On-Device Measurement`
-   SDK 结合本地 install/first_open 事件，以及本地敏感信号，生成：
-   - `OnDeviceMeasurementArtifact`
-   - `ODMInfoEnvelope`
-4. `MMP Ask`
-   MMP 观察到 install 后，携带常规 device query 和 `odm_info` 向 ad network 发起 ask。
-5. `Ad Network Claim`
-   ad network 在 confidential plane 内验证 `odm_info`、task binding、TTL、anti-replay、policy gate，返回 `claim_yes/no` 和短期 `claim_token`。
-6. `MMP Confirm`
-   MMP 完成 winner selection 后回传 confirm。到这里，SRN 协议才算闭环。
-7. `Confidential Join`
-   ad network 把 `AdRequestContext + Artifact + Confirm` join 成：
+1. 广告请求发生时，ad network backend 生成一次性的 `server_request_id:int64`。
+2. ad network SDK 在设备侧观察 impression、click、install、purchase，以及本地敏感信号。
+3. 设备侧把原始观察压缩成两个对象：
+   - 发给 ad network confidential backend 的 `OnDeviceMeasurementArtifact`
+   - 透传给 MMP/AAP 的 `ODMInfoEnvelope`
+4. MMP 观察到 install 或 event 后，发起 `MmpAskRequest`。
+5. ad network 在 confidential plane 内验证 artifact、task binding、TTL、replay，再返回 `ClaimResponse`。
+6. MMP 完成 winner 选择后，再回传 `MmpConfirmRequest`。
+7. ad network 在 confidential plane 中把 `AdRequestContext + Artifact + Confirm` join 成：
    - `RequestScopedOptimizationLabel`
    - `AggregateMeasurementContribution`
-8. `Downstream Release`
-   optimization plane 拿 request-level label 训练模型；aggregate plane 做 thresholding、contribution bounding、可选 DP 后再发布报表。
+8. downstream 分层消费：
+   - optimization plane 消费 request-level label
+   - aggregate reporting plane 消费 thresholded / bounded / optional-DP 的聚合输出
 
-### 3.4 三种“键”的边界
+## 5. 截至 2026-04-29 的研究与标准更新
 
-这份 RFC 里最容易混淆的是三个键：
+这一节只保留会影响系统设计的结论。
 
-- `server_request_id`
-  服务端生成，只代表一次 ad request。它是 optimization 的主键，不是用户 ID。
-- `artifact_id`
-  设备侧生成，只代表一次 measurement artifact。它是协议对象 ID，不是广告训练主键。
-- `odm_info`
-  端上生成并透传给 MMP 的 opaque envelope。它是 bridge object，不是 durable identifier。
+### 5.1 Ephemeral on-device analytics 已经工程化
 
-一个简单判断标准是：
+Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-aggregate-insights-from-ephemeral-streams-of-on-device-user-data/) 证明了三件事：
 
-- 如果某个字段会跨请求、跨 app、跨任务复用，那它就不应该是 `server_request_id`、`artifact_id` 或 `odm_info` 中的任何一个。
+- 敏感原始流可以保留在设备侧的短期窗口内，而不是永久中心化存储；
+- query template、windowing、contribution bounding 应当是协议主体，不是实现细节；
+- 上行对象可以是受限 artifact，而不是完整明细。
 
-## 4. 核心结论
+对本 RFC 的直接影响是：
 
-如果只记住几件事，应该是这几条：
+- `measurement_task_id`
+- `query_template_id`
+- `observation_window_sec`
+- `contribution_policy_id`
 
-1. `server_request_id` 必须保留，否则 personalized optimization 很快失真。
-2. `server_request_id` 只能存在于 confidential plane 和 optimization plane，不能下沉到普通 BI。
-3. `odm_info` 这类 bridge object 必须被视为短生命周期 opaque envelope，而不是新的用户标识。
-4. `boot_time`、原始 `ip` 等高敏感信号不是绝对不能用，但只能留在设备侧或 confidential plane。
-5. request-level optimization label 和 aggregate reporting 必须分层治理。
-6. Phase 1 可以先不上 DP 到 optimization plane，但 aggregate reporting plane 应尽早进入 contribution bounding + thresholding + DP 的治理模式。
-7. 生产落地优先复用成熟组件，而不是自造协议栈。
+这些都必须进入协议对象，而不是只写在内部 wiki。
 
-## 5. 设计原则
+### 5.2 Confidential server-side processing 已经不是“概念”
 
-### 5.1 最小化优先
+[Confidential Federated Computations](https://research.google/pubs/confidential-federated-computations/)（2024）和 [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute) 说明：
 
-原始敏感值，例如：
+- 服务端可以在 TEE/CVM 中完成隐私敏感的 processing graph；
+- 上传对象可以绑定允许的 workflow；
+- verifiable processing 需要 manifest、signature、attestation，而不是只说“我们会小心处理”。
 
-- `boot_time`
-- 原始 `ip`
-- `ssid` / `bssid`
-- 长期稳定跨请求标识
+因此，本 RFC 采用 `confidential plane` 作为 request-level join 的默认部署边界。
 
-`MUST NOT` 进入普通 BI、通用 data lake、普通 Kafka topic 或开放分析链路。
-
-### 5.2 optimization 是一等公民
-
-如果系统只能做 aggregate measurement，不能做 request-level label 回流，那么它对广告优化的价值会很有限。  
-因此本文明确要求保留服务端生成的请求级键：
-
-- `server_request_id`
-
-该字段：
-
-- `MUST` 由服务端为每次 ad request 生成；
-- `MUST` 每次请求唯一；
-- `MUST NOT` 被当作跨 request 的长期用户键；
-- `MUST` 只存在于 confidential plane 或衍生 optimization plane；
-- `MUST NOT` 流入普通报表。
-
-### 5.3 MMP/SRN 协同不是可选项
-
-移动广告的现实不是“网络自己测完就结束”，而是还要和 MMP/SRN 协议协同。  
-因此本文显式定义：
-
-- `MmpAskRequest`
-- `AdNetworkClaimResponse`
-- `MmpConfirmRequest`
-- `ODMInfoEnvelope`
-
-### 5.4 优先使用成熟组件
-
-优先使用：
-
-- 端上 ODM SDK: `GoogleAdsOnDeviceConversion` / Firebase ODM 路径
-- confidential compute / federated analytics: `google-parfait/confidential-federated-compute`
-- DP 库: `OpenDP`, `google/differential-privacy`, `JAX Privacy`, `TensorFlow Privacy`
-- 私有 join / reconciliation: `google/private-join-and-compute`
-- 模型训练: `XGBoost`, `LightGBM`, `TensorFlow`, `PyTorch`
-- 透明度与签名: `sigstore/cosign`, `sigstore/rekor`
-
-不建议手写：
-
-- DP accountant
-- PSI/PJC 协议
-- TEE attestation 流程
-- “本地算个 token 再上报”的简化伪方案
-
-## 6. 2026-04-29 之前最新研究与标准化进展
-
-本节只保留对系统设计真正有影响的结论。
-
-### 6.1 Mayfly 证明了“短生命周期设备流 + 受限查询模板”是可工程化的
-
-Google Research 2024 年的 *Mayfly* 表明：
-
-- 设备侧可以保留短期原始流；
-- 设备侧可以执行预定义模板查询；
-- 上行对象不必是完整明细，也可以是最小化 artifact 或私有聚合结果；
-- windowing 和 contribution bounding 不是附属细节，而是协议主体。
-
-对本 RFC 的含义：
-
-- measurement task 必须显式建模；
-- observation window、contribution policy、task TTL 都要进协议。
-
-来源：
-- [Mayfly](https://research.google/pubs/mayfly-private-aggregate-insights-from-ephemeral-streams-of-on-device-user-data/)
-
-### 6.2 Confidential Federated Computations 把“少信服务端”变成了工程能力
-
-Google Research 2024 年的 *Confidential Federated Computations* 和后续 Parfait 开源组件说明：
-
-- 服务端聚合和处理可以运行在 TEE 内；
-- 客户端上传的数据可以绑定到允许的 processing graph；
-- 密钥释放、budget 跟踪、processing policy 能成为系统本身的一部分。
-
-对本 RFC 的含义：
-
-- request-scoped join 和敏感特征衍生可以在服务端做，但必须在 confidential boundary 内做；
-- `processing_manifest_digest`、`workflow_signature_ref`、`tee_attestation_ref` 应当是协议字段，而不是文档备注。
-
-来源：
-- [Confidential Federated Computations](https://research.google/pubs/confidential-federated-computations/)
-- [Parfait confidential federated compute](https://github.com/google-parfait/confidential-federated-compute)
-
-### 6.3 DAP 与 attribution 扩展已经足够成熟，值得对齐对象模型
+### 5.3 DAP / VDAF / Taskprov 已经足够成熟到值得对齐对象模型
 
 截至 2026-04-29：
 
-- `draft-ietf-ppm-dap-17` 发布于 2026-01-30；
-- PPM 工作组状态页显示 DAP 仍处于活跃推进状态；
-- `draft-thomson-ppm-dap-attribution-01` 在 2026-02-17 更新，明确把 Attribution API 的需求往 DAP 上对齐。
+- [DAP draft-ietf-ppm-dap-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-01-30；
+- [DAP Taskprov draft-ietf-ppm-dap-taskprov-03](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/) 最近一次修订发布于 2025-09-05，且 datatracker 在 2026-03-16 将其标记为 expired & archived，但其中的 task binding 语义仍然直接可用；
+- [VDAF draft-irtf-cfrg-vdaf-19](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/) 最近一次更新时间是 2026-04-14；
+- [DAP Extensions for the Attribution API draft-thomson-ppm-dap-attribution-01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 最近一次更新时间是 2026-02-17，让 attribution 类 measurement 与 PPM/DAP 更接近。
 
-对本 RFC 的含义：
+这意味着即使 Phase 1 不直接部署完整 DAP，aggregate object model 也应该主动对齐：
 
-- 即便第一阶段不直接部署完整 DAP，也应让 aggregate object model 对齐其概念：
-  `task`, `report`, `report_id`, `batch`, `task expiration`, `replay protection`, `extensions`
-- attribution-specific privacy budget binding 和 collector-selected batching 已经不是“脑洞”，而是公开标准化方向。
+- `task`
+- `report_id`
+- `batch_id`
+- `task_expiration`
+- `extension_fields`
 
-来源：
-- [DAP draft-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/)
-- [PPM working group status](https://datatracker.ietf.org/wg/ppm/)
-- [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/)
+更进一步，aggregate plane 不应再停留在“以后再看怎么聚合”的抽象层。既然 VDAF 对象模型已经稳定，生产 RFC 应直接偏向已有 primitive：
 
-### 6.4 contribution bounding 已经是可扩展性问题，不只是论文里的小节
+- `Prio3Count`
+  - 适合 install / purchase user count
+- `Prio3Sum`
+  - 适合 revenue、cost、value sum
+- `Prio3Histogram`
+  - 适合 retention day bucket、latency bucket、value bucket
+- `Prio3SumVec`
+  - 适合多维 campaign bucket 的固定长度向量聚合
 
-Google Research 2025 年 *Scalable contribution bounding to achieve privacy* 的启发很直接：
+这样做的意义不是“马上部署完整 DAP/VDAF”，而是避免 aggregate schema 将来卡死在自定义半协议上。
 
-- 真实广告数据里，一个用户会有多次事件；
-- 一个 artifact 可能影响多个 release surface；
-- 如果 contribution bounding 只藏在 SQL 里，迟早不可控。
+### 5.4 Contribution bounding 现在是生产问题，不是论文角落
 
-对本 RFC 的含义：
+[Scalable contribution bounding to achieve privacy](https://research.google/pubs/scalable-contribution-bounding-to-achieve-privacy/)（2025）以及 [It's My Data Too](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/)（ICML 2025）都指向同一件事：
 
-- `contribution_policy_id` 必须显式版本化；
-- bounding 必须是正式 processing stage；
-- 任何新 release surface 复用旧 artifact，都要重新评估 bounding 影响。
+- 一个训练样本可能对应多个“拥有者”或多个 touch；
+- multi-touch / multi-user 数据里，contribution bounding 是一等公民；
+- 如果 bounding 只藏在离线 SQL 里，后续隐私和训练质量都不可控。
 
-来源：
-- [Scalable contribution bounding to achieve privacy](https://research.google/pubs/scalable-contribution-bounding-to-achieve-privacy/)
+因此，本 RFC 要求：
 
-### 6.5 广告模型的 DP 路线已经可行，但不该一上来就全量启用
+- `conversion_group_id`
+- `credit_fraction_micros`
+- `contribution_policy_id`
 
-Google Research 关于 `Private Ad Modeling with DP-SGD`、semi-sensitive features、user-level DP optimization 的工作说明：
+必须进入 label contract。
 
-- 广告模型并非不能做 DP；
-- 但比“立即全量 DP-SGD”更重要的是先把 label contract、sample lifecycle、特征边界定义清楚；
-- 不同 feature 的保护强度未必相同。
+### 5.5 交互式 release 的隐私分析已经不能忽略
 
-对本 RFC 的含义：
+[On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)（PETS 2025）强调：
 
-- Phase 1 可以让 optimization label plane 先走 confidential-but-not-DP；
-- Phase 2 再逐步引入 semi-sensitive 或 selective DP；
-- 真正做训练时要优先使用 `JAX Privacy` 或 `TensorFlow Privacy` 这类成熟库。
+- 查询会依赖之前的输出；
+- 数据库本身也会因为系统状态变化而变化；
+- release 不能被当成“静态 SQL 导出”。
 
-来源：
-- [Private Ad Modeling with DP-SGD](https://research.google/pubs/private-ad-modeling-with-dp-sgd/)
-- [Training Differentially Private Ad Prediction Models with Semi-Sensitive Features](https://research.google/pubs/training-differentially-private-ad-prediction-models-with-semi-sensitive-features/)
-- [On Convex Optimization with Semi-Sensitive Features](https://research.google/pubs/on-convex-optimization-with-semi-sensitive-features/)
-- [Linear-Time User-Level DP SCO via Robust Statistics](https://research.google/pubs/linear-time-user-level-dp-sco-via-robust-statistics/)
+对本 RFC 的含义是：
 
-### 6.6 可验证 privacy workflow 正在从研究走向生产
+- aggregate reporting 必须有显式 budget ledger；
+- provisional / final / correction 必须有规则；
+- 任何重复 collect 都必须视为额外 privacy cost 或额外治理风险。
 
-2025 年后的 “provably private insights” 路线给出了一个非常关键的工程模式：
+### 5.6 “DP 可审计”已经从研究走向工程
 
-- 开源处理代码
-- TEE attestation
-- workflow signature
-- transparency log
-- DP release discipline
+[DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)（2024）和 [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)（NeurIPS 2025）说明：
 
-对本 RFC 的含义：
+- DP 不能只信数学证明和实现自信；
+- 黑盒审计、持续审计、序列式审计都已经可做；
+- 如果后续引入 DP release，审计栈应该提前预留。
 
-- “我们承诺只会这样处理数据” 不够；
-- 更强的做法是让客户端、审计系统和外部评审者都能验证：真的只有这一组公开 workflow 有资格解密并处理这批上传数据。
+### 5.7 TEE 不是 magic box
 
-来源：
-- [Toward provably private insights into AI use](https://research.google/blog/toward-provably-private-insights-into-ai-use/)
-- [Differentially Private Insights into AI Use](https://research.google/pubs/differentially-private-insights-into-ai-use/)
-- [DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)
+2026 年的 [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/) 和 [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/) 说明：
 
-### 6.7 ODM / ICM 已经是公开产品现实
+- Confidential VM 仍然存在 side-channel 风险；
+- 工作负载本身必须考虑 access pattern、timing、batching、debug 策略；
+- “放进 TEE 就安全”是错误的。
 
-截至 2026-04-29，Google 官方文档公开说明：
+因此，本 RFC 对 confidential workflows 要求分级、限 debug、加回归测试。
 
-- ICM 自 2025-05 起逐步 rollout；
-- iOS 可通过 Firebase iOS SDK `11.14.0+` 或 standalone `GoogleAdsOnDeviceConversion` SDK 接入；
-- 对某些 server-to-server MMP 集成，advertiser 需要把 on-device measurement 的 `info string` 透传给 MMP/AAP。
+### 5.8 公开产品形态已经验证 ODM / ICM 是现实路径
 
-对本 RFC 的含义：
+截至 2026-04-29：
 
-- `odm_info` 不能只是“实现细节”；
-- 它必须成为规范对象；
-- 它必须被定义为短生命周期、task-bound、opaque transport envelope。
+- Google Ads 帮助文档显示 [Integrated Conversion Measurement](https://support.google.com/google-ads/answer/16203286?hl=en-EN) 自 2025 年 5 月起逐步 rollout；
+- [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 文档指出 event-data 方案使用临时、去标识化事件数据，且 Firebase iOS SDK `11.14.0` 于 2025 年 6 月提供相关版本；
+- [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 已明确 `odm_info` 是 ICM 所需字段；
+- [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 说明 standalone SDK 路线可行。
 
-来源：
-- [Integrated Conversion Measurement](https://developers.google.com/app-conversion-tracking/api/integrated-conversion-measurement)
-- [About Integrated Conversion Measurement for App Campaigns](https://support.google.com/google-ads/answer/16203286?hl=en-EN)
-- [About on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en)
-- [GoogleAdsOnDeviceConversion SDK repo](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk)
+同时，Google 2026 年的产品文档还把两个生产边界写得更清楚了：
 
-### 6.8 MMP 的 SRN 工作方式仍然是“先检测 install，再向网络查询”
+- [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743) 明确 ICM 是 AAP UI 中的 granular, event-level, cross-network view，而不是 Google Ads UI 中的同一条 reporting surface；
+- [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 明确该功能对位于 `EEA`、`UK`、`Switzerland` 的用户 inactive。
 
-AppsFlyer、Adjust 等官方文档仍然描述了 SRN 的本质流程：
+这直接支持本文把 `ODMInfoEnvelope` 视为正式协议对象，而不是 SDK 内部细节；也支持把 `reporting_surface_id`、`region_eligibility_code` 和 `feature_active=false` 视为正式状态，而不是埋在 FAQ 里的例外逻辑。
 
-- MMP 先检测 install 或 event；
-- 再去 self-reporting network 问；
-- network 根据自己的 engagement data 进行 claim 或 decline。
+### 5.9 MMP 的 SRN 工作流没有消失
 
-对本 RFC 的含义：
+[AppsFlyer SRN 文档](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks) 和 [Adjust SAN 文档](https://help.adjust.com/en/marketer/self-attributing-networks) 仍表明：
 
-- `MMP Ask -> Ad Network Claim -> MMP Confirm` 是正确抽象；
-- on-device measurement 不能绕开这个流程，而要给这个流程喂一个 privacy-preserving bridge object。
+- MMP / attribution provider 先检测 install / event；
+- 再向 self-reporting network 查询或通知；
+- network 基于自身 engagement data 做 claim；
+- 某些回调和 postback 仍依赖 device ID 或 network-specific transaction object。
 
-来源：
-- [AppsFlyer SRN overview](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks)
-- [Adjust SAN setup](https://help.adjust.com/en/article/self-attributing-network-san-setup)
-- [Adjust self-attributing callbacks](https://help.adjust.com/en/article/self-attributing-network-callbacks)
+所以，on-device measurement 必须服务于 SRN，而不是与 SRN 平行、互不相干。
 
-### 6.9 Privacy Sandbox 的交互式 DP 分析说明“查询会互相影响”，不能把 release 当静态 SQL
+进一步地，截至 2026-04-29，产品文档还显示两个值得写进 RFC 的现实：
 
-Google Research 2025 年 *On the Differential Privacy and Interactivity of Privacy Sandbox Reports* 的关键点不是“ARA/PAA 可以做 DP”，而是：
+- [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model) 页面在 2026-04-19 更新，仍明确区分 deterministic、probabilistic、SRN query、assist 等多条归因路径；
+- [AppsFlyer Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model) 在 2026-03-19 公开说明了设备侧 flooding 检测后仅保留 eligible click / impression 的做法。
 
-- 查询和数据库都可能随着之前的输出而变化；
-- measurement 系统的隐私分析必须考虑交互式 release，而不是单次离线统计；
-- attribution/reporting API 的 guardrail 不能只写在分析文档里，必须进入协议和 budget ledger。
+这对本文的直接影响是：
 
-对本 RFC 的含义：
+- RFC 不能只建模“最后一次 click 是否胜出”，还要建模 `eligible_candidate_count`、`prefilter_candidate_count`、`assist_count` 这类质量上下文；
+- request-level optimization 不能只消费二元 `is_attributed`，还应消费 winner 选择过程中的质量切片与延迟反馈。
 
-- aggregate reporting `MUST` 显式记录 `measurement_task_id`、`release_cadence`、`query_template_id`、`privacy_budget_ledger_ref`；
-- provisional report、late correction、re-release 都要计入同一条审计链，而不是被当作“补数据”绕过预算；
-- optimization plane 和 aggregate plane 的 query/release 路径必须分离，否则交互式反馈会污染 aggregate privacy accounting。
+### 5.10 Privacy Sandbox 的 aggregate 优化研究说明 bucket 设计本身也是协议
 
-来源：
-- [On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)
+[Summary Reports Optimization in the Privacy Sandbox Attribution Reporting API](https://research.google/pubs/summary-reports-optimization-in-the-privacy-sandbox-attribution-reporting-api/)（PETS 2024）虽然主要针对 Attribution Reporting API，但对本 RFC 有一个很现实的启发：
 
-### 6.10 Verifiable LDP 说明“本地 DP”本身也会被投毒，端上随机化不是免死金牌
+- 同样的 privacy guardrail 下，bucket 设计和 contribution budget 分配会显著影响可用性；
+- “先把数据聚出来，之后分析时再想怎么切桶” 往往太晚；
+- measurement task、aggregation key、value bucket、reporting window 应一起设计。
 
-Google Research 2025 年 *Vεrity: Verifiable Local Differential Privacy* 指出：
+因此，本 RFC 把 `aggregation_key_schema_id`、`value_bucket_schema_id`、`reporting_window_id` 视为 production contract，而不是 BI 侧随手改的维表配置。
 
-- 本地 DP / LDP 的常见弱点不是只有精度下降，还有 poisoning；
-- 如果攻击者控制一批设备，完全可以伪造本地随机化输出，显著扭曲 aggregate；
-- 因此“设备侧先随机化再上传”并不自动等于“系统安全”。
+### 5.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
 
-对本 RFC 的含义：
+[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 在 2026-04-28 发布了新的 Working Draft。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
 
-- 如果后续某些 aggregate surface 采用 local DP，`MUST` 额外定义设备证明、随机性来源、签名或第三方 ground truth 绑定策略；
-- 在广告场景下，任何 device-reported local-DP aggregate `SHOULD` 带 `attestation_ref`、`client_build_id` 或等价 provenance；
-- 对 request-level optimization，本 RFC 仍然更推荐 confidential plane + purpose binding，而不是过早把全部训练信号改成本地 DP 上报。
+- on-device attribution 与 off-device aggregation 可以明确分层；
+- aggregate service `MUST` 处理 anti-replay，而不是只做求和；
+- privacy budget、epoch 和 per-site / per-surface 限额应该是正式协议状态，而不是分析平台外部约定。
+- multi-party aggregation、DAP/VDAF 和 collector state 应作为一等设计对象进入协议，而不是留给后续实现随意发挥。
 
-来源：
-- [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
+对本 RFC 的意义是：广告 App 场景里的 aggregate reporting plane 也应该显式拥有 `budget ledger + replay rejection + report lifecycle + collector identity`，而不是只导出一个聚合表。
 
-### 6.11 顺序式 DP 审计意味着发布和训练都应该具备“持续验错”能力
+### 5.12 Verifiable local reporting 说明“端上上报正确性”也要入 RFC
 
-Google Research 2025 年 *Sequentially Auditing Differential Privacy* 的价值在于：
+[Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)（2025）指出一个很现实的问题：
 
-- 它把 DP audit 从一次性的“离线测一把”变成了持续进行的顺序检验；
-- 对复杂训练流程或重复 release 来说，更符合生产系统现实；
-- 它能够更早发现实现错误、错误裁剪或预算失控。
+- 只要 measurement 的部分逻辑发生在设备侧，系统就不只是担心“服务端看太多”，还要担心“端上报了假的东西”；
+- 本地私有化或本地裁剪后的上报，如果没有 provenance 约束，容易被 poisoning、flooding、伪造 engagement 或脚本化设备利用；
+- 可验证随机性、第三方 ground truth、或至少更强的 event provenance，会明显改变系统可用性上限。
 
-对本 RFC 的含义：
+对广告场景的直接含义是：
 
-- aggregate reporting plane `SHOULD` 配置持续运行的 audit canary，而不只是上线前跑一次测试；
-- 训练侧若引入 `TensorFlow Privacy` / `JAX Privacy`，`SHOULD` 对关键 label/feature pipeline 维护固定 replay sample 和黑盒审计任务；
-- `dp_audit_policy_id` 应成为治理字段，而不是 wiki 里的人工流程。
+- RFC 不能只定义 `artifact` 长什么样，还要定义 `artifact` 证明了什么；
+- 端上 `impression` / `click` / `first_open` / `purchase` 的来源级别，应该进入 policy；
+- `artifact_auth_level`、`event_provenance`、`sdk_build_fingerprint` 这类字段值得成为正式 contract，而不是埋在风控旁路里。
 
-来源：
-- [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)
+## 6. 总体架构
 
-### 6.12 多归因训练样本研究说明“一个 conversion 不一定只属于一个 user/request”
+### 6.1 逻辑平面
 
-Google Research 2025 年 *It's My Data Too: Private ML for Datasets with Multi-User Training Examples* 的启发对广告特别直接：
+系统划分为四个数据面：
 
-- 一个训练样本可能同时关联多个 user、多个 request，不能默认“1 conversion = 1 user = 1 request”；
-- 真正困难的不只是 DP 噪声，而是先把多归因样本裁剪成可治理的数据集；
-- contribution bounding 在训练集构造阶段就要发生，而不是等到报表发布阶段才补救。
+1. `Device Raw Plane`
+   - 位置: advertiser app + ad network SDK
+   - 内容: 原始 install / event、本地敏感信号、原始 `boot_time`、原始 `ip`
+   - 生命周期: 极短
+2. `Confidential Plane`
+   - 位置: TEE/CVM 或严格隔离的 confidential service
+   - 内容: artifact 验证、SRN claim/confirm join、敏感特征派生
+   - 生命周期: 中短期，受 retention policy 控制
+3. `Optimization Plane`
+   - 位置: 训练样本与线上优化系统
+   - 内容: request-scoped label、低敏派生特征、campaign context
+   - 禁止内容: 原始 `ip`、原始 `boot_time`、`odm_info`
+4. `Aggregate Reporting Plane`
+   - 位置: partner-facing / BI-facing aggregate service
+   - 内容: bounded, thresholded, optional-DP aggregate outputs
 
-对本 RFC 的含义：
+### 6.2 三类关键键
 
-- `RequestScopedOptimizationLabel` `SHOULD` 显式携带 credit 分配语义，例如 winner-only 还是 fractional credit；
-- 同一个 conversion 如果在 MMP/SRN 流程里存在多个候选 request，训练侧 `MUST` 保留 `conversion_group_id`、`credit_fraction_micros` 或等价字段，而不是静默覆盖；
-- 如果后续把 optimization plane 升级为 user-level DP，训练样本构造 `MUST` 先做 per-user / per-conversion contribution bounding，再接入 `JAX Privacy`、`TensorFlow Privacy` 等训练栈。
+- `server_request_id:int64`
+  - 服务端生成
+  - 一次 ad request 唯一
+  - 是 optimization join key
+  - 不是 user ID
+- `artifact_id:bytes`
+  - 设备侧生成或设备侧签名对象中的唯一标识
+  - 只代表一次 measurement artifact
+  - 不是长期标识符
+- `odm_info:string`
+  - 端上生成并透传给 MMP/AAP 的 opaque envelope
+  - 是 bridge object
+  - 不能被二次用途化为 durable identifier
 
-来源：
-- [It's My Data Too: Private ML for Datasets with Multi-User Training Examples](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/)
+## 7. 端到端数据流
 
-### 6.13 2026 年 TEE 侧信道研究说明 confidential compute 不是“开了 TEE 就万事大吉”
+### 7.1 Step A: Ad Request
 
-2026 年 Google Research 公开的 *SNPeek* 和 *TDXRay* 给了一个对生产非常重要的提醒：
+ad network backend 生成广告请求上下文：
 
-- confidential VM / TEE 可以保护内存内容不被宿主机直接读取，但不自动消除 page-fault、cache contention、timing 这类侧信道；
-- 侧信道风险和 workload 形态直接相关，同样的 TEE 平台，join、feature engineering、训练前裁剪三个 workflow 的泄露面可能完全不同；
-- “我们用了 TEE” 不能替代 workload 级别的评估、分层和缓解。
+- `server_request_id:int64`
+- `auction_id:int64`
+- `campaign_id:int64`
+- `creative_id:int64`
+- `placement_id:int64`
+- `request_ts_ms:int64`
+- `publisher_app_id:string`
+- `country_code:string`
+- `consent_scope:uint32`
+- `measurement_task_id:string`
 
-对本 RFC 的含义：
+### 7.2 Step B: Ad Response / Exposure
 
-- confidential plane `MUST` 再细分成 workflow，而不是把所有敏感 join、特征衍生、debug 查询都塞进同一个大 enclave / CVM；
-- 处理 `boot_time`、raw `ip`、reinstall hint、`server_request_id` join 的 workflow `SHOULD` 显式标注 side-channel risk profile，并优先采用顺序扫描、固定模板、受限索引访问或 oblivious-memory 友好的实现；
-- TEE attestation `SHOULD` 只证明“代码是这份代码”，不能被当作“泄露风险已经消失”的替代品；上线 gate 仍需 workload-specific 评估、回放测试和 kill switch。
+SDK 在设备侧拿到最小必要元数据：
 
-来源：
-- [SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/)
-- [TDXRay: Microarchitectural Side-Channel Analysis of Intel TDX for Real-World Workloads](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)
+- `server_request_id`
+- `auction_id`
+- `ad_network_id:int32`
+- `campaign_id`
+- `creative_id`
+- `measurement_task_id`
 
-## 7. 角色与信任边界
+随后记录：
 
-### 7.1 角色
+- `impression_ts_ms:int64`
+- `click_ts_ms:int64?`
+- `local_event_seq:int32`
 
-- `Advertiser App`: 广告主 App
-- `Ad Network SDK`: 广告网络 SDK
-- `MMP SDK`: MMP/AAP SDK
-- `Ad Network Backend`: 广告网络服务端
-- `Confidential Compute Cluster`: TEE 或同等级隔离边界
+### 7.3 Step C: Device Observation
 
-### 7.2 三层输出面
+SDK 观察到以下本地信号，但默认不直接外发原值：
 
-#### 7.2.1 `Confidential Raw Plane`
+- `boot_time_ms:int64`
+- `device_uptime_ms:int64`
+- `raw_ip:bytes`
+- `network_type:enum`
+- `timezone_offset_min:int32`
+- `locale:string`
+- `disk_reinstall_hint:bool`
+- `bundle_first_install_ts_ms:int64`
 
-包含：
+这些信号仅用于：
 
-- 加密 device artifact
-- opaque `odm_info`
-- 带 `server_request_id` 的 request join 表
-- 敏感特征衍生处理
-- claim replay cache
-- label 构造中间态
+- 端上匹配
+- 端上去重
+- 端上 risk scoring
+- confidential plane 派生特征
 
-要求：
+### 7.4 Step D: On-Device Artifact Construction
 
-- `MUST` 运行在受控 confidential boundary 内
-- `MUST` 有 TTL
-- `MUST` 默认不能被人工直接按行查询
-- `SHOULD` 记录 attestation 与 workflow provenance
+SDK 生成两类对象：
 
-#### 7.2.2 `Optimization Label Plane`
+- `OnDeviceMeasurementArtifact`
+  - 发往 ad network confidential endpoint
+- `ODMInfoEnvelope`
+  - 缓存在 app 或 advertiser server，并透传给 MMP / AAP downstream event
 
-包含：
+### 7.5 Step E: MMP Ask
 
-- request-scoped label
-- 可训练的衍生特征
-- delayed feedback 信息
-- sample weighting / censoring 信息
+MMP 检测到 install / first_open / purchase 后，向 ad network 发起查询：
 
-要求：
+- 包含 MMP 常规 query fields
+- 包含 `odm_info`
+- 包含 MMP 事件上下文
 
-- 初期 `MAY` 不做 DP
-- `MUST` 做 purpose binding
-- `MUST` 与普通 BI 隔离
-- `MUST NOT` 暴露 raw `boot_time`、raw `ip`、raw `odm_info`
+### 7.6 Step F: Ad Network Claim
 
-#### 7.2.3 `Aggregate Reporting Plane`
+ad network 在 confidential plane 内：
 
-包含：
+- 校验 `odm_info` 与 `artifact_id`
+- 校验 task binding
+- 校验 TTL
+- 校验 anti-replay
+- 可选结合 network engagement log、fraud policy、MMP query template 进行 claim
 
-- campaign / adgroup / creative 级指标
-- 时间桶聚合
-- reconciliation summary
-- 与 DAP/VDAF 对齐的 aggregate output
+返回：
 
-要求：
+- `claim_status`
+- `claim_token`
+- `claim_confidence`
+- `measurement_task_id`
 
-- `MUST` 有 minimum crowd threshold
-- `MUST` 有 contribution bounding
-- `SHOULD` 对较广 release surface 加入 DP
-- `MUST NOT` 包含 `server_request_id`
+### 7.7 Step G: MMP Confirm
 
-## 8. 数据保留模型
+MMP 根据全局 winner selection 结果回传：
 
-### 8.1 设备侧
+- `mmp_decision`
+- `winning_touch_ts_ms`
+- `confirm_ts_ms`
+- `claim_token`
 
-- impression buffer TTL: 推荐 `24h`
-- click buffer TTL: 推荐 `7d`
-- conversion observation window: 业务定义，常见为 `1d` / `7d` / `30d`
-- 原始敏感信号缓存 TTL: 推荐 `分钟级到小时级`
+### 7.8 Step H: Confidential Join and Release
 
-### 8.2 confidential 服务端
+ad network 在 confidential plane 中 join：
 
-- raw artifact TTL: 推荐 `<= 30d`
-- claim replay cache TTL: 与 claim window 对齐，常见 `7d` 到 `30d`
-- request join TTL: 与训练和归因窗口对齐，常见 `30d` 到 `90d`
+- `AdRequestContext`
+- `OnDeviceMeasurementArtifact`
+- `MmpAskRequest`
+- `ClaimResponse`
+- `MmpConfirmRequest`
 
-### 8.3 optimization plane
+输出两个主对象：
 
-- 训练样本 TTL 取决于模型刷新节奏和合法性要求；
-- `SHOULD` 与原始 artifact 保留时间解耦。
+- `RequestScopedOptimizationLabel`
+- `AggregateMeasurementContribution`
 
-## 9. 规范对象模型
+## 8. 协议对象与 schema
 
-下面用 JSON 展示对象形状。  
-生产传输建议使用 Protobuf 或 CBOR。若使用 JSON，所有 `int64` 建议序列化为十进制字符串，避免 JavaScript 精度问题。
+以下 schema 是 RFC 的逻辑规范，生产实现建议使用 `Protobuf + buf` 管理。
 
-### 9.1 `AdRequestContext`
+### 8.1 AdRequestContext
 
-```json
-{
-  "schema_version": 1,
-  "server_request_id": "9183372036854775801",
-  "auction_id": "331245778901",
-  "ad_network_id": 1024,
-  "advertiser_id": 200045,
-  "campaign_id": 9830012,
-  "adgroup_id": 9830099,
-  "creative_id": 712334455,
-  "placement_id": 40012,
-  "exchange_id": 18,
-  "request_ts_ms": "1777465200123",
-  "device_platform": "ios",
-  "app_bundle": "com.example.game",
-  "country_code": "US",
-  "region_code": "CA",
-  "consent_state": {
-    "att_authorized": false,
-    "gdpr_applies": false,
-    "dma_ad_user_data": "granted",
-    "dma_ad_personalization": "granted"
-  },
-  "model_feature_scope_id": "scope_req_v4",
-  "optimization_goal": "purchase_value"
+```proto
+message AdRequestContext {
+  int64 server_request_id = 1;
+  int64 auction_id = 2;
+  int64 campaign_id = 3;
+  int64 creative_id = 4;
+  int64 placement_id = 5;
+  int64 advertiser_id = 6;
+  int64 publisher_app_numeric_id = 7;
+  string publisher_app_bundle = 8;
+  int64 request_ts_ms = 9;
+  string country_code = 10;
+  string region_code = 11;
+  uint32 consent_scope = 12;
+  string measurement_task_id = 13;
+  string contribution_policy_id = 14;
+  string feature_policy_id = 15;
+  string retention_policy_id = 16;
 }
 ```
 
-### 9.1A `MeasurementTaskDescriptor`
+### 8.2 DeviceLocalObservation
 
-这是整套系统里最值得单独建模的对象。没有 task descriptor，很多边界会退化成代码里的隐含约定。
+此对象默认不出设备，不进入普通日志，仅作为本地或 confidential 输入：
 
-```json
-{
-  "schema_version": 1,
-  "measurement_task_id": "install_icm_ios_v3",
-  "task_type": "install_measurement",
-  "task_scope": "srn_claim_and_opt",
-  "task_created_ts_ms": "1777465100000",
-  "task_expiry_ts_ms": "1778070000000",
-  "query_template_id": "tmpl_install_claim_v2",
-  "release_cadence": "daily_final_plus_intraday_provisional",
-  "contribution_policy_id": "contrib_install_v2",
-  "privacy_budget_ledger_ref": "pb_install_ios_2026q2",
-  "allowed_partners": [
-    "adjust",
-    "appsflyer"
-  ],
-  "allowed_release_surfaces": [
-    "optimization_plane",
-    "aggregate_reporting_plane"
-  ],
-  "late_event_cutoff_ts_ms": "1778070000000"
+```proto
+message DeviceLocalObservation {
+  int64 boot_time_ms = 1;
+  int64 device_uptime_ms = 2;
+  bytes raw_ip = 3;
+  string ip_version = 4;
+  string timezone_name = 5;
+  int32 timezone_offset_min = 6;
+  string locale = 7;
+  string network_type = 8;
+  bool reinstall_hint = 9;
+  int64 bundle_first_install_ts_ms = 10;
 }
 ```
 
-### 9.2 `SensitiveSignalSnapshot`
+### 8.3 OnDeviceMeasurementArtifact
 
-这个对象 `MUST` 只存在于设备侧或 confidential raw plane。
-
-```json
-{
-  "capture_ts_ms": "1777465210456",
-  "boot_time_ms": "1777120000000",
-  "device_uptime_ms": "345210456",
-  "ip_v4": "203.0.113.14",
-  "network_type": "wifi",
-  "carrier_mccmnc": "310260",
-  "locale": "en_US",
-  "timezone_offset_min": -420,
-  "battery_bucket": "30_50",
-  "disk_state_bucket": "10_20_free",
-  "is_vpn": false
+```proto
+message OnDeviceMeasurementArtifact {
+  bytes artifact_id = 1;
+  string artifact_version = 2;
+  string measurement_task_id = 3;
+  int64 server_request_id = 4;
+  int64 impression_ts_ms = 5;
+  int64 click_ts_ms = 6;
+  int64 conversion_candidate_ts_ms = 7;
+  uint32 observation_window_sec = 8;
+  bytes derived_match_key = 9;
+  bytes derived_risk_key = 10;
+  bytes encrypted_feature_blob = 11;
+  bytes query_template_commitment = 12;
+  int64 artifact_expiry_ts_ms = 13;
+  bytes replay_nonce = 14;
+  string workflow_manifest_digest = 15;
+  bytes sdk_attestation = 16;
 }
 ```
 
-### 9.3 `DerivedSensitiveFeatures`
+字段解释：
 
-这个对象在满足 policy 的前提下 `MAY` 进入 optimization plane，但必须是衍生值而不是原始值。
+- `derived_match_key`
+  - 端上从敏感信号导出的 task-bound、短生命周期匹配键
+- `derived_risk_key`
+  - 端上为 fraud / replay / reinstall 辅助生成的键
+- `encrypted_feature_blob`
+  - 只允许 confidential plane 解密
 
-```json
-{
-  "feature_version": "derived_sensitive_v3",
-  "boot_time_bucket_hours": 96,
-  "uptime_bucket_min": 5760,
-  "coarse_ip_prefix": "203.0.113.0/24",
-  "network_quality_bucket": "wifi_stable",
-  "local_hour_bucket": 19,
-  "timezone_bucket": "utc_minus_8",
-  "fraud_risk_seed_features": {
-    "is_vpn": false,
-    "clock_skew_bucket": "lt_5s",
-    "recent_reinstall_bucket": "unknown"
-  }
-}
-```
+### 8.4 ODMInfoEnvelope
 
-### 9.4 `OnDeviceMeasurementArtifact`
-
-```json
-{
-  "schema_version": 1,
-  "artifact_id": "c77a8a3f-7a9a-4aa7-8b8d-9bff0f2cbe9d",
-  "artifact_type": "install_candidate",
-  "artifact_created_ts_ms": "1777468805123",
-  "artifact_expiry_ts_ms": "1777555205123",
-  "ad_network_id": 1024,
-  "app_bundle": "com.example.game",
-  "server_request_ref": {
-    "server_request_id": "9183372036854775801",
-    "auction_id": "331245778901"
-  },
-  "event_ref": {
-    "conversion_event_id": "8ed4a45a-3699-4927-b7d0-c80ac2d0f417",
-    "event_name": "first_open",
-    "event_ts_ms": "1777468805000"
-  },
-  "derived_sensitive_features": {
-    "feature_version": "derived_sensitive_v3",
-    "boot_time_bucket_hours": 96,
-    "uptime_bucket_min": 5760,
-    "coarse_ip_prefix": "203.0.113.0/24",
-    "network_quality_bucket": "wifi_stable"
-  },
-  "contribution_policy_id": "contrib_install_v2",
-  "device_local_nonce": "8c19eafc0b0d4d8fb4ef0ef77c191f7d",
-  "payload_mac": "base64:8gM1...=="
-}
-```
-
-### 9.5 `ODMInfoEnvelope`
-
-这就是端上到 MMP/SRN 的桥接对象。
-
-```json
-{
-  "schema_version": 1,
-  "envelope_type": "odm_info",
-  "artifact_id": "c77a8a3f-7a9a-4aa7-8b8d-9bff0f2cbe9d",
-  "ad_network_id": 1024,
-  "app_bundle": "com.example.game",
-  "issued_ts_ms": "1777468805123",
-  "expiry_ts_ms": "1777555205123",
-  "opaque_payload": "base64url:eyJraWQiOiJrMSIsImNpcGhlcnRleHQiOiIuLi4ifQ",
-  "transport_hints": {
-    "channel": "mmp_sdk",
-    "partner_name": "adjust"
-  }
-}
-```
-
-规则：
-
-- MMP `MUST` 把 `opaque_payload` 视为 opaque
-- MMP `MUST NOT` 解码后落普通分析字段
-- envelope `MUST` 是 task-bound 的
-- envelope `MUST` 有明确过期时间
-- envelope `MUST NOT` 跨 app、跨 network、跨任务复用
-
-### 9.6 `MmpAskRequest`
-
-```json
-{
-  "schema_version": 1,
-  "ask_request_id": "01JTG7X7NQ0Z4W9Y9G1M13FQ7Q",
-  "mmp_id": 501,
-  "partner_app_id": "app_200045_ios",
-  "ad_network_id": 1024,
-  "install_ts_ms": "1777468810021",
-  "event_type": "install",
-  "device_query": {
-    "idfa": "00000000-0000-0000-0000-000000000000",
-    "idfv": "A0C33210-17D4-4A7A-97D8-BC0244B1E6A1",
-    "ip_hint": "203.0.113.14",
-    "user_agent_hash": "sha256:1ad0...",
-    "country_code": "US"
-  },
-  "odm_info": "base64url:eyJzY2hlbWFfdmVyc2lvbiI6MX0",
-  "mmp_event_id": "2737f9ce-ef8d-458b-9c29-29e9f9ffde4e"
-}
-```
-
-### 9.7 `AdNetworkClaimResponse`
-
-```json
-{
-  "schema_version": 1,
-  "ask_request_id": "01JTG7X7NQ0Z4W9Y9G1M13FQ7Q",
-  "claim_decision": "claim_yes",
-  "claim_token": "base64url:Q0xBSU0tVE9LRU4uLi4",
-  "claim_reason_code": "matched_odm_request_context",
-  "claim_confidence": 0.93,
-  "attribution_scope": {
-    "campaign_id": 9830012,
-    "adgroup_id": 9830099,
-    "creative_id": 712334455,
-    "network_type": "google_app_campaign"
-  },
-  "claim_expiry_ts_ms": "1777555211000",
-  "replay_cache_key": "sha256:e302..."
-}
-```
-
-建议：
-
-- 前台 claim 接口只返回协议推进所需最小字段；
-- 不返回 raw sensitive signal；
-- 不返回 request log 明细。
-
-### 9.7A `ClaimTokenBinding`
-
-`claim_token` 不应该只是一个“能过校验的字符串”，而应该绑定 ask 的上下文，否则很容易被跨请求复用或被 MMP 探测边界。
-
-```json
-{
-  "schema_version": 1,
-  "claim_token_id": "ctok_01JTG7Y5PJWQY2P0R3K6H42S7D",
-  "ask_request_id": "01JTG7X7NQ0Z4W9Y9G1M13FQ7Q",
-  "measurement_task_id": "install_icm_ios_v3",
-  "query_template_id": "tmpl_install_claim_v2",
-  "query_hash": "sha256:abdd91...",
-  "ad_network_id": 1024,
-  "policy_version": "claim_policy_v5",
-  "issued_ts_ms": "1777468811050",
-  "expiry_ts_ms": "1777555211000",
-  "signed_by": "hsm:key-2026-04",
-  "signature": "base64url:MEQCIF..."
-}
-```
-
-### 9.8 `MmpConfirmRequest`
-
-```json
-{
-  "schema_version": 1,
-  "confirm_request_id": "01JTG7Y3B4YPYXCY7AD8KSN9XK",
-  "ask_request_id": "01JTG7X7NQ0Z4W9Y9G1M13FQ7Q",
-  "claim_token": "base64url:Q0xBSU0tVE9LRU4uLi4",
-  "final_outcome": "confirmed_install",
-  "mmp_attribution_ts_ms": "1777468811098",
-  "mmp_result_id": "mmpres_79120381",
-  "dedupe_key": "sha256:54da...",
-  "post_install_metadata": {
-    "store": "app_store",
-    "is_redownload": false
-  }
-}
-```
-
-### 9.9 `RequestScopedOptimizationLabel`
-
-```json
-{
-  "schema_version": 1,
-  "label_id": "lbl_01JTG82T1H2V0HDM0Y1D0T1RRT",
-  "server_request_id": "9183372036854775801",
-  "conversion_group_id": "cg_20260429_88710023",
-  "auction_id": "331245778901",
-  "ad_network_id": 1024,
-  "label_type": "purchase_value_7d",
-  "label_value": 19.99,
-  "label_currency": "USD",
-  "label_event_count": 1,
-  "credit_allocation_policy_id": "winner_only_v1",
-  "credit_fraction_micros": 1000000,
-  "attribution_rank": 1,
-  "first_label_ts_ms": "1777480000000",
-  "observation_window_sec": 604800,
-  "right_censored": false,
-  "sample_weight": 1.0,
-  "feature_scope_id": "scope_req_v4",
-  "trust_scope_id": "opt_plane_internal_v1",
-  "trainer_policy_id": "trainer_purchase_v3"
-}
-```
-
-### 9.10 `AggregateMeasurementReport`
-
-```json
-{
-  "schema_version": 1,
-  "measurement_task_id": "agg_purchase_value_daily_v1",
-  "task_window_start_ts_ms": "1777420800000",
-  "task_window_end_ts_ms": "1777507200000",
-  "group_keys": {
-    "advertiser_id": 200045,
-    "campaign_id": 9830012,
-    "country_code": "US"
-  },
-  "metrics": {
-    "installs": 1245,
-    "purchasers": 281,
-    "purchase_value_usd": 6441.32
-  },
-  "privacy": {
-    "contribution_policy_id": "contrib_daily_adv_v3",
-    "minimum_crowd_size": 50,
-    "dp_enabled": true,
-    "epsilon": 0.35,
-    "delta": 1e-9
-  },
-  "release_status": "final"
-}
-```
-
-### 9.11 `OptimizationTrainingExample`
-
-optimization plane 真正消费的通常不是原始 request 表，而是 feature row + label row 的绑定结果。这里单独建模是为了避免后续把 raw artifact 直接开放给训练。
-
-```json
-{
-  "schema_version": 1,
-  "training_example_id": "trn_01JTG84E6SEVY5N12TRH5K6Q3P",
-  "server_request_id": "9183372036854775801",
-  "conversion_group_id": "cg_20260429_88710023",
-  "feature_scope_id": "scope_req_v4",
-  "label_id": "lbl_01JTG82T1H2V0HDM0Y1D0T1RRT",
-  "label_status": "observed_final",
-  "observation_window_id": "purchase_7d_v3",
-  "window_close_ts_ms": "1778070000000",
-  "loss_weight": 1.0,
-  "credit_fraction_micros": 1000000,
-  "multi_touch_group_size": 1,
-  "match_strength": "strong_request_join",
-  "claim_confidence": 0.93,
-  "trainer_policy_id": "trainer_purchase_v3",
-  "features": {
-    "campaign_id": 9830012,
-    "creative_id": 712334455,
-    "country_code": "US",
-    "local_hour_bucket": 19,
-    "network_quality_bucket": "wifi_stable",
-    "recent_reinstall_bucket": "unknown"
-  }
-}
-```
-
-### 9.12 `DPReleaseAuditRecord`
-
-```json
-{
-  "schema_version": 1,
-  "audit_record_id": "aud_01JTG86M6V0QK0TVWDK0P4M2RP",
-  "measurement_task_id": "agg_purchase_value_daily_v1",
-  "query_template_id": "tmpl_campaign_country_daily_v1",
-  "release_id": "rel_2026_04_29_0001",
-  "dp_audit_policy_id": "seq_audit_v2",
-  "privacy_budget_ledger_ref": "pb_agg_2026q2",
-  "auditor_impl": "dp_auditorium+sequential_audit",
-  "audit_status": "pass",
-  "audit_ts_ms": "1777470100000",
-  "canary_sample_ref": "canary_purchase_daily_v4"
-}
-```
-
-### 9.12A `ExternalAttributionCompatRecord`
-
-有些对外归因 API 明确要求 request 级透传字段，例如 Google App Conversion API 的 `odm_info`、`rdid`、`User-Agent`、`X-Forwarded-For`、`ad_event_id` 和 cross-network attribution 请求。这些字段在工程上经常“顺手”混进训练或通用埋点，这是本 RFC 明确禁止的。
-
-正确做法是单独建一个 egress-only 兼容对象，让“为了对外协议兼容而保留”的字段和“为了内部 optimization / reporting 而保留”的字段分层治理。
-
-```json
-{
-  "schema_version": 1,
-  "compat_record_id": "ext_01JTG8C2H8NMQ2V0MHKQW0P6N7",
-  "provider": "google_ads_app_conversion_api",
-  "server_request_id": "9183372036854775801",
-  "conversion_group_id": "cg_20260429_88710023",
-  "mmp_event_id": "2737f9ce-ef8d-458b-9c29-29e9f9ffde4e",
-  "odm_info_cache_key": "odmcache_4b6c1f2a",
-  "retention_ttl_sec": 2592000,
-  "google_ads": {
-    "odm_info": "abcdEfadGdaf",
-    "rdid": "0F7AB11F-DA50-498E-B225-21AC1977A85D",
-    "id_type": "idfv",
-    "lat": 0,
-    "ctry_c": "US",
-    "eea": 0,
-    "ad_personalization": 1,
-    "ad_user_data": 1,
-    "x_forwarded_for": "203.0.113.14",
-    "app_user_agent": "ExampleMMP/5.4.1 (iOS 18.1; en_US; iPhone16,2; Build/22B92; Proxy)",
-    "ad_event_id": "Q2owS0VRancwZHk0QlJDdXVMX2U1TQ",
-    "cross_network_attributed": 1
-  }
+```proto
+message ODMInfoEnvelope {
+  string odm_info = 1;
+  string odm_version = 2;
+  string measurement_task_id = 3;
+  int64 info_generated_ts_ms = 4;
+  int64 info_expiry_ts_ms = 5;
+  bytes artifact_id_hash = 6;
+  bytes query_hash = 7;
 }
 ```
 
 约束：
 
-- `ExternalAttributionCompatRecord` `MUST NOT` 直接喂给 optimization feature pipeline；
-- raw `rdid`、raw `x_forwarded_for`、完整 `app_user_agent` `MUST` 视为 egress plane 专属字段，而不是通用 join key；
-- `ad_event_id` 这类第三方返回的 request 级 id `SHOULD` 仅用于对外 confirm / cross-network follow-up，不应反向污染内部 `server_request_id` 主键体系。
+- `odm_info` `MUST` 是 opaque string。
+- `odm_info` `MUST NOT` 作为 durable user ID 使用。
+- `odm_info` `MUST` 绑定 `measurement_task_id` 和 expiry。
 
-## 10. 端到端协议流程
+### 8.5 MmpAskRequest
 
-### 10.1 Ad Request
+```proto
+message MmpAskRequest {
+  string mmp_name = 1;
+  string mmp_event_id = 2;
+  string mmp_install_id = 3;
+  string app_bundle = 4;
+  string platform = 5;
+  int64 install_ts_ms = 6;
+  int64 event_ts_ms = 7;
+  string event_name = 8;
+  string id_type = 9;
+  string device_id = 10;
+  string odm_info = 11;
+  string query_template_id = 12;
+  bytes query_hash = 13;
+  string country_code = 14;
+  map<string, string> additional_fields = 15;
+  string ask_idempotency_key = 16;
+  int64 ask_attempt_ts_ms = 17;
+  string query_contract_id = 18;
+}
+```
 
-1. Ad network backend 收到 ad request。
-2. 服务端生成 `server_request_id`，必要时同时生成 `auction_id`。
-3. request context 写入 confidential raw plane。
-4. ad response 返回给 App，同时下发设备侧所需最小 request metadata。
+说明：
 
-硬要求：
+- `device_id` 可是 `idfa`、`idfv`、`gaid`、`appsetid`，也可能为空或全零。
+- `odm_info` 用于让 network 在缺少稳定 device ID 时仍可进行 privacy-preserving claim。
 
-- `server_request_id` `MUST` 每请求唯一；
-- `server_request_id` `MUST NOT` 出现在普通客户端日志；
-- request context `MUST` 保留到足以支撑归因和优化窗口结束。
+### 8.6 ClaimResponse
 
-### 10.2 端上采集
+```proto
+message ClaimResponse {
+  string mmp_event_id = 1;
+  string claim_status = 2; // CLAIMED, DECLINED, SOFT_DECLINED
+  bytes claim_token = 3;
+  float claim_confidence = 4;
+  string measurement_task_id = 5;
+  int64 claim_ts_ms = 6;
+  int64 claim_expiry_ts_ms = 7;
+  bytes replay_cache_key = 8;
+  string policy_version = 9;
+  string claim_reason_code = 10;
+  bool request_accepted = 11;
+}
+```
 
-ad network SDK 在广告主 App 内采集：
+### 8.7 MmpConfirmRequest
 
-- impression / click
-- install / first_open / in-app event
-- 本地敏感信号
+```proto
+message MmpConfirmRequest {
+  string mmp_event_id = 1;
+  bytes claim_token = 2;
+  string final_decision = 3; // WIN, LOSE, IGNORE
+  int64 confirm_ts_ms = 4;
+  int64 winning_touch_ts_ms = 5;
+  string winning_network = 6;
+  map<string, string> attribution_metadata = 7;
+  string confirm_idempotency_key = 8;
+  int64 confirm_attempt_ts_ms = 9;
+}
+```
 
-原始采集规则：
+### 8.8 RequestScopedOptimizationLabel
 
-- 原始值 `SHOULD` 尽量只保留在内存或短期本地缓存；
-- 能先转 bucket 或衍生特征的，`SHOULD` 先转再上传；
-- 同一用户对同一 measurement task 的贡献 `MUST` 受上限约束。
+```proto
+message RequestScopedOptimizationLabel {
+  int64 server_request_id = 1;
+  int64 advertiser_id = 2;
+  int64 campaign_id = 3;
+  int64 creative_id = 4;
+  int64 placement_id = 5;
+  int64 label_ts_ms = 6;
+  string label_type = 7; // install, first_open, purchase, roas_7d
+  double label_value = 8;
+  bool is_attributed = 9;
+  float claim_confidence = 10;
+  int64 conversion_group_id = 11;
+  int32 credit_fraction_micros = 12;
+  uint32 observation_window_sec = 13;
+  bool right_censored = 14;
+  string trainer_policy_id = 15;
+  string feature_policy_id = 16;
+  string contribution_policy_id = 17;
+  string region_profile = 18;
+  string network_stability_bucket = 19;
+  string reinstall_hint_bucket = 20;
+}
+```
 
-### 10.3 端上 artifact 生成
+约束：
 
-当出现候选 conversion 时，SDK 生成：
+- `server_request_id` `MUST` 存在，否则 personalized optimization 会退化。
+- 原始 `ip`、原始 `boot_time` `MUST NOT` 出现在该对象中。
+- `credit_fraction_micros` 用于 multi-touch / fractional credit。
 
-- `OnDeviceMeasurementArtifact`
-- `ODMInfoEnvelope`
+### 8.9 AggregateMeasurementContribution
 
-前者给 ad network confidential processing；  
-后者给 MMP/SRN 协议桥接。
+```proto
+message AggregateMeasurementContribution {
+  string measurement_task_id = 1;
+  string batch_id = 2;
+  bytes report_id = 3;
+  int64 contribution_ts_ms = 4;
+  string metric_name = 5;
+  double metric_value = 6;
+  int64 conversion_group_id = 7;
+  string aggregation_key = 8;
+  string contribution_policy_id = 9;
+  int64 task_expiry_ts_ms = 10;
+}
+```
 
-### 10.3A 对外归因 API 兼容缓存
+### 8.10 PostInstallConversionEvent
 
-如果系统需要同时对接 MMP SRN 和 Google App Conversion API 一类外部归因 API，端上或 MMP server 通常还要维护一层短期兼容缓存：
+这个对象代表 advertiser app 在 install 之后继续上报给 ad network / MMP 的 conversion 事件。它不是原始设备信号，也不是最终训练标签，而是进入 ask/claim/confirm 与 confidential join 之前的业务事件。
 
-- `odm_info` `MUST` 缓存到足以覆盖 post-install conversion 的窗口，因为官方文档明确要求后续 app 内 conversion 继续带上它；
-- `rdid`、`id_type`、`lat`、`app_version`、`os_version`、`sdk_version`、`timestamp`、`User-Agent`、`X-Forwarded-For`、consent flags 等字段 `MAY` 为对外 API 暂存；
-- 这些字段 `MUST` 进入独立 egress adapter 或 `ExternalAttributionCompatRecord`，而不是并入 `OnDeviceMeasurementArtifact` 或优化训练样本。
+```proto
+message PostInstallConversionEvent {
+  int64 advertiser_event_id = 1;
+  int64 advertiser_id = 2;
+  string app_bundle = 3;
+  string platform = 4;
+  string event_name = 5; // first_open, purchase, subscribe, level_achieved
+  int64 event_ts_ms = 6;
+  int64 event_value_micros = 7;
+  string currency_code = 8;
+  string event_dedupe_key = 9;
+  string odm_info = 10;
+  int64 advertiser_user_id = 11;
+  string event_schema_id = 12;
+  map<string, string> event_dimensions = 13;
+}
+```
 
-一句话说：`odm_info` 负责桥接 on-device measurement，兼容缓存负责满足外部 API 契约，两者相关，但不是同一个数据面。
+### 8.11 AttributionHandshakeState
 
-### 10.4 MMP Ask
+这个对象把 `MMP Ask -> Ad Network Claim -> MMP Confirm` 从“几条日志”提升为正式状态机，方便生产排障、TTL、retry 和 winner/loser 归因裁决。
 
-MMP 观察到 install 或 event 后，向 ad network 发起：
+```proto
+message AttributionHandshakeState {
+  string handshake_id = 1;
+  string mmp_event_id = 2;
+  int64 server_request_id = 3;
+  string measurement_task_id = 4;
+  string ask_status = 5;     // RECEIVED, REJECTED, EXPIRED
+  string claim_status = 6;   // CLAIMED, DECLINED, SOFT_DECLINED
+  string confirm_status = 7; // PENDING, WIN, LOSE, IGNORED, EXPIRED
+  int64 ask_ts_ms = 8;
+  int64 claim_ts_ms = 9;
+  int64 confirm_ts_ms = 10;
+  int64 expiry_ts_ms = 11;
+  string policy_version = 12;
+  bytes replay_cache_key = 13;
+  string failure_reason_code = 14;
+}
+```
 
-- `MmpAskRequest`
+### 8.12 ExternalAttributionCompatRecord
 
-这个 ask 可以同时带：
+这个对象只服务于 partner API 兼容与 follow-up 请求，不属于 optimization plane 的训练明细。
 
-- 常规 device query 字段；
-- 短生命周期 opaque `odm_info`。
+```proto
+message ExternalAttributionCompatRecord {
+  string partner_name = 1; // google_app_conversion_api, appsflyer, adjust
+  string api_contract_version = 2;
+  string request_contract_id = 3;
+  string app_bundle = 4;
+  string platform = 5;
+  string app_event_type = 6;
+  int64 event_timestamp_sec_micros = 7;
+  string odm_info = 8;
+  string id_type = 9;
+  string rdid = 10;
+  string user_agent = 11;
+  string x_forwarded_for = 12;
+  string ad_event_id = 13;
+  bool attributed = 14;
+  int64 compat_expiry_ts_ms = 15;
+  string response_tracking = 16; // ACCEPTED, EMPTY_200, RETRYABLE_5XX, REJECTED_4XX
+}
+```
 
-### 10.5 Ad Network Claim
+### 8.13 ExternalAdEventMappingRecord
 
-ad network 校验：
+partner-facing `ad_event_id` 之类的字段进入系统后，必须先映射为受 policy 约束的内部事实，而不是直接拿来做通用 join。
 
-- envelope 是否过期
-- anti-replay 状态
-- partner 是否有权限
-- policy / consent gate
-- 匹配条件是否满足
+```proto
+message ExternalAdEventMappingRecord {
+  string partner_name = 1;
+  string ad_event_id = 2;
+  int64 server_request_id = 3;
+  int64 campaign_id = 4;
+  int64 creative_id = 5;
+  int64 click_ts_ms = 6;
+  int64 mapping_expiry_ts_ms = 7;
+  string source_contract_id = 8;
+  string mapping_confidence = 9; // EXACT, POLICY_FILTERED, MISSING
+}
+```
 
-然后返回：
+### 8.14 ServerFeatureDerivationRecord
 
-- `claim_yes` / `claim_no`
-- 如果是 `yes`，则返回 `claim_token`
+这个对象定义 confidential plane 向 optimization plane 释放什么，而不是释放什么原始信号。
 
-### 10.6 MMP Confirm
+```proto
+message ServerFeatureDerivationRecord {
+  int64 server_request_id = 1;
+  string measurement_task_id = 2;
+  string feature_policy_id = 3;
+  string derivation_workflow_id = 4;
+  int64 derivation_ts_ms = 5;
+  string network_stability_bucket = 6;
+  string timezone_consistency_bucket = 7;
+  string reinstall_hint_bucket = 8;
+  string ip_churn_bucket = 9;
+  string boot_time_freshness_bucket = 10;
+  bool suspicious_replay_pattern = 11;
+  string release_scope = 12; // optimization_only, fraud_only
+}
+```
 
-MMP 完成自己的归因判断后，向 ad network 发送：
+### 8.15 AttributionDecisionRecord
 
-- `MmpConfirmRequest`
+这个对象记录 winner 选择前后的候选集质量，用于解释为什么某个 request 拿到了最终 credit，以及为什么某些流量虽然被 claim 但不值得被高权重训练。
 
-这一步把一个“可 claim 候选”变成“可用于 optimization / reporting 的最终结果”。
+```proto
+message AttributionDecisionRecord {
+  string decision_id = 1;
+  string mmp_event_id = 2;
+  int64 server_request_id = 3;
+  string measurement_task_id = 4;
+  string final_decision = 5; // WIN, LOSE, ORGANIC, PROVISIONAL
+  string winner_reason = 6; // LAST_CLICK, ELIGIBLE_CLICK, SRN_CONFIRM, POLICY_FILTER
+  int32 prefilter_candidate_count = 7;
+  int32 eligible_candidate_count = 8;
+  int32 assist_count = 9;
+  bool flooding_suspected = 10;
+  float winner_confidence = 11;
+  int64 decision_ts_ms = 12;
+  string decision_policy_id = 13;
+}
+```
 
-如果下游还要向 Google Ads 发起 cross-network attribution follow-up，则还会多一条并行但独立的 egress 支路：
+### 8.16 OptimizationFeedbackRecord
 
-1. 外部 API 返回 `ad_event_id`；
-2. MMP / attribution partner 完成自己的 winner decision；
-3. egress adapter 使用 `ad_event_id` + `attributed` 发送 follow-up；
-4. 这条支路 `MUST NOT` 反向定义内部 optimization label 主键，内部主键仍然是 `server_request_id`。
+这个对象定义 label 发布后的持续反馈。它不是新的归因对象，而是给 bidding / ranking / pacing 系统提供“某次请求后续到底发生了什么”的稳定闭环。
 
-### 10.7 confidential join 与 label 构造
+```proto
+message OptimizationFeedbackRecord {
+  int64 server_request_id = 1;
+  int64 advertiser_id = 2;
+  int64 campaign_id = 3;
+  int64 creative_id = 4;
+  string feedback_type = 5; // install, purchase, revenue_7d, retention_d1
+  double feedback_value = 6;
+  int64 event_ts_ms = 7;
+  int64 publish_ts_ms = 8;
+  bool is_final = 9;
+  bool is_revision = 10;
+  string source_object = 11; // RequestScopedOptimizationLabel, PostInstallConversionEvent
+  string trainer_policy_id = 12;
+  string feedback_policy_id = 13;
+}
+```
 
-在 confidential plane 内执行：
+### 8.17 OptimizationTrainingRow
 
-1. join `AdRequestContext`
-2. join `OnDeviceMeasurementArtifact`
-3. join `MmpConfirmRequest`
-4. 构造 request-scoped label
-5. 构造 bounded aggregate contribution
+这个对象不是对外协议对象，而是 ad network 在内部训练面物化后的最小训练行。它的作用是把“归因标签”和“可释放特征”在最后一跳 join 成一个 trainer-safe row。
 
-### 10.8 aggregate reporting
+```proto
+message OptimizationTrainingRow {
+  string schema_version = 1;
+  string trainer_policy_id = 2;
+  string feature_policy_id = 3;
+  string label_policy_id = 4;
+  int64 server_request_id = 5;
+  int64 campaign_id = 6;
+  int64 creative_id = 7;
+  int64 placement_id = 8;
+  int64 auction_id = 9;
+  bool is_attributed = 10;
+  int32 claim_confidence_micros = 11;
+  int64 conversion_group_id = 12;
+  int32 credit_fraction_micros = 13;
+  bool right_censored = 14;
+  int64 label_ts_ms = 15;
+  repeated string released_feature_names = 16;
+  string feature_vector_ref = 17;
+  string sample_weight_policy_id = 18;
+  int32 sample_weight_micros = 19;
+}
+```
 
-aggregate output 只有在经过下列处理后才能释放：
+### 8.18 AggregateCollectorBudgetState
 
-- dedupe
-- contribution bounding
-- minimum crowd threshold
-- 可选的 DP noise
-- audit log
+这个对象不是给设备侧看的，而是给 aggregate collector 和 budget scheduler 明确“这次 collect 到底花了什么预算、属于哪个 collector、处于哪个生命周期状态”。它把 W3C Attribution Level 1 和 DAP attribution draft 里的 budget / collector thinking 变成可落地的生产 contract。
 
-### 10.9 一个完整 install 例子
+```proto
+message AggregateCollectorBudgetState {
+  string measurement_task_id = 1;
+  string report_id = 2;
+  string batch_id = 3;
+  string collector_domain = 4; // mmp.example, analytics.partner.example
+  string collector_surface_id = 5; // aap_ui, bi_export, partner_report_api
+  string budget_scope_id = 6; // campaign_day_us, advertiser_week_global
+  int32 privacy_budget_epoch_id = 7;
+  int64 requested_budget_micros = 8;
+  int64 reserved_budget_micros = 9;
+  int64 finalized_budget_micros = 10;
+  int64 report_create_ts_ms = 11;
+  int64 report_expiry_ts_ms = 12;
+  string lifecycle_state = 13; // pending, collected, finalized, expired, replay_rejected
+  bool replay_rejected = 14;
+  string budget_allocation_policy_id = 15;
+}
+```
 
-下面给一个带 mock 数据的完整例子，帮助把对象和流程串起来：
+## 9. Mock payload
 
-1. `2026-04-29 10:00:00.123 UTC`
-   ad network backend 收到一次广告请求，生成：
-   - `server_request_id="9183372036854775801"`
-   - `auction_id="331245778901"`
-   - `campaign_id=9830012`
-2. `2026-04-29 10:00:01.800 UTC`
-   端上发生 click，SDK 在本地记录：
-   - `boot_time_ms="1777120000000"`
-   - `ip_v4="203.0.113.14"`
-   - `device_uptime_ms="345210456"`
-   这些原始值仍留在端上内存或短期加密缓存。
-3. `2026-04-29 13:40:05.123 UTC`
-   用户首次打开 App，SDK 生成：
-   - `artifact_id="c77a8a3f-7a9a-4aa7-8b8d-9bff0f2cbe9d"`
-   - `odm_info="base64url:eyJzY2hlbWFfdmVyc2lvbiI6MX0"`
-4. `2026-04-29 13:40:10.021 UTC`
-   MMP 发起 ask：
-   - `ask_request_id="01JTG7X7NQ0Z4W9Y9G1M13FQ7Q"`
-   - `mmp_event_id="2737f9ce-ef8d-458b-9c29-29e9f9ffde4e"`
-   - `odm_info=<opaque string>`
-5. `2026-04-29 13:40:11.050 UTC`
-   ad network 返回：
-   - `claim_decision="claim_yes"`
-   - `claim_token=<signed short-lived token>`
-   - `claim_confidence=0.93`
-6. `2026-04-29 13:40:11.098 UTC`
-   MMP 发送 confirm，声明 winner 是这家 ad network。
-7. confidential plane 内部 join 后产出：
-   - `label_id="lbl_01JTG82T1H2V0HDM0Y1D0T1RRT"`
-   - `label_type="purchase_value_7d"`
-   - `server_request_id="9183372036854775801"`
-8. 7 天窗口关闭后：
-   - optimization plane 得到一条 request-level training example；
-   - aggregate plane 把该用户对 `campaign_id=9830012,country_code=US` 的贡献裁剪到 `contribution_policy_id="contrib_daily_adv_v3"` 允许的上限，再参与每日报表发布。
+### 9.1 广告请求
 
-## 11. 敏感信号流转规范
+```json
+{
+  "server_request_id": 91833720368540001,
+  "auction_id": 91833720368549991,
+  "campaign_id": 74012091,
+  "creative_id": 74019912,
+  "placement_id": 30101,
+  "advertiser_id": 120045,
+  "publisher_app_numeric_id": 88990011,
+  "publisher_app_bundle": "com.example.game",
+  "request_ts_ms": 1777500005123,
+  "country_code": "US",
+  "region_code": "US-CA",
+  "consent_scope": 5,
+  "measurement_task_id": "icm_install_v3",
+  "contribution_policy_id": "contrib_install_v2",
+  "feature_policy_id": "feature_low_sensitive_v4",
+  "retention_policy_id": "retain_30d_confidential_180d_label"
+}
+```
 
-这部分是整个 RFC 最容易被做坏的地方，因此单独写清楚。
+### 9.2 端上 artifact
 
-### 11.1 App 可以采哪些
+```json
+{
+  "artifact_id": "d91f8c0a82d311eebf3d0242ac120002",
+  "artifact_version": "odm-artifact-v3",
+  "measurement_task_id": "icm_install_v3",
+  "server_request_id": 91833720368540001,
+  "impression_ts_ms": 1777500006123,
+  "click_ts_ms": 1777500009231,
+  "conversion_candidate_ts_ms": 1777500900000,
+  "observation_window_sec": 604800,
+  "artifact_expiry_ts_ms": 1778105700000,
+  "workflow_manifest_digest": "sha256:9c9c0d...f2a1",
+  "sdk_attestation": "base64:MEQCIA..."
+}
+```
 
-`MAY` 采：
+### 9.2B aggregate collector budget state
+
+```json
+{
+  "measurement_task_id": "agg_install_geo_day_v4",
+  "report_id": "rpt_01JVATJQ6D3SK9D6V7Y4M3Q2P1",
+  "batch_id": "2026-04-29/us-ca/install/000041",
+  "collector_domain": "mmp.example",
+  "collector_surface_id": "aap_ui",
+  "budget_scope_id": "advertiser_120045_us_daily",
+  "privacy_budget_epoch_id": 20260429,
+  "requested_budget_micros": 50000,
+  "reserved_budget_micros": 50000,
+  "finalized_budget_micros": 50000,
+  "report_create_ts_ms": 1777503600123,
+  "report_expiry_ts_ms": 1778112000000,
+  "lifecycle_state": "finalized",
+  "replay_rejected": false,
+  "budget_allocation_policy_id": "budget_install_geo_day_v2"
+}
+```
+
+### 9.3 advertiser app / server 缓存的 `odm_info`
+
+```json
+{
+  "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f-28sN5qN9GTZ_FztjL0OLFzgxUJD...",
+  "odm_version": "icm-info-v2",
+  "measurement_task_id": "icm_install_v3",
+  "info_generated_ts_ms": 1777500900100,
+  "info_expiry_ts_ms": 1778105700000
+}
+```
+
+### 9.4 MMP Ask
+
+```json
+{
+  "mmp_name": "ExampleMMP",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "mmp_install_id": "mmp_install_120045_9981",
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "install_ts_ms": 1777500905123,
+  "event_ts_ms": 1777500905123,
+  "event_name": "first_open",
+  "id_type": "idfv",
+  "device_id": "CCB300A0-DE1B-4D48-BC7E-599E453B8DD4",
+  "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+  "query_template_id": "mmp_install_query_v2",
+  "country_code": "US",
+  "ask_idempotency_key": "ask_01JTRP7V8W5T7A8Y4A8V2P",
+  "ask_attempt_ts_ms": 1777500905123,
+  "query_contract_id": "google_icm_install_query_v3"
+}
+```
+
+### 9.5 Claim Response
+
+```json
+{
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "claim_status": "CLAIMED",
+  "claim_token": "base64:Wk1Qd1p4Y2xhaW0...",
+  "claim_confidence": 0.94,
+  "measurement_task_id": "icm_install_v3",
+  "claim_ts_ms": 1777500906201,
+  "claim_expiry_ts_ms": 1777502706201,
+  "policy_version": "claim_policy_v5",
+  "claim_reason_code": "MATCHED_ODM_AND_ELIGIBLE_TOUCH",
+  "request_accepted": true
+}
+```
+
+### 9.6 MMP Confirm
+
+```json
+{
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "claim_token": "base64:Wk1Qd1p4Y2xhaW0...",
+  "final_decision": "WIN",
+  "confirm_ts_ms": 1777500907120,
+  "winning_touch_ts_ms": 1777500009231,
+  "winning_network": "example_ad_network",
+  "confirm_idempotency_key": "confirm_01JTRP7V8W5T7A8Y4A8V2P",
+  "confirm_attempt_ts_ms": 1777500907120
+}
+```
+
+### 9.7 优化标签
+
+```json
+{
+  "server_request_id": 91833720368540001,
+  "advertiser_id": 120045,
+  "campaign_id": 74012091,
+  "creative_id": 74019912,
+  "placement_id": 30101,
+  "label_ts_ms": 1777500907120,
+  "label_type": "install",
+  "label_value": 1.0,
+  "is_attributed": true,
+  "claim_confidence": 0.94,
+  "conversion_group_id": 502233001,
+  "credit_fraction_micros": 1000000,
+  "observation_window_sec": 604800,
+  "right_censored": false,
+  "trainer_policy_id": "trainer_gbdt_install_v7",
+  "feature_policy_id": "feature_low_sensitive_v4",
+  "contribution_policy_id": "contrib_install_v2",
+  "region_profile": "R1",
+  "network_stability_bucket": "wifi_stable",
+  "reinstall_hint_bucket": "weak"
+}
+```
+
+### 9.8 post-install purchase event
+
+```json
+{
+  "advertiser_event_id": 20078199001,
+  "advertiser_id": 120045,
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "event_name": "purchase",
+  "event_ts_ms": 1777504507123,
+  "event_value_micros": 4990000,
+  "currency_code": "USD",
+  "event_dedupe_key": "purchase_120045_user_9981_order_771",
+  "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+  "advertiser_user_id": 998100771,
+  "event_schema_id": "purchase_event_v2",
+  "event_dimensions": {
+    "sku": "gem_pack_1",
+    "store": "app_store",
+    "is_intro_offer": "false"
+  }
+}
+```
+
+### 9.9 SRN handshake state
+
+```json
+{
+  "handshake_id": "hs_01JTRPD6K3K53M2EVR8C3R6B6Z",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "server_request_id": 91833720368540001,
+  "measurement_task_id": "icm_install_v3",
+  "ask_status": "RECEIVED",
+  "claim_status": "CLAIMED",
+  "confirm_status": "WIN",
+  "ask_ts_ms": 1777500905123,
+  "claim_ts_ms": 1777500906201,
+  "confirm_ts_ms": 1777500907120,
+  "expiry_ts_ms": 1777502706201,
+  "policy_version": "claim_policy_v5",
+  "failure_reason_code": ""
+}
+```
+
+### 9.10 external compat record
+
+```json
+{
+  "partner_name": "google_app_conversion_api",
+  "api_contract_version": "v1.1_2026-03-10",
+  "request_contract_id": "google_app_conversion_first_open_v4",
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "app_event_type": "first_open",
+  "event_timestamp_sec_micros": 1777500905123000,
+  "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+  "id_type": "idfv",
+  "rdid": "CCB300A0-DE1B-4D48-BC7E-599E453B8DD4",
+  "user_agent": "ExampleMMP/8.1.0 (iOS 18.1; en_US; iPhone16,2; Build/22B82; Proxy)",
+  "x_forwarded_for": "203.0.113.24",
+  "ad_event_id": "CAESEJr7v2cTn6M8W2Gv6V9qKQ",
+  "attributed": true,
+  "compat_expiry_ts_ms": 1777587307120,
+  "response_tracking": "ACCEPTED"
+}
+```
+
+### 9.11 server feature derivation record
+
+```json
+{
+  "server_request_id": 91833720368540001,
+  "measurement_task_id": "icm_install_v3",
+  "feature_policy_id": "feature_low_sensitive_v4",
+  "derivation_workflow_id": "feature_release_workflow_2026_04",
+  "derivation_ts_ms": 1777500908200,
+  "network_stability_bucket": "wifi_stable",
+  "timezone_consistency_bucket": "stable",
+  "reinstall_hint_bucket": "weak",
+  "ip_churn_bucket": "same_prefix_24h",
+  "boot_time_freshness_bucket": "2_to_7_days",
+  "suspicious_replay_pattern": false,
+  "release_scope": "optimization_only"
+}
+```
+
+### 9.12 attribution decision record
+
+```json
+{
+  "decision_id": "dec_01JTRPF2VY9T21Q2FJAA1K8M7X",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "server_request_id": 91833720368540001,
+  "measurement_task_id": "icm_install_v3",
+  "final_decision": "WIN",
+  "winner_reason": "ELIGIBLE_CLICK",
+  "prefilter_candidate_count": 6,
+  "eligible_candidate_count": 2,
+  "assist_count": 3,
+  "flooding_suspected": true,
+  "winner_confidence": 0.94,
+  "decision_ts_ms": 1777500907199,
+  "decision_policy_id": "decision_policy_v3"
+}
+```
+
+### 9.13 optimization feedback record
+
+```json
+{
+  "server_request_id": 91833720368540001,
+  "advertiser_id": 120045,
+  "campaign_id": 74012091,
+  "creative_id": 74019912,
+  "feedback_type": "purchase",
+  "feedback_value": 4.99,
+  "event_ts_ms": 1777504507123,
+  "publish_ts_ms": 1777504511000,
+  "is_final": false,
+  "is_revision": false,
+  "source_object": "PostInstallConversionEvent",
+  "trainer_policy_id": "trainer_gbdt_purchase_v4",
+  "feedback_policy_id": "feedback_publish_v2"
+}
+```
+
+### 9.14 final optimization training row
+
+```json
+{
+  "schema_version": "optimization_training_row.v1",
+  "trainer_policy_id": "trainer_policy.purchase_value_v3",
+  "feature_policy_id": "feature_policy.low_sensitive_release_v4",
+  "label_policy_id": "label_policy.purchase_7d_v2",
+  "server_request_id": "922337203600012345",
+  "campaign_id": "20014501",
+  "creative_id": "30077882",
+  "placement_id": "40102",
+  "auction_id": "800990011",
+  "is_attributed": true,
+  "claim_confidence_micros": 910000,
+  "conversion_group_id": "7001000001",
+  "credit_fraction_micros": 1000000,
+  "right_censored": false,
+  "label_ts_ms": "1761795105123",
+  "released_feature_names": [
+    "network_stability_bucket",
+    "timezone_consistency_bucket",
+    "reinstall_hint_bucket",
+    "request_hour_bucket",
+    "geo_cluster_id"
+  ],
+  "feature_vector_ref": "fv://trainer-ready/2026-04-29/922337203600012345",
+  "sample_weight_policy_id": "sample_weight.purchase_quality_v2",
+  "sample_weight_micros": 1000000
+}
+```
+
+## 10. 敏感 PII 如何流动
+
+### 10.1 原则
+
+- 原始 `boot_time`、原始 `ip`、完整 `User-Agent`、长期稳定设备标识 `MUST NOT` 进入普通 BI、通用日志或通用湖仓。
+- 如果协议兼容需要把某些字段传给外部 API，这些字段也 `MUST NOT` 自动下沉到 optimization plane。
+- “为了兼容 partner API 先缓存一下” 不等于 “这个字段可以成为训练特征”。
+
+### 10.2 推荐的数据流
+
+1. ad network SDK 在 advertiser app 内观察到敏感信号。
+2. 设备侧只输出两类结果：
+   - `task-bound opaque envelope`
+   - `encrypted confidential feature blob`
+3. confidential plane 内部做低敏特征派生，例如：
+   - `network_stability_bucket`
+   - `timezone_consistency_bucket`
+   - `reinstall_hint_bucket`
+   - `ip_churn_bucket`
+4. optimization plane 只看到派生后的低敏特征。
+5. aggregate plane 只看到 bounded metric contribution。
+
+### 10.3 关于 `user_id:int64`
+
+本文允许存在内部账户体系下的 `advertiser_user_id:int64`，但有强约束：
+
+- 只可用于 advertiser 自有 first-party 路径；
+- 必须与 `server_request_id`、`measurement_task_id` 分离；
+- 不得通过 `odm_info` 暗度陈仓传给 MMP；
+- 不得成为跨 app、跨 network 的通用 join key。
+
+也就是说：
+
+- `server_request_id` 是 request key
+- `advertiser_user_id` 是 advertiser first-party account key
+- `odm_info` 是 opaque bridge object
+
+三者语义必须严格分开。
+
+### 10.4 建议按四层处理“既敏感又可能有业务价值”的字段
+
+这类字段最容易在生产中边界失守。建议直接按 release surface 分类：
+
+- `raw-sensitive only`
+  - `boot_time_ms`
+  - `raw_ip`
+  - 完整 `User-Agent`
+  - 只允许留在设备侧或 confidential plane
+- `egress-only compatibility`
+  - `rdid`
+  - `X-Forwarded-For`
+  - `ad_event_id`
+  - 允许短期缓存用于 partner API，但 `MUST NOT` 进入训练特征表
+- `optimization-safe derived`
+  - `network_stability_bucket`
+  - `ip_churn_bucket`
+  - `reinstall_hint_bucket`
+  - 允许进入 optimization plane，但必须有 `feature_policy_id`
+- `aggregate-only`
+  - `metric_name`
+  - `metric_value`
+  - `aggregation_key`
+  - 只允许以 bounded contribution 形态出现
+
+如果团队发现某个字段同时出现在这四层中的两层以上，默认说明边界设计有问题，需要拆对象，而不是继续打补丁。
+
+### 10.5 字段级 handling matrix
+
+为了避免“实现时顺手透传”，建议把常见字段在 RFC 里直接定死到 release surface：
 
 - `boot_time_ms`
-- `device_uptime_ms`
-- 原始 `ip`
-- user agent
-- coarse network class
-- locale / timezone
-- reinstall hints
-- app / os / model family
+  - 允许出现于 `Device Raw Plane`
+  - 允许以派生桶特征出现于 `Confidential Plane`
+  - 默认不允许进入 `MMP/SRN payload`
+  - 默认不允许原值进入 `Optimization Plane`
+- `raw_ip`
+  - 允许短期出现于 `Device Raw Plane`
+  - 允许短期出现于 partner compat egress
+  - 默认不允许进入训练明细或普通数仓
+- `rdid`
+  - 只在 partner compat contract 需要时短期存在
+  - 不得作为内部通用 join key
+- `odm_info`
+  - 只用于 bridge / ask 流程
+  - 不得进入 trainer row
+  - 不得进入长期画像表
+- `ad_event_id`
+  - 允许存在于 external response mapping
+  - 不得直接进入 bid / ranking / pacing 训练
+- `server_request_id`
+  - 允许出现在 confidential join 和 optimization label
+  - 不得进入 partner-facing payload
+  - 不得沉入普通 BI 明细
+- `user_id:int64`
+  - 若广告主业务必须使用，应该只存在于 advertiser-controlled first-party plane
+  - 不得成为 ODM core protocol 的必填字段
+  - 不得替代 `server_request_id`
 
-### 11.2 应该怎么走
+## 11. 与 MMP / SRN 的协同规范
 
-推荐路径：
+### 11.1 标准流程
 
-1. raw signal 在设备侧采集
-2. 尽早转换为 bucket、truncated value 或 derived feature
-3. 只通过 artifact 或 confidential upload 进入服务端
-4. 只在 confidential join / fraud / label workflow 中消费
-5. 不进入普通报表和普通训练表
+本文默认 SRN 协议抽象为：
 
-### 11.3 绝对不应该怎么走
+1. `MMP Ask`
+2. `Ad Network Claim`
+3. `MMP Confirm`
 
-- raw `boot_time` 透传给 MMP
-- raw `ip` 进入通用 Kafka topic
-- 原始敏感字段作为长期 identity key
-- `odm_info` 被设计成可复用 pseudo-user-id
+### 11.2 Ask 阶段要求
 
-### 11.4 为外部归因 API 兼容而暂存的字段应该怎么走
+- `odm_info` `SHOULD` 作为 ask 的可选增强字段。
+- `query_template_id` `MUST` 明确，防止 partner 任意探测。
+- `query_hash` `SHOULD` 绑定进 `claim_token`。
 
-有些字段不是 ODM 本身需要，而是 Google App Conversion API 这类外部协议需要，例如 `rdid`、`id_type`、`User-Agent`、`X-Forwarded-For`、`ad_event_id`、`attributed`。这些字段的推荐流向是：
+### 11.3 Claim 阶段要求
 
-1. 只在端上 / MMP / egress adapter 的专用链路出现；
-2. 只保留到完成外部 API 请求和排障 TTL 为止；
-3. 默认不进入 optimization feature 表，不进入 aggregate reporting 表；
-4. 若确实需要用于 fraud 或 reconciliation，`MUST` 在 confidential workflow 内再次降维成派生特征，再决定是否可以下游消费。
+- ad network `MUST` 校验 task binding。
+- ad network `MUST` 校验 expiry。
+- ad network `MUST` 做 anti-replay。
+- ad network `SHOULD` 默认不返回内部 loser diagnostics。
 
-不要因为外部 API 要 raw 字段，就把内部所有数据面一起放松。
+### 11.4 Confirm 阶段要求
 
-## 12. 匹配策略
+- `claim_token` `MUST` 只在短窗口内有效。
+- `final_decision` `MUST` 决定后续 label 是否物化。
+- confirm 缺失时，系统 `MAY` 产生 provisional label，但不得混入 final training set。
 
-本文假设存在多档匹配强度。
+### 11.5 与 Google App Conversion / ICM 的兼容
 
-### 12.1 最强
+Google 的 [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 已明确：
 
-- 通过 confidential plane 内的 `server_request_id` 进行 request 级精确关联
+- `odm_info` 是 ICM 必需字段之一；
+- 响应里存在 `ad_event_id` 这类 partner-facing 标识；
+- 某些外部 API 仍要求 `rdid`、`User-Agent`、`X-Forwarded-For` 等字段。
+- cross-network attribution request 需要带回 `ad_event_id` 与 `attributed`；
+- 有效的 cross-network attribution request 会收到 `HTTP 200` 且空响应体，这只能说明 partner accepted the follow-up request，不说明 attribution truth 已被全链路确认。
 
-### 12.2 中等
+同时，Google 2026 年的 measurement reporting 文档还明确：
 
-- 通过短生命周期 `odm_info` / artifact 做 task-bound 匹配
+- ICM 的 granular event-level view 位于 AAP UI，而不是 Google Ads reporting UI；
+- ODM 对位于 `EEA`、`UK`、`Switzerland` 的用户 inactive，因此协议必须区分 `feature_not_active_by_region`、`feature_not_integrated`、`claim_not_found` 这三类完全不同的状态。
 
-### 12.3 更弱
+因此推荐四层拆分：
 
-- 通过临时衍生特征做 bounded probabilistic matching
+1. `compatibility egress cache`
+2. `confidential join cache`
+3. `optimization labels`
+4. `aggregate outputs`
 
-规则：
+不要把第 1 层直接合并进第 3 层。
 
-- optimization `SHOULD` 优先消费强匹配结果；
-- 弱匹配 `MUST` 带上 confidence；
-- settlement 或敏感对账场景 `SHOULD` 使用更严格门槛。
+### 11.6 “partner 接受了请求” 不等于 “归因已成立”
 
-## 13. optimization 需求
+以 Google App Conversion API 为代表的外部协议里，`HTTP 200` 常常只表示 request 被接受或可继续处理，不表示 attribution truth 已经成立。
 
-### 13.1 为什么必须有 `server_request_id`
+因此生产系统 `MUST` 明确区分至少三层状态：
 
-广告优化经常需要回答：
+- `request_accepted`
+  - 外部 API 接收了这条请求
+- `claim_established`
+  - ad network 在自己的 confidential plane 内完成了有效 claim
+- `attribution_confirmed`
+  - MMP confirm 或内部 winner selection 最终闭环完成
 
-- 哪次 ad request 触发了 install？
-- 哪次 request 对应了 purchase value？
-- 哪些请求在 observation window 结束后仍然是 hard negative？
+如果把这三层混成一个布尔值，就会同时伤害：
 
-没有 request 级键，系统会退化成：
+- 训练标签质量
+- partner 对账
+- 重试与补发逻辑
+- 事故排障
 
-- aggregate-only measurement
-- 弱监督训练
-- delayed feedback 处理能力不足
+推荐做法是把外部响应状态写入 `ExternalAttributionCompatRecord.response_tracking`，把闭环状态写入 `AttributionHandshakeState.confirm_status`。
 
-### 13.2 label contract
+### 11.7 Ask / Claim / Confirm 必须可重放排查，但不可重放执行
 
-每一种 optimization label `MUST` 定义：
+这类系统线上一定会遇到：
 
+- ask 超时重试
+- claim 成功但 confirm 丢失
+- confirm 迟到
+- partner follow-up accepted 但未回传可用 mapping
+
+因此 RFC 应要求：
+
+- 每次 ask/claim/confirm 都有独立 `attempt_ts_ms`
+- `ask_idempotency_key` 与 `confirm_idempotency_key` `MUST` 进入协议对象，而不是只留在 API gateway 日志
+- 同一 `mmp_event_id + measurement_task_id + query_hash` 有 bounded retry budget
+- 线上排查依赖 `AttributionHandshakeState` 和 `ExternalAttributionCompatRecord`
+- 真正执行路径依赖 `replay_cache_key`、expiry、policy version，防止“排查日志可见”演变成“协议可重放”
+
+### 11.8 ownership 与责任矩阵
+
+要让 ask / claim / confirm 真能线上落地，RFC 需要把“谁生成、谁缓存、谁负责过期”写清楚：
+
+- `server_request_id`
+  - 生成方: ad network backend
+  - 写入方: ad response / SDK exposure metadata
+  - 生命周期负责人: ad network
+- `odm_info`
+  - 生成方: advertiser app 中的 ODM SDK
+  - 缓存方: advertiser app 或 advertiser server
+  - 透传方: MMP / AAP
+  - 过期负责人: advertiser app 与 ad network 共同约束
+- `ask_idempotency_key`
+  - 生成方: MMP
+  - 生命周期负责人: MMP
+- `claim_token`
+  - 生成方: ad network confidential service
+  - 使用方: MMP confirm
+  - 过期负责人: ad network
+- `confirm_idempotency_key`
+  - 生成方: MMP
+  - 生命周期负责人: MMP
+
+如果责任不清晰，线上最容易出现两种事故：一是同一 install 被多次问询，二是 `odm_info` 被错误地缓存成长期用户标识。
+
+## 12. Optimization 规范
+
+### 12.1 为什么必须保留 request-level 粒度
+
+如果服务端只拿到 aggregate conversion count，则无法稳定支撑：
+
+- 出价优化
+- creative ranking
+- budget pacing
+- cold-start exploration
+- fraud / anomaly modeling
+
+因此 `RequestScopedOptimizationLabel` 至少要保留：
+
+- `server_request_id`
+- `campaign_id`
+- `creative_id`
+- `placement_id`
 - `label_type`
-- `observation_window`
-- `right_censoring` 规则
-- `late_event_cutoff`
-- `dedupe` 规则
-- `credit_allocation` 规则
-- `sample_weight` 规则
-- `trust_scope_id`
-- `trainer_policy_id`
+- `label_value`
+- `credit_fraction_micros`
+- `claim_confidence`
 
-如果一个 conversion 可能对应多个候选 touch / request，label contract 还 `MUST` 明确：
+### 12.2 多触点与多拥有者
 
-- winner-only 还是 fractional credit
-- `conversion_group_id` 的构造规则
-- `credit_fraction_micros` 与 `sample_weight` 如何共同生效
-- 多归因样本在训练集进入前如何做 contribution bounding
+现实世界里，一个 conversion 可能对应多个 touch、多个 network、多个 owner。受 [It's My Data Too](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/) 启发，label contract 必须处理：
 
-### 13.3 推荐 baseline
+- winner-only attribution
+- fractional credit attribution
+- assist logging
+- multi-user ownership
 
-第一阶段训练推荐：
+推荐规范：
+
+- `conversion_group_id:int64`
+  - 同一 conversion 组内的多条样本共享该 ID
+- `credit_fraction_micros:int32`
+  - 1000000 表示 100%
+- `contribution_policy_id:string`
+  - 明确该 conversion 组如何裁剪
+
+### 12.3 推荐 baseline
+
+Phase 1 推荐：
 
 - `LightGBM`
 - `XGBoost`
-- delayed-feedback aware pipeline
-- right-censoring aware label materialization
+- delayed-feedback aware label materialization
+- right-censoring aware training data build
 
-确实需要时再升级：
+暂不建议一上来就把训练升级成：
 
-- `TensorFlow` / `PyTorch`
-- `JAX Privacy` / `TensorFlow Privacy`
+- 全量 DP-SGD 深度模型
+- 联邦端上训练主路径
 
-## 14. aggregate reporting 需求
+这不是因为这些方向不重要，而是因为在广告测量落地里，先把 `label contract + policy versioning + sample lifecycle` 做对，收益更大。
 
-### 14.1 最低控制集合
+### 12.4 optimization plane 最低要看到什么
 
-任何 aggregate release `MUST` 实现：
+如果目标是 personalized optimization，而不是只做 aggregate reporting，那么服务端至少要稳定保留以下粒度：
+
+- request identity
+  - `server_request_id`
+  - `campaign_id`
+  - `creative_id`
+  - `placement_id`
+- attribution state
+  - `claim_confidence`
+  - `is_attributed`
+  - `conversion_group_id`
+  - `credit_fraction_micros`
+- lifecycle state
+  - `observation_window_sec`
+  - `right_censored`
+  - `label_ts_ms`
+- policy state
+  - `trainer_policy_id`
+  - `feature_policy_id`
+  - `contribution_policy_id`
+- released low-sensitive features
+  - `network_stability_bucket`
+  - `timezone_consistency_bucket`
+  - `reinstall_hint_bucket`
+
+反过来说，下列字段通常不该进入 optimization plane：
+
+- `odm_info`
+- `claim_token`
+- `rdid`
+- `X-Forwarded-For`
+- 完整 `User-Agent`
+- partner 返回的原始 `ad_event_id`
+
+### 12.5 推荐把训练样本拆成“标签行”和“特征释放行”
+
+不要把所有字段做成一张肥表。更稳的设计是：
+
+- `RequestScopedOptimizationLabel`
+  - 定义监督信号和 credit
+- `ServerFeatureDerivationRecord`
+  - 定义 confidential plane 释放的低敏特征
+
+训练时再按 `server_request_id` 做内部 join。这样有三个好处：
+
+- feature policy 漂移更容易灰度
+- compat 字段更难误入训练
+- 后续要给 fraud model 和 bid model 不同 release scope 时，不必拆历史大表
+
+### 12.6 optimization feedback 不应隐式依赖离线回填
+
+如果希望 on-device measurement 真正服务于 personalized optimization，而不仅仅是离线归因报表，则系统还应显式发布 `OptimizationFeedbackRecord`：
+
+- 安装类标签可以低延迟发布 first label，再在 `purchase`、`retention_d1`、`roas_7d` 到达时持续补充反馈；
+- `is_final` 与 `is_revision` 用来区分“首次反馈”“更正反馈”“最终冻结反馈”；
+- bidding / pacing / exploration 系统消费 feedback ledger，而不是直接监听杂乱的 post-install 业务事件流。
+
+推荐把 `RequestScopedOptimizationLabel` 视为“首次监督信号”，把 `OptimizationFeedbackRecord` 视为“持续监督流”。两者共同构成线上优化闭环。
+
+### 12.7 purchase optimization walkthrough
+
+把一次真实 purchase 优化闭环按时间顺序写开，会更容易看懂为什么要保留这些字段：
+
+1. ad network 在广告请求时生成 `server_request_id=922337203600012345`，并把 campaign、creative、placement、geo、consent 写入 `AdRequestContext`。
+2. SDK 在端上看到 impression / click，同时观察到 `boot_time_ms`、`raw_ip`、`timezone_offset_min`、`bundle_first_install_ts_ms` 等本地信号。
+3. 端上不直接上送这些原值，而是生成：
+   - `OnDeviceMeasurementArtifact`
+   - `odm_info`
+4. 用户完成安装，MMP 发起 `MmpAskRequest`，其中包含自己的 `mmp_event_id`、query contract，以及透传的 `odm_info`。
+5. ad network 在 confidential plane 内把 ask 与 artifact 绑定，判断这次 install 是否 eligible to claim，并返回短期 `claim_token`。
+6. MMP 在多家 SRN 返回结果之间做 winner selection，然后只对 winner 发 `MmpConfirmRequest`。
+7. ad network 在 confidential plane 内做最终 join，输出：
+   - `RequestScopedOptimizationLabel`
+   - `ServerFeatureDerivationRecord`
+   - `OptimizationFeedbackRecord`
+8. trainer materialization 作业按 `server_request_id` 内联 join label 与 feature release，生成 `OptimizationTrainingRow`。
+9. 线上 bidding / ranking 系统拿到的是训练安全的 request row，而不是 `odm_info`、`raw_ip`、完整 `User-Agent` 或 partner `ad_event_id`。
+
+这个 walkthrough 的关键点是：个性化优化依赖的是 request-level 对齐能力，不依赖把原始 PII 长期放进训练面。
+
+## 13. Aggregate reporting 规范
+
+### 13.1 最低治理要求
+
+任何 aggregate release `MUST` 至少有：
 
 - dedupe
 - contribution bounding
 - minimum crowd threshold
 - audit log
+- replay rejection
 
-### 14.2 DP 策略
+### 13.2 DP 策略
 
-本文明确允许阶段性 trade-off：
+本文明确允许 trade-off：
 
-- optimization label plane 初期 `MAY` 只做 confidential + TTL + ACL + audit
-- aggregate reporting plane `SHOULD` 更早进入 DP 治理
+- `optimization plane` 初期 `MAY` 为 confidential-but-not-DP
+- `aggregate reporting plane` `SHOULD` 更早进入 DP 治理
 
-### 14.3 DAP/VDAF 对齐
+推荐库：
 
-即使第一阶段不直接部署完整 DAP，也建议 aggregate object model 对齐：
+- [OpenDP](https://github.com/opendp/opendp)
+- [google/differential-privacy](https://github.com/google/differential-privacy)
 
-- `task`
-- `task_expiration`
-- `report`
+### 13.3 与 DAP/VDAF 对齐
+
+即使 Phase 1 不部署完整 DAP，也建议 aggregate object model 对齐：
+
+- `measurement_task_id`
 - `report_id`
-- `batch`
-- `collect_request`
-- `aggregate_result`
+- `batch_id`
+- `task_expiry_ts_ms`
 - `extension_fields`
+- `collector_domain`
+- `collector_surface_id`
+- `privacy_budget_epoch_id`
+- `requested_budget_micros`
+- `lifecycle_state`
 
-## 15. 跨方 reconciliation 与 settlement
+这样 Phase 2 升级到 DAP/VDAF 或 partner-managed aggregate collector 时，迁移成本更低。
 
-如果后续要做 advertiser / publisher / ad network 的跨方对账：
+同时应吸收 [W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 的两个硬约束：
 
-- 优先考虑 `Private Join and Compute`
-- 不要回退到跨方交换 raw user-level 明细
+- aggregate collector `MUST NOT` 接收同一 report 多次；
+- privacy budget 的扣减和 report 生命周期必须是 collector 可见状态，而不是依赖外部分析作业补记。
 
-适合的场景：
+再进一步，受 [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 影响，aggregate plane `SHOULD` 从第一天起显式建模：
 
-- advertiser vs ad network reconciliation
-- publisher vs ad network settlement
-- MMP 协助下的 aggregate sanity check
+- collector 是谁
+- budget 属于哪个 scope
+- 这是 requested / reserved / finalized 的哪一种预算状态
+- batch 是 leader/collector 视角下的哪一个稳定 collect 单位
 
-来源：
-- [Private Join and Compute](https://github.com/google/private-join-and-compute)
+否则后面一旦要支持 shared budget、multi-surface reporting 或多个 collector，系统就会被迫把“预算语义”硬塞进离线任务名字和脚本参数里。
 
-## 16. 安全与治理要求
+### 13.4 推荐的 VDAF primitive 映射
 
-### 16.1 Anti-replay
+为了避免 aggregate plane 落回自定义协议，建议优先按指标类型选择已有 VDAF primitive：
 
-每个 artifact / claim flow `MUST` 至少带：
+- install / purchase count
+  - `Prio3Count`
+- revenue / ROAS numerator
+  - `Prio3Sum`
+- retention day、latency、value range
+  - `Prio3Histogram`
+- 固定长度 campaign x geo x day 向量
+  - `Prio3SumVec`
 
-- 唯一 nonce 或 report ID
-- expiry
-- task binding
-- replay cache key
+RFC 不需要强制“今天就部署哪一个 collector”，但应先把 metric type 和 primitive 对齐，否则未来很容易出现一套只服务本团队脚本的半成品 aggregation protocol。
 
-### 16.2 Purpose binding
+### 13.5 bucket 与 reporting window 也是优化对象
+
+受 [Summary Reports Optimization in the Privacy Sandbox Attribution Reporting API](https://research.google/pubs/summary-reports-optimization-in-the-privacy-sandbox-attribution-reporting-api/) 启发，aggregate plane 应把下面这些东西也版本化：
+
+- `aggregation_key_schema_id`
+- `value_bucket_schema_id`
+- `reporting_window_id`
+- `budget_allocation_policy_id`
+
+原因很简单：同样的 privacy budget 下，维度切分和 value bucket 设计直接决定报表可用性。把这些参数留给下游分析师临时拼接，往往会让系统既不稳，也不容易审计。
+
+## 14. 安全、隐私与治理要求
+
+### 14.1 TTL
+
+以下对象都 `MUST` 有 expiry：
+
+- `OnDeviceMeasurementArtifact`
+- `odm_info`
+- `claim_token`
+- `compatibility egress cache`
+
+### 14.2 Anti-replay
+
+至少要求：
+
+- `artifact_id`
+- `replay_nonce`
+- `query_hash`
+- `replay_cache_key`
+- bounded-shot query count
+
+### 14.3 Purpose binding
 
 每次 confidential upload `SHOULD` 绑定：
 
-- allowed processing workflow
-- allowed release surface
-- retention policy
+- `measurement_task_id`
+- `workflow_manifest_digest`
+- `allowed_release_surface`
+- `retention_policy_id`
 
-### 16.3 Verifiability
+### 14.4 Verifiability
 
-confidential plane `SHOULD` 存：
+confidential plane `SHOULD` 保留：
 
 - `processing_manifest_digest`
 - `workflow_signature_ref`
 - `tee_attestation_ref`
 - `privacy_budget_ledger_ref`
 
-### 16.4 Access control
+推荐组件：
 
-- optimization plane `MUST` 与 BI 隔离
-- confidential raw plane `MUST` 默认不可人工查明细
-- partner-facing API `MUST` 只暴露契约最小集
+- [sigstore/cosign](https://github.com/sigstore/cosign)
+- [sigstore/rekor](https://github.com/sigstore/rekor)
 
-### 16.5 Anti-probing
+### 14.5 TEE/CVM side-channel 加固
 
-SRN claim 的主要风险之一不是“被偷走一条明文数据”，而是被 MMP 或其他集成方长期探测出 network coverage 边界。因此：
+结合 [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/) 与 [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)，高敏 workflow 至少要求：
 
-- `MmpAskRequest` `MUST` 受 query template 限制；
-- 同一 `mmp_event_id`、`dedupe_key`、`odm_info` 组合 `MUST` 有 bounded-shot 查询次数；
-- `claim_token` `MUST` 绑定 `query_hash`、`measurement_task_id` 和 `policy_version`；
-- partner-facing claim API `SHOULD` 默认不返回 loser diagnostics、原始 touch 时间戳或内部匹配 reason 明细。
+- 按 `artifact_validation`、`claim_join`、`feature_derivation`、`egress_adapter` 拆 workflow
+- debug 日志默认关闭 request-level 敏感字段
+- 对高敏路径优先使用批处理、固定模板、减少 data-dependent branching
+- 做 side-channel regression test
 
-### 16.6 TEE 侧信道与执行形态加固
+## 15. Trade-off 设计
 
-TEE/CVM 不是 magic box。对包含 `server_request_id` join、raw `ip`、`boot_time`、reinstall hints 的 workflow，至少应有：
+### 15.1 可以放松的地方
 
-- `workflow_classification`: `artifact_validation`、`claim_join`、`feature_derivation`、`egress_adapter` 分开部署，避免 debug / compat / join 混跑；
-- `side_channel_risk_profile`: 高风险 workflow `SHOULD` 优先采用批处理、固定模板、顺序访问、预先 padding 或 oblivious memory 友好的实现；
-- `debug_policy`: 线上 confidential workflow `MUST NOT` 打印 request 级敏感字段，不允许 ad hoc SQL 直查原始输入；
-- `kill_switch`: 发现 attestation 漂移、侧信道评估失败或异常 replay pattern 时，`MUST` 能快速关闭相关 workflow，而不是只能整套系统停机。
+- Phase 1 的 optimization plane 不强制 DP。
+- confidential plane 初期可以先用单方 TEE/CVM，而不是直接上 MPC。
+- MMP bridge 初期可以先做 opaque pass-through，而不是完整通用标准。
+- baseline model 先用 GBDT，而不是直接上大型 DP 深度模型。
 
-## 17. Trade-off 设计
+### 15.2 不能放松的地方
 
-本文刻意允许某些地方放松，但不是所有地方都能放松。
+- 不能把 `server_request_id` 下沉到普通 BI。
+- 不能把原始 `boot_time`、原始 `ip` 透传给 MMP 作为通用字段。
+- 不能把 `odm_info` 变成 durable identifier。
+- 不能取消 anti-replay。
+- 不能把 contribution bounding 视为可选项。
 
-### 17.1 可以先放松的地方
+### 15.3 为什么本文允许“不先上 DP”
 
-- optimization label plane 初期可以先不上 DP
-- confidential plane 初期可以先用单方 confidential compute，而不是 MPC
-- MMP bridge 可以先只做 opaque pass-through
-- baseline model 可以先做 GBDT，不必直接上 DP deep learning 或 federated fine-tuning
+因为 optimization plane 的风险特征与 aggregate release 不同：
 
-### 17.2 不建议放松的地方
+- 消费者更少
+- ACL 更强
+- TTL 更短
+- purpose binding 更强
+- 不直接对外发布
 
-- 不要把 `server_request_id` 下沉到 BI
-- 不要把 raw `boot_time` 或 raw `ip` 透传给 MMP
-- 不要把 `odm_info` 做成 durable token
-- 不要取消 anti-replay
-- 不要把 contribution bounding 当成可选项
+但这不等于可以“少做治理”。恰恰相反，Phase 1 就必须做版本化：
 
-### 17.3 为什么 optimization plane 可以先不上 DP
+- `measurement_task_id`
+- `feature_policy_id`
+- `contribution_policy_id`
+- `trainer_policy_id`
+- `retention_policy_id`
 
-因为 optimization plane 是：
+## 16. 生产实现建议
 
-- 内部面
-- 消费方少
-- 可以有强 ACL
-- 可以有 TTL
-- 可以做 purpose binding
+### 16.1 端上 / SDK
 
-而 aggregate reporting plane 天生就是 release surface，所以更应该优先上 DP discipline。
+- iOS 侧优先复用 [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 或 Firebase ODM 路线。
+- 用 `Protobuf + buf` 定义 wire schema。
+- 本地仅保留短期加密缓存，不保留长期稳定 token。
 
-### 17.4 为什么外部兼容字段不能顺手并入 optimization
+### 16.2 confidential processing
 
-生产里最容易犯的错，是因为 Google App Conversion API 或别的 partner API 需要 `rdid`、`X-Forwarded-For`、`User-Agent`、`ad_event_id`，于是把这套字段顺手塞进训练明细表。这样会同时制造三个问题：
+- 优先评估 [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute) 作为 workflow 编排和 confidential processing 基座。
+- ingress 处立刻做 TTL 和 replay gate。
+- 不要做一个“万能 confidential service”；按 workflow 分类部署。
 
-- 把“对外协议兼容字段”偷偷升级成“内部通用 join key”；
-- 让 optimization plane 获得本来只该在 egress plane 短期存在的高敏感字段；
-- 让后续 DP、ACL、TTL 和审计边界都变得含糊。
+### 16.3 optimization training
 
-因此本文建议的放松是“兼容缓存可以存在”，不是“兼容缓存可以下沉到所有数据面”。
+- baseline: [LightGBM](https://github.com/microsoft/LightGBM) / [XGBoost](https://github.com/dmlc/xgboost)
+- 深度模型或更强隐私训练再考虑：
+  - [JAX Privacy](https://github.com/google-deepmind/jax_privacy)
+  - [TensorFlow Privacy](https://github.com/tensorflow/privacy)
 
-## 18. Deployment Profiles
+### 16.4 aggregate reporting
 
-### 18.1 Profile A: Minimum Production
+- 先完成 bounded release pipeline，再补 DP。
+- privacy budget ledger 要单独版本化和审计。
+
+### 16.5 审计
+
+- DP 机制审计可接入 [DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)。
+- 若 release surface 升级成持续 DP 机制，可进一步参考 [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)。
+
+### 16.6 跨方 reconciliation
+
+如果未来要做 advertiser / publisher / network 的隐私保护对账，优先考虑 [Private Join and Compute](https://github.com/google/private-join-and-compute)，而不是回退到交换原始 user-level 明细。
+
+## 17. Deployment Profiles
+
+### 17.1 Profile A: Minimum Production
 
 包含：
 
@@ -1314,137 +1707,85 @@ TEE/CVM 不是 magic box。对包含 `server_request_id` join、raw `ip`、`boot
 - opaque `odm_info`
 - `MMP Ask -> Claim -> Confirm`
 - confidential join
-- request-scoped labels
+- request-level labels
 - thresholded aggregate reporting
 
-适用：
-
-- 第一版生产系统
-- iOS ODM / ICM 打通
-- 快速拿到 optimization lift
-
-### 18.2 Profile B: Recommended Default
+### 17.2 Profile B: Recommended Default
 
 在 Profile A 基础上增加：
 
 - TEE-backed confidential processing
 - versioned contribution policy
 - DP-backed aggregate reporting
-- trainer contract 与审计
+- policy-aware audit trail
 
-适用：
-
-- 大型 ad network
-- 多团队消费场景
-- 较严治理要求
-
-### 18.3 Profile C: Cross-Party Hardened
+### 17.3 Profile C: Cross-Party Hardened
 
 在 Profile B 基础上增加：
 
-- `PJC` / `PSI`
-- 更强的 reconciliation
-- DAP/VDAF aligned aggregate service
-- 更强外部可验证性
+- PJC/PSI reconciliation
+- stronger verifiable workflow
+- DAP/VDAF-aligned aggregate service
 
-适用：
+## 18. Open Questions
 
-- settlement-sensitive 场景
-- 多方互不完全信任的 measurement 生态
+以下问题应由具体产品 RFC 继续收敛：
 
-## 19. 实现建议
+- install / purchase / ROAS 的 observation window 分别取多少？
+- `boot_time`、`ip`、reinstall hint 的派生策略具体怎么版本化？
+- confirm 缺失时是否允许 provisional label 进入某些在线系统？
+- 多归因场景里 winner-only 与 fractional-credit 的默认策略是什么？
+- 各 region 是否允许 event-level partner-facing reporting？
+- aggregate reporting 的 DP budget 如何按 metric 和时间窗分配？
 
-### 19.1 App / SDK 侧
-
-- 优先使用 `GoogleAdsOnDeviceConversion` 或 Firebase ODM 路径
-- 定义 `OnDeviceMeasurementArtifact` 的 Protobuf schema
-- 定义简洁、短生命周期、opaque 的 `odm_info` wrapper
-- 为 `odm_info` 和 post-install event 建立短期缓存，而不是每次 event 重新发明 bridge token
-- 本地只保留短期加密缓存
-
-### 19.2 confidential processing
-
-- 优先复用 Parfait confidential federated compute 组件
-- 上传时绑定 workflow policy digest
-- ingress 处即做 TTL 与 replay cache 控制
-- 按 `artifact_validation` / `claim_join` / `feature_derivation` / `external_egress` 拆 workflow，而不是做一个万能 confidential service
-- 对高敏感 workflow 预留 side-channel regression 测试和回放基准，避免“attestation 通过但 workload 泄露更严重”
-
-### 19.3 model training
-
-- baseline 优先 `LightGBM` / `XGBoost`
-- label materialization 显式定义 observation window
-- 若存在 multi-touch / multi-user attribution，先做 `conversion_group_id` 裁剪与 contribution bounding
-- 业务上确实有收益时再引入 `JAX Privacy` / `TensorFlow Privacy`
-
-### 19.4 aggregate reporting
-
-- release logic 优先用 `OpenDP` 或成熟 DP 库
-- privacy budget ledger 显式化
-- 提前设计 provisional / final、late correction、bucket 重发上限
-
-### 19.5 审计与验证栈
-
-- DP 审计优先使用 `google/dp-auditorium`
-- 顺序式在线审计可参考 `Sequentially Auditing Differential Privacy`
-- 若未来引入 local DP surface，优先按 `Vεrity` 的思路把 provenance / anti-poisoning 一并设计进去
-- TEE / workflow provenance 继续使用 `sigstore/cosign`、`sigstore/rekor` 和 attestation 引用字段，而不是散落在人工发布流程里
-
-## 20. 后续产品化 RFC 仍需决策的点
-
-本文已经能支撑大方向实现，但具体产品 RFC 仍需明确：
-
-- request / conversion window 到底取几天
-- 各 market / legal basis 下的 TTL
-- claim confidence threshold
-- `boot_time` / `ip` / reinstall hint 的具体特征化规则
-- 优化目标是 install、purchase、ROAS、retention 还是 fraud
-- 各 aggregate surface 的 DP budget allocation
-
-## 21. 最终建议
+## 19. 最终建议
 
 建议的工程优先级是：
 
-1. 先保住边界：raw sensitive signal 不外泄，`server_request_id` 不下沉，`odm_info` 不复用。
-2. 再保住可用性：打通 request-level label 回流，保证 optimization 能吃到足够细粒度监督。
-3. 最后持续加固：aggregate reporting 上 DP、标准化 DAP/VDAF、跨方 reconciliation 上 PJC/PSI。
+1. 先把边界做对：原始敏感字段不外泄，`server_request_id` 不下沉，`odm_info` 不复用。
+2. 再把可用性做稳：`MMP Ask -> Claim -> Confirm` 打通，并能稳定回流 request-level label。
+3. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐。
 
-## 22. 参考资料
+一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，而是把“哪些数据能离开设备、去哪一层、以什么粒度、为了什么目的离开”定义成严格协议。
 
-### 22.1 Research and standards
+## 20. 参考资料
+
+### 20.1 Research
 
 1. [Mayfly: Private Aggregate Insights from Ephemeral Streams of On-Device User Data](https://research.google/pubs/mayfly-private-aggregate-insights-from-ephemeral-streams-of-on-device-user-data/)
 2. [Confidential Federated Computations](https://research.google/pubs/confidential-federated-computations/)
-3. [DAP draft-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/)
-4. [PPM working group status](https://datatracker.ietf.org/wg/ppm/)
-5. [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/)
-6. [Scalable contribution bounding to achieve privacy](https://research.google/pubs/scalable-contribution-bounding-to-achieve-privacy/)
-7. [Private Ad Modeling with DP-SGD](https://research.google/pubs/private-ad-modeling-with-dp-sgd/)
-8. [Training Differentially Private Ad Prediction Models with Semi-Sensitive Features](https://research.google/pubs/training-differentially-private-ad-prediction-models-with-semi-sensitive-features/)
-9. [On Convex Optimization with Semi-Sensitive Features](https://research.google/pubs/on-convex-optimization-with-semi-sensitive-features/)
-10. [Linear-Time User-Level DP SCO via Robust Statistics](https://research.google/pubs/linear-time-user-level-dp-sco-via-robust-statistics/)
-11. [Toward provably private insights into AI use](https://research.google/blog/toward-provably-private-insights-into-ai-use/)
-12. [Differentially Private Insights into AI Use](https://research.google/pubs/differentially-private-insights-into-ai-use/)
-13. [DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)
-14. [On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)
-15. [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)
-16. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
-17. [It's My Data Too: Private ML for Datasets with Multi-User Training Examples](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/)
-18. [SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/)
-19. [TDXRay: Microarchitectural Side-Channel Analysis of Intel TDX for Real-World Workloads](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)
+3. [Scalable contribution bounding to achieve privacy](https://research.google/pubs/scalable-contribution-bounding-to-achieve-privacy/)
+4. [It's My Data Too: Private ML for Datasets with Multi-User Training Examples](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/)
+5. [On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)
+6. [DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)
+7. [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)
+8. [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/)
+9. [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)
+10. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
+11. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
 
-### 22.2 Product and integration docs
+### 20.2 Standards
 
-1. [Integrated Conversion Measurement](https://developers.google.com/app-conversion-tracking/api/integrated-conversion-measurement)
-2. [App Conversion Tracking and Remarketing - Request/Response Specifications](https://developers.google.com/app-conversion-tracking/api/request-response-specs)
-3. [About Integrated Conversion Measurement for App Campaigns](https://support.google.com/google-ads/answer/16203286?hl=en-EN)
-4. [About on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en)
-5. [GoogleAdsOnDeviceConversion SDK repo](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk)
-6. [AppsFlyer SRN overview](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks)
-7. [Adjust SAN setup](https://help.adjust.com/en/article/self-attributing-network-san-setup)
-8. [Adjust self-attributing callbacks](https://help.adjust.com/en/article/self-attributing-network-callbacks)
+1. [DAP](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/)
+2. [DAP Taskprov](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/)
+3. [VDAF](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/)
+4. [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/)
+5. [W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/)
 
-### 22.3 Engineering components
+### 20.3 Product / Integration
+
+1. [Integrated Conversion Measurement](https://support.google.com/google-ads/answer/16203286?hl=en-EN)
+2. [About on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en)
+3. [App Conversion Tracking and Remarketing - Request/Response Specifications](https://developers.google.com/app-conversion-tracking/api/request-response-specs)
+4. [Implement on-device conversion measurement with a standalone SDK](https://support.google.com/google-ads/answer/16384720?hl=en)
+5. [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk)
+6. [AppsFlyer SRN](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks)
+7. [Adjust SAN](https://help.adjust.com/en/marketer/self-attributing-networks)
+8. [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model)
+9. [Adjust self-attributing callbacks](https://help.adjust.com/en/article/self-attributing-network-callbacks)
+10. [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743)
+
+### 20.4 Engineering Components
 
 1. [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute)
 2. [OpenDP](https://github.com/opendp/opendp)
@@ -1454,5 +1795,5 @@ TEE/CVM 不是 magic box。对包含 `server_request_id` join、raw `ip`、`boot
 6. [XGBoost](https://github.com/dmlc/xgboost)
 7. [LightGBM](https://github.com/microsoft/LightGBM)
 8. [Private Join and Compute](https://github.com/google/private-join-and-compute)
-9. [Sigstore Cosign](https://github.com/sigstore/cosign)
-10. [Sigstore Rekor](https://github.com/sigstore/rekor)
+9. [sigstore/cosign](https://github.com/sigstore/cosign)
+10. [sigstore/rekor](https://github.com/sigstore/rekor)
