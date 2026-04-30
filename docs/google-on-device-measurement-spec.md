@@ -487,6 +487,8 @@ Config context
 
 这让 PSM 不再只是“Google 具备相关技术能力”的泛化推断，而是成为 ODM/ODC 产品链路的强候选主协议。不过，仍需保持证据边界：HAR 支持 OPRF/VOPRF-style PSM 与 prefix-bucket candidate retrieval；它没有直接支持 Paillier-PIR one-hot selection vector，也没有证明 `boot_time` 已进入 PSM 主链路。
 
+详细字段长度、raw bytes、candidate payload segmentation、`/validate` payload 与推荐 hook 见 [on-device-measurement.md 的 17A 逆向附录](./on-device-measurement.md#17a-odm--odc-har-逆向附录)。
+
 ### 5A.3 它和 on-device measurement 的关系
 
 这一点需要谨慎区分“直接证据”和“工程推断”。

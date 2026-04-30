@@ -1845,6 +1845,432 @@ confidential plane `SHOULD` 保留：
 - stronger verifiable workflow
 - DAP/VDAF-aligned aggregate service
 
+## 17A. ODM / ODC HAR 逆向附录
+
+本附录保留 2026-04-14 HAR 样本中能落到 byte-level 的证据。它的定位不是替代主 RFC，而是给 `OPRF/VOPRF-style PSM + prefix bucket candidate retrieval + local filtering` 这条推断链提供可复核材料。
+
+样本上下文：
+
+- App: `com.underdogsports.fantasy`
+- SDK: `odm-sdk-i-v3.2.0`
+- source: `aaps`
+- 输入材料: 2026-04-14 HAR 样本与 2026-04-30 逆向整理
+- 证据边界: HAR 可证明字段、长度、顺序和部分 protobuf-like wire shape；算法名称、曲线、KDF、row 加密格式仍是强推断。
+
+### 17A.1 证据等级
+
+| 等级 | 含义 | 本样本例子 |
+|---|---|---|
+| Confirmed by HAR | 抓包可直接验证，字段、长度、顺序确定 | `/config -> /psm -> /validate`；`odmed == extension_data`；`psm_response` decoded len 为 123,189 bytes |
+| Strong inference | 字节形态与算法模型强匹配，但还需要 hook 或多样本确认 | 33-byte point 指向 EC-OPRF/VOPRF；3-byte blob 与 22-bit prefix bucket 匹配 |
+| Plausible model | 能解释端到端流程，但 HAR 不能唯一证明 | 77-byte candidate field 是 encrypted payload 或 proof package |
+| Not proven / open | 当前不应写成结论 | Paillier 是否参与该 HAR；boot time 是否进入 `mvs`；`matching_id` 的真实消费点 |
+
+### 17A.2 请求链路顺序
+
+HAR entries 数组本身不保证时间排序；按 `startedDateTime`，真实顺序是：
+
+| 顺序 | 时间 | 方法 | Endpoint | 主要职责 |
+|---:|---|---|---|---|
+| 1 | `2026-04-14T17:22:09.783Z` | GET | `/odm/config` | 下发 ODM context：`matching_id`、`bucketed_date`、`prefix_length`、`extension_data` |
+| 2 | `2026-04-14T17:22:10.268Z` | POST | `/odm/psm` | 发送 prefix bucket 与 EC blinded query；返回 OPRF header 与 candidate set |
+| 3 | `2026-04-14T17:22:10.658Z` | POST | `/odm/validate` | 提交 `mvs + odmed`；返回 `mv_ga4f` 与 `mv_aaps` |
+
+端到端抽象：
+
+```text
+Client local identity / install material
+  | normalize + hash + prefix selection
+  v
+GET /odm/config
+  returns: matching_id, bucketed_date, prefix_length=22, extension_data(odmed)
+  |
+  | build PSM request: prefix(3 bytes) + A = r * H(x)
+  v
+POST /odm/psm
+  returns: OPRF response header + 1009 candidate rows
+  |
+  | client unblind: Y = r^-1 * B = k * H(x)
+  | derive tail / row key; locally filter/decrypt candidate rows
+  v
+POST /odm/validate { mvs, odmed }
+  returns: mv_ga4f, mv_aaps
+  |
+  v
+SDK exposes aggregateConversionInfo / odm_info for reporting pipeline
+```
+
+### 17A.3 `/odm/config`
+
+Observed request parameters:
+
+```text
+version=1.2
+bundle_id=com.underdogsports.fantasy
+app_version=26.25.0
+sdk_version=odm-sdk-i-v3.2.0
+retry_count=0
+odm2_count=0
+source=aaps
+device_model=iPhone18,1
+os_version=26.3.1
+user_default_language=en-cn
+time_zone_offset_minutes=-420
+```
+
+Observed response:
+
+```json
+{
+  "matching_id": "h-hf03rtPMDBUSedI71d9U8WcMvUzjXslIKBaa8RNAw",
+  "bucketed_date": "2026-04-13",
+  "prefix_length": 22,
+  "extension_data": "CBYaAggEKghiMTkyNDY1Ng"
+}
+```
+
+`matching_id` base64url decoded len = 32:
+
+```text
+87 e8 5f d3 7a ed 3c c0 c1 51 27 9d 23 bd 5d f5
+4f 16 70 cb d4 ce 35 ec 94 82 81 69 af 11 34 0c
+```
+
+`extension_data` decoded len = 16, and is reused as `odmed` in `/psm` and `/validate`:
+
+```text
+08 16 1a 02 08 04 2a 08 62 31 39 32 34 36 35 36
+```
+
+Inferred schema:
+
+```proto
+message OdmExtensionData {
+  uint64 field1 = 1; // 22; equals prefix_length
+  bytes  field3 = 3; // len=2; nested: field1=4
+  bytes  field5 = 5; // ASCII "b1924656"
+}
+```
+
+Important correction: `matching_id` is returned by `/config`, not minted by `/psm`. In this HAR it is better treated as opaque context, cache key, or correlation key.
+
+### 17A.4 `/odm/psm` request
+
+Observed request body is JSON over `application/x-www-form-urlencoded`:
+
+```json
+{
+  "odmed": "CBYaAggEKghiMTkyNDY1Ng",
+  "psm_request": "CigKA7Tu2BIhAxP3dhiA3fXD_ZjKy63l939rAXXzgG9H4NCafWVrDXC_EgQQAhgWGCM"
+}
+```
+
+`odmed` equals `/config.extension_data`.
+
+`psm_request` base64url decoded len = 50:
+
+```proto
+message PsmRequest {
+  bytes  field1 = 1; // len=40; query material
+  bytes  field2 = 2; // len=4; params
+  uint32 field3 = 3; // 35; protocol/mode id
+}
+
+message QueryMaterial {
+  bytes field1 = 1; // len=3: b4 ee d8
+  bytes field2 = 2; // len=33 compressed EC point, prefix 0x03
+}
+
+message PsmParams {
+  uint32 field2 = 2; // 2
+  uint32 field3 = 3; // 22; equals prefix_length
+}
+```
+
+Raw bytes:
+
+```text
+psm_request len = 50
+0a 28
+  0a 03 b4 ee d8
+  12 21 03 13 f7 76 18 80 dd f5 c3 fd 98 ca cb ad e5 f7
+        7f 6b 01 75 f3 80 6f 47 e0 d0 9a 7d 65 6b 0d 70 bf
+12 04
+  10 02 18 16
+18 23
+```
+
+Algorithmic interpretation:
+
+```text
+x       = normalized local measurement input
+h       = SHA256(x || app/source/date/context)       // exact concatenation unknown
+prefix  = high_22(h)                                 // 22-bit bucket key
+P       = HashToCurve(h or tail-material)
+r       = client random scalar
+A       = r * P                                      // blinded point
+send    = { prefix, A, params(prefix_length=22), mode=35 }
+```
+
+Why this matters: a 3-byte prefix-like field matches `ceil(22/8)`, while the 33-byte compressed EC point makes OPRF/VOPRF-style PSM a much stronger fit than a generic opaque token model.
+
+### 17A.5 `/odm/psm` response
+
+`psm_response` base64url decoded len = 123,189 bytes:
+
+```proto
+message PsmResponseEnvelope {
+  bytes field1 = 1; // len=123185
+}
+
+message PsmResponseCore {
+  bytes  field1 = 1; // len=70; EC header
+  uint32 field4 = 4; // 35
+  bytes  field5 = 5; // len=123098; candidate payload
+  bytes  field7 = 7; // len=7; crypto params
+}
+
+message CryptoParams {
+  uint32 field1 = 1; // 35
+  uint32 field2 = 2; // 256
+  uint32 field3 = 3; // 2
+}
+```
+
+The 70-byte EC header can be parsed as two 33-byte compressed EC points:
+
+```proto
+message PsmEcHeader {
+  bytes field1 = 1; // len=33; equals request point A
+  bytes field2 = 2; // len=33; likely server evaluated point B or proof element
+}
+```
+
+First EC point, equal to the request blinded point:
+
+```text
+03 13 f7 76 18 80 dd f5 c3 fd 98 ca cb ad e5 f7
+7f 6b 01 75 f3 80 6f 47 e0 d0 9a 7d 65 6b 0d 70 bf
+```
+
+Second EC point:
+
+```text
+02 76 ca 3a b0 e7 46 af e9 9a be 0d ff 43 a3 ea
+44 29 3e f7 49 b0 6f b2 fd c9 36 30 92 81 fb 05 ff
+```
+
+OPRF interpretation:
+
+```text
+A = r * H(x)               // client blinded point, echoed back
+B = k * A                  // server evaluated point, or part of VOPRF proof/evaluation
+client computes r^-1 * B = k * H(x)
+```
+
+### 17A.6 Candidate payload segmentation
+
+`PsmResponseCore.field5` len = 123,098 bytes. It is not a vector of scalar membership answers; it is a repeated-field candidate payload:
+
+```proto
+message CandidatePayload {
+  repeated bytes field1 = 1; // 1009 items, each len=1
+  repeated bytes field2 = 2; // 1009 items, each len=77
+  repeated bytes field3 = 3; // 1009 items, each len=38
+}
+```
+
+| Segment | Offset | Wire shape | Count | Interpretation |
+|---|---:|---|---:|---|
+| A | `0 -> 3027` | `0a 01 xx` | 1009 | row-level 1-byte tag / mask / quick check |
+| B | `3027 -> 82738` | `12 4d <77 bytes>` | 1009 | opaque crypto package / encrypted candidate payload |
+| C | `82738 -> 123098` | `1a 26 <38 bytes>` | 1009 | structured metadata + row token/id |
+
+Segment A statistics:
+
+```text
+count = 1009
+unique values = 256
+min = 0
+max = 255
+mean = 127.27
+first 32 values = 22 c7 94 99 55 25 4b 3a b2 df a2 f7 7b a1 01 ca ...
+```
+
+Segment B first 77-byte blob:
+
+```text
+7b 8b b9 48 02 f3 c2 0f 0b 73 8b 7b 27 01 fb ac
+02 5f e7 e3 59 c8 03 00 fb d2 88 ce a0 8b c0 d3
+be 7c 16 e8 18 3e 26 47 c0 c5 d0 44 be ec 44 7f
+70 48 7c 37 1e 59 65 44 92 56 09 e8 b9 50 d5 ae
+82 73 bb a2 45 9d 97 89 d2 6d c3 e0 8f
+```
+
+Segment C inferred schema:
+
+```proto
+message CandidateMetaRow {
+  bytes field1 = 1; // len=13; nested meta
+  bytes field3 = 3; // len=21; row token/id
+}
+
+message CandidateMeta {
+  uint64 field1 = 1; // timestamp-like microsecond epoch
+  uint32 field2 = 2; // 1 or 2
+  uint32 field3 = 3; // 0 or 1
+}
+```
+
+Segment C statistics:
+
+```text
+rows = 1009
+meta.field1 min = 1775253031479509  // 2026-04-03 21:50:31.479509 UTC
+meta.field1 max = 1776212457023095  // 2026-04-15 00:20:57.023095 UTC
+meta.field1 unique = 532 / 1009
+meta.field2 distribution = {2: 801, 1: 208}
+meta.field3 distribution = {1: 827, 0: 182}
+row token length = 21 bytes for all rows
+row token prefix = 00 94 87 9f 8c for all rows; last 16 bytes vary
+```
+
+This supports the older “one bucket contains about 1000 candidate touchpoints” model, but corrects the size estimate: this HAR is about 123KB decoded, not a 5-15KB compressed response.
+
+### 17A.7 `/odm/validate`
+
+Observed request:
+
+```json
+{
+  "mvs": "Cj0g2dhkPT1JgtV6cBSKVzO9pIX8UZ1im8lGlZFdE7SQ5pW_FZ4hbosVhsHrIxy3QGtprZHMCclRr5Hf_XiK",
+  "odmed": "CBYaAggEKghiMTkyNDY1Ng"
+}
+```
+
+`mvs` decoded len = 63 and wraps a 61-byte opaque blob:
+
+```proto
+message MvsEnvelope {
+  bytes field1 = 1; // len=61; opaque MVS material
+}
+```
+
+Observed response:
+
+```json
+{
+  "mv_ga4f": "...",
+  "mv_aaps": "..."
+}
+```
+
+Decoded output lengths:
+
+```text
+mv_ga4f decoded len = 96
+mv_aaps decoded len = 62
+both outputs share a similar binary prefix: 00 3f 03 af f1 ...
+```
+
+Interpretation: `/validate` is better modeled as server validation, normalization, or channel derivation over `mvs + odmed`, not as “send `matching_id` and receive attribution truth.”
+
+### 17A.8 Revised implementation model
+
+Server-side preprocessing model:
+
+```text
+input touchpoint:
+  req_id, campaign_id, ad_group_id, creative_id, click_ts,
+  source identity material: GA4F / AAPS / email / phone / install id / other device material
+
+normalize:
+  z = Normalize(identity material)
+  d = SHA256(z || app_id || source || bucketed_date || salt/context)
+
+bucket:
+  prefix = high_N(d)             // N = prefix_length, here 22
+
+OPRF-side material:
+  P = HashToCurve(d or tail-material)
+  y = k * P                      // server OPRF secret k
+  row_key = KDF(y || odmed || bucketed_date)
+
+candidate row:
+  tag_1b         = Truncate8(H(row_key || "tag"))
+  crypto_package = EncryptOrWrap(touchpoint payload, row_key, context)
+  meta           = {click_ts_us, source/type flags, row_token}
+
+store:
+  CandidateStore[prefix].append({tag_1b, crypto_package, meta})
+```
+
+Client-side query and local filtering:
+
+```text
+z = Normalize(local measurement material)
+d = SHA256(z || app_id || source || bucketed_date || context)
+
+prefix = high_22(d)
+P = HashToCurve(d or tail-material)
+r = RandomScalar()
+A = r * P
+
+POST /odm/psm {
+  odmed,
+  psm_request: {
+    prefix_bytes = Encode(prefix),    // observed len=3
+    blinded_point = Compress(A),      // observed len=33
+    params = {scheme=2, prefix_length=22},
+    mode = 35
+  }
+}
+
+parse response:
+  A_echo = response.ec_header.field1
+  B      = response.ec_header.field2
+  assert A_echo == A
+
+Y = r^-1 * B
+row_key = KDF(Y || odmed || bucketed_date || app/source context)
+
+for each candidate row:
+  if quick_tag does not match:
+      continue
+  payload = try_open_package(crypto_package, row_key, row_meta)
+  if payload opens:
+      mvs = build_mvs(payload, config, row_meta)
+      validate(mvs, odmed)
+```
+
+### 17A.9 Old-model corrections
+
+| 旧判断 / 模型 | 新处理 | 原因 |
+|---|---|---|
+| OPRF / PSM 是核心 | 保留并上升为主推断实现 | EC point、双 EC response header、prefix_length、1009-row payload 均支持 |
+| hash 后截前 N bit 作为 prefix bucket | 保留 | `prefix_length=22`，request 中出现 3-byte prefix-like blob |
+| 一个 bucket 返回约 1000 条候选触点 | 基本被 HAR 支持 | payload 精确拆出 1009 rows |
+| 一次 response 约 5-15KB | 修正为 123KB 级 | 当前 decoded response 为 123,189 bytes，crypto payload 高熵 |
+| PSM 成功后返回 `matching_id` | 修正 | `matching_id` 由 `/config` 返回，不是 `/psm` response |
+| `/validate` 携 `matching_id` 查询 aggregate result | 修正 | body 是 `mvs + odmed`，response 是 `mv_ga4f/mv_aaps` |
+| `extension_data` 是 JSON string | 修正 | 实际更像 16-byte protobuf-like context，并作为 `odmed` 复用 |
+| Paillier / PIR 是实际实现 | 降为 alternative model | HAR 没有 Paillier selection vector 或明显 HE ciphertext |
+| BootTime 进入 ODC 主链路 | 未证实 | HAR 无明文 boot_time；若存在，只可能封装进 local material / `mvs` |
+| `tfo = now - first open` | 修正 | `1776212580` 按 epoch 秒解释接近抓包时间，不像 duration |
+
+### 17A.10 Recommended hooks
+
+| 问题 | 推荐实验 | 预期信号 |
+|---|---|---|
+| 使用哪条曲线？ | hook BoringSSL / Security.framework EC scalar multiply / point compress | 确认 P-256、secp256k1 或其他 curve |
+| 3-byte blob 是否就是 prefix？ | 多设备、多 source、多 date/context 抓包 | blob 应随 hash prefix 变化；长度应等于 `ceil(prefix_length/8)` |
+| EC point 是否每次随机 blind？ | 同一设备同一 context 连续请求 | prefix 稳定，EC point 随机变化 |
+| response 第二个 EC point 是否为 `kA`？ | hook unblind 前后或定位 VOPRF verify 函数 | 看到 `r^-1` scalar multiply 或 proof verification |
+| Segment B 77 bytes 结构 | hook AEAD open / decrypt / protobuf parse after local processing | 出现 campaign、adgroup、creative、req_id 或 aggregate payload |
+| `mvs` 构造来源 | hook validate 前对象序列化 | 确认是否由命中 candidate row 派生 |
+| `matching_id` 消费点 | 搜索 local plist / keychain / request queue | 确认是否用于 cache、report、dedupe 或 ack |
+| BootTime 是否进入 material | hook `sysctl`、`mach_absolute_time`、`systemUptime`、hash input buffer | 若进入，应在 hash/normalization 前看到 boot-related value |
+
 ## 18. Open Questions
 
 以下问题应由具体产品 RFC 继续收敛：
