@@ -57,9 +57,9 @@
 
 因此，本文讨论的 `on-device measurement` 不是“纯端上闭环”。更准确地说，它是一个三层系统：
 
-- 设备侧保留原始敏感观察；
-- 设备侧只上送 task-bound、TTL-bound、contribution-bound 的 artifact；
-- 服务端只在 confidential boundary 内完成验证、join、label 物化，再分层释放到 optimization plane 和 aggregate reporting plane。
+- AdNetwork SDK 在设备侧保留原始敏感观察，并在本地生成 private matching material；
+- AdNetwork SDK 与 AdNetwork Server 通过 OPRF/PSM-with-payload 完成私密匹配，向 MMP 释放 scoped Claim；
+- AdNetwork Server 只在 Confirm 后用 `mmp_touch_token -> req_id` 恢复内部请求上下文，再分层释放到 optimization plane 和 aggregate reporting plane。
 
 ## 3. 设计目标与非目标
 
@@ -92,14 +92,12 @@
 1. 广告请求发生时，ad network backend 生成一次性的 `server_request_id:int64`。
 2. ad network backend 同时写入 touchpoint row，并生成 MMP-facing 的 `mmp_touch_token` 或等价 touch-scoped token；内部 `req_id` 不给 MMP。
 3. ad network SDK 在设备侧观察 impression、click、install、purchase，以及本地敏感信号。
-4. 设备侧把原始观察压缩成两个对象：
-   - 发给 ad network confidential backend 的 `OnDeviceMeasurementArtifact`
-   - 透传给 MMP/AAP 的 `ODMInfoEnvelope`
-5. 对 Google ODM / ODC 风格实现，AdNetwork SDK 在返回 final bridge object 前，可以先运行 `GET /config -> POST /psm -> local candidate processing -> POST /validate` 子状态机。
-6. MMP 观察到 install 或 event 后，发起 `MmpAskRequest`；Ask 不携带 `device_fp_hash`，而是调用 AdNetwork SDK / bridge object。
-7. ad network 在 confidential plane 内验证 artifact、task binding、TTL、replay，再返回 `ClaimResponse`；推荐返回 `mmp_touch_token + claim_token + creative metadata`，不返回 `req_id`。
+4. 广告主 App 发生 install / first_open / purchase 后，MMP SDK 捕获事件，并调用 AdNetwork SDK 发起 Ask。
+5. AdNetwork SDK 在本地生成 device material / `device_fp_hash`，MMP SDK 不生成、不传递、不保存这些材料。
+6. AdNetwork SDK 与 AdNetwork Server 运行 `GET /config -> POST /psm -> local candidate processing -> optional POST /validate` 子状态机。
+7. AdNetwork SDK / Server 根据命中 payload 签发或构造 `ClaimResponse`；推荐返回 `mmp_touch_token + claim_token + creative metadata`，不返回 `req_id`。
 8. MMP 完成 winner 选择后，再回传 `MmpConfirmRequest`；Confirm 必须带 `claim_token`，token alone 不能完成确认。
-9. ad network 在 confidential plane 中把 `AdRequestContext + Artifact + Confirm` join 成：
+9. AdNetwork Server 在 Confirm 后用 `mmp_touch_token -> req_id` 找回内部请求上下文，并物化：
    - `RequestScopedOptimizationLabel`
    - `AggregateMeasurementContribution`
 10. downstream 分层消费：
@@ -132,7 +130,7 @@ MMP SDK Ask
 | 名词 | 可以怎么理解 | 不要误解成 |
 |---|---|---|
 | `device material` | SDK 在本地看到的设备侧信号，例如安装、时间、网络、重装 hint 等 | 可以随便外发的设备 ID |
-| `device_fp_hash` | 从设备信号派生出的匹配材料 | MMP 应该传给 Ad Network 的字段 |
+| `device_fp_hash` | 从设备信号派生出的匹配材料 | 不应让 MMP 可见，也不应由 MMP 传给 Ad Network |
 | `OPRF/PSM` | 让 SDK 和服务器协同判断“是否命中某条触点”的私密匹配层 | 只能输出 yes/no 的完整产品协议 |
 | `associated payload` | 命中触点后可释放的上下文字节，例如 token、creative、campaign | 原始设备信号 |
 | `mmp_touch_token` | 给 MMP 用的 touch-scoped join handle | 跨 app / 跨广告主的 User ID |
@@ -142,225 +140,22 @@ MMP SDK Ask
 
 这张表的核心判断是：`mmp_touch_token` 可以让 MMP 做归因协同，`claim_token` 证明端侧匹配发生过，`req_id` 则留在 Ad Network 内部做优化。三者不能混用。
 
-## 5. 截至 2026-04-29 的研究与标准更新
-
-这一节只保留会影响系统设计的结论。
-
-### 5.1 Ephemeral on-device analytics 已经工程化
-
-Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-aggregate-insights-from-ephemeral-streams-of-on-device-user-data/) 证明了三件事：
-
-- 敏感原始流可以保留在设备侧的短期窗口内，而不是永久中心化存储；
-- query template、windowing、contribution bounding 应当是协议主体，不是实现细节；
-- 上行对象可以是受限 artifact，而不是完整明细。
-
-对本 RFC 的直接影响是：
-
-- `measurement_task_id`
-- `query_template_id`
-- `observation_window_sec`
-- `contribution_policy_id`
-
-这些都必须进入协议对象，而不是只写在内部 wiki。
-
-### 5.2 Confidential server-side processing 已经不是“概念”
-
-[Confidential Federated Computations](https://research.google/pubs/confidential-federated-computations/)（2024）和 [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute) 说明：
-
-- 服务端可以在 TEE/CVM 中完成隐私敏感的 processing graph；
-- 上传对象可以绑定允许的 workflow；
-- verifiable processing 需要 manifest、signature、attestation，而不是只说“我们会小心处理”。
-
-因此，本 RFC 采用 `confidential plane` 作为 request-level join 的默认部署边界。
-
-### 5.3 DAP / VDAF / Taskprov 已经足够成熟到值得对齐对象模型
-
-截至 2026-04-29：
-
-- [DAP draft-ietf-ppm-dap-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-01-30；
-- [DAP Taskprov draft-ietf-ppm-dap-taskprov-03](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/) 最近一次修订发布于 2025-09-05，且 datatracker 在 2026-03-16 将其标记为 expired & archived，但其中的 task binding 语义仍然直接可用；
-- [VDAF draft-irtf-cfrg-vdaf-19](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/) 最近一次更新时间是 2026-04-14；
-- [DAP Extensions for the Attribution API draft-thomson-ppm-dap-attribution-01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 最近一次更新时间是 2026-02-17，让 attribution 类 measurement 与 PPM/DAP 更接近。
-
-这意味着即使 Phase 1 不直接部署完整 DAP，aggregate object model 也应该主动对齐：
-
-- `task`
-- `report_id`
-- `batch_id`
-- `task_expiration`
-- `extension_fields`
-
-更进一步，aggregate plane 不应再停留在“以后再看怎么聚合”的抽象层。既然 VDAF 对象模型已经稳定，生产 RFC 应直接偏向已有 primitive：
-
-- `Prio3Count`
-  - 适合 install / purchase user count
-- `Prio3Sum`
-  - 适合 revenue、cost、value sum
-- `Prio3Histogram`
-  - 适合 retention day bucket、latency bucket、value bucket
-- `Prio3SumVec`
-  - 适合多维 campaign bucket 的固定长度向量聚合
-
-这样做的意义不是“马上部署完整 DAP/VDAF”，而是避免 aggregate schema 将来卡死在自定义半协议上。
-
-### 5.4 Contribution bounding 现在是生产问题，不是论文角落
-
-[Scalable contribution bounding to achieve privacy](https://research.google/pubs/scalable-contribution-bounding-to-achieve-privacy/)（2025）以及 [It's My Data Too](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/)（ICML 2025）都指向同一件事：
-
-- 一个训练样本可能对应多个“拥有者”或多个 touch；
-- multi-touch / multi-user 数据里，contribution bounding 是一等公民；
-- 如果 bounding 只藏在离线 SQL 里，后续隐私和训练质量都不可控。
-
-因此，本 RFC 要求：
-
-- `conversion_group_id`
-- `credit_fraction_micros`
-- `contribution_policy_id`
-
-必须进入 label contract。
-
-### 5.5 交互式 release 的隐私分析已经不能忽略
-
-[On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)（PETS 2025）强调：
-
-- 查询会依赖之前的输出；
-- 数据库本身也会因为系统状态变化而变化；
-- release 不能被当成“静态 SQL 导出”。
-
-对本 RFC 的含义是：
-
-- aggregate reporting 必须有显式 budget ledger；
-- provisional / final / correction 必须有规则；
-- 任何重复 collect 都必须视为额外 privacy cost 或额外治理风险。
-
-### 5.6 “DP 可审计”已经从研究走向工程
-
-[DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)（2024）和 [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)（NeurIPS 2025）说明：
-
-- DP 不能只信数学证明和实现自信；
-- 黑盒审计、持续审计、序列式审计都已经可做；
-- 如果后续引入 DP release，审计栈应该提前预留。
-
-### 5.7 TEE 不是 magic box
-
-2026 年的 [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/) 和 [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/) 说明：
-
-- Confidential VM 仍然存在 side-channel 风险；
-- 工作负载本身必须考虑 access pattern、timing、batching、debug 策略；
-- “放进 TEE 就安全”是错误的。
-
-因此，本 RFC 对 confidential workflows 要求分级、限 debug、加回归测试。
-
-### 5.8 公开产品形态已经验证 ODM / ICM 是现实路径
-
-截至 2026-04-29：
-
-- Google Ads 帮助文档显示 [Integrated Conversion Measurement](https://support.google.com/google-ads/answer/16203286?hl=en-EN) 自 2025 年 5 月起逐步 rollout；
-- [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 文档指出 event-data 方案使用临时、去标识化事件数据，且 Firebase iOS SDK `11.14.0` 于 2025 年 6 月提供相关版本；
-- [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 已明确 `odm_info` 是 ICM 所需字段；
-- [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 说明 standalone SDK 路线可行。
-
-同时，Google 2026 年的产品文档还把两个生产边界写得更清楚了：
-
-- [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743) 明确 ICM 是 AAP UI 中的 granular, event-level, cross-network view，而不是 Google Ads UI 中的同一条 reporting surface；
-- [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 明确该功能对位于 `EEA`、`UK`、`Switzerland` 的用户 inactive。
-
-这直接支持本文把 `ODMInfoEnvelope` 视为正式协议对象，而不是 SDK 内部细节；也支持把 `reporting_surface_id`、`region_eligibility_code` 和 `feature_active=false` 视为正式状态，而不是埋在 FAQ 里的例外逻辑。
-
-### 5.9 MMP 的 SRN 工作流没有消失
-
-[AppsFlyer SRN 文档](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks) 和 [Adjust SAN 文档](https://help.adjust.com/en/marketer/self-attributing-networks) 仍表明：
-
-- MMP / attribution provider 先检测 install / event；
-- 再向 self-reporting network 查询或通知；
-- network 基于自身 engagement data 做 claim；
-- 某些回调和 postback 仍依赖 device ID 或 network-specific transaction object。
-
-所以，on-device measurement 必须服务于 SRN，而不是与 SRN 平行、互不相干。
-
-进一步地，截至 2026-04-29，产品文档还显示两个值得写进 RFC 的现实：
-
-- [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model) 页面在 2026-04-19 更新，仍明确区分 deterministic、probabilistic、SRN query、assist 等多条归因路径；
-- [AppsFlyer Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model) 在 2026-03-19 公开说明了设备侧 flooding 检测后仅保留 eligible click / impression 的做法。
-
-这对本文的直接影响是：
-
-- RFC 不能只建模“最后一次 click 是否胜出”，还要建模 `eligible_candidate_count`、`prefilter_candidate_count`、`assist_count` 这类质量上下文；
-- request-level optimization 不能只消费二元 `is_attributed`，还应消费 winner 选择过程中的质量切片与延迟反馈。
-
-### 5.10 Privacy Sandbox 的 aggregate 优化研究说明 bucket 设计本身也是协议
-
-[Summary Reports Optimization in the Privacy Sandbox Attribution Reporting API](https://research.google/pubs/summary-reports-optimization-in-the-privacy-sandbox-attribution-reporting-api/)（PETS 2024）虽然主要针对 Attribution Reporting API，但对本 RFC 有一个很现实的启发：
-
-- 同样的 privacy guardrail 下，bucket 设计和 contribution budget 分配会显著影响可用性；
-- “先把数据聚出来，之后分析时再想怎么切桶” 往往太晚；
-- measurement task、aggregation key、value bucket、reporting window 应一起设计。
-
-因此，本 RFC 把 `aggregation_key_schema_id`、`value_bucket_schema_id`、`reporting_window_id` 视为 production contract，而不是 BI 侧随手改的维表配置。
-
-### 5.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
-
-[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 在 2026-04-28 发布了新的 Working Draft。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
-
-- on-device attribution 与 off-device aggregation 可以明确分层；
-- aggregate service `MUST` 处理 anti-replay，而不是只做求和；
-- privacy budget、epoch 和 per-site / per-surface 限额应该是正式协议状态，而不是分析平台外部约定。
-- multi-party aggregation、DAP/VDAF 和 collector state 应作为一等设计对象进入协议，而不是留给后续实现随意发挥。
-
-对本 RFC 的意义是：广告 App 场景里的 aggregate reporting plane 也应该显式拥有 `budget ledger + replay rejection + report lifecycle + collector identity`，而不是只导出一个聚合表。
-
-### 5.12 Verifiable local reporting 说明“端上上报正确性”也要入 RFC
-
-[Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)（2025）指出一个很现实的问题：
-
-- 只要 measurement 的部分逻辑发生在设备侧，系统就不只是担心“服务端看太多”，还要担心“端上报了假的东西”；
-- 本地私有化或本地裁剪后的上报，如果没有 provenance 约束，容易被 poisoning、flooding、伪造 engagement 或脚本化设备利用；
-- 可验证随机性、第三方 ground truth、或至少更强的 event provenance，会明显改变系统可用性上限。
-
-对广告场景的直接含义是：
-
-- RFC 不能只定义 `artifact` 长什么样，还要定义 `artifact` 证明了什么；
-- 端上 `impression` / `click` / `first_open` / `purchase` 的来源级别，应该进入 policy；
-- `artifact_auth_level`、`event_provenance`、`sdk_build_fingerprint` 这类字段值得成为正式 contract，而不是埋在风控旁路里。
-
-### 5.13 ODC / ODM 逆向证据把 OPRF / PSM 放回主链路
-
-2026-04-14 的 Google ODC / ODM HAR 样本，以及 2026-04-30 的 wire-format 逆向整理，给了一个比公开产品文档更具体的实现信号。样本来自 `com.underdogsports.fantasy`，SDK 为 `odm-sdk-i-v3.2.0`，`source=aaps`。它不是官方 SDK 文档，但足以改变本 RFC 对 Google ODM 兼容层的默认模型。
-
-可直接从 HAR 确认的链路是：
-
-```text
-GET  /odm/config
-POST /odm/psm
-POST /odm/validate
-```
-
-关键观察：
-
-- `/odm/config` 返回 `matching_id`、`bucketed_date`、`prefix_length=22`、`extension_data`；其中 `extension_data` 在后续请求里以 `odmed` 原样复用。
-- `/odm/psm` request 中的 `psm_request` 解码后为 50 bytes，包含 3-byte prefix-like blob、33-byte compressed EC point、`prefix_length=22` 参数和 `mode=35`。
-- `/odm/psm` response 解码后约 123KB，核心 payload 是 `1009` 条 candidate rows，而不是一个单值 membership result。
-- response header 中有两个 33-byte compressed EC points，第一个与 request 里的 blinded point 一致，第二个很像服务端 OPRF evaluation 或 VOPRF proof element。
-- `/odm/validate` body 是 `mvs + odmed`，response 返回渠道化 measurement values：`mv_ga4f` 与 `mv_aaps`。
-
-因此，Google ODM 的现实路径不应再被描述成“端上算一个 opaque token 后直接上传”。更贴近 HAR 的模型是：
-
-```text
-Config 下发上下文
-  -> Client 生成 prefix bucket + EC blinded query
-  -> Server 对 blinded point 做 OPRF/PSM 评估，并返回该 prefix bucket 下的候选记录集合
-  -> Client 本地 unblind / derive key / filter or decrypt candidate rows
-  -> Client 生成 mvs
-  -> Validate 派生 mv_ga4f / mv_aaps
-  -> SDK 暴露 aggregateConversionInfo / odm_info 给后续归因或上报链路
-```
-
-这也修正了几条旧判断：
-
-- `matching_id` 不是 `/psm` 成功后签发；它在 `/config` 阶段已返回，更像 opaque context / cache key / correlation key。
-- `tfo=1776212580` 按 Unix epoch 秒解释接近抓包本地时间，不像 “time from first open” duration。
-- Paillier / PIR 仍可作为更强隐私设计方案，但当前 HAR 没有 Paillier selection vector 或 2048-bit ciphertext 的形态；主链路更像 `OPRF + prefix bucket candidate retrieval + client-side local filtering`。
-- `boot_time` 仍然可能参与本地 material 或 `mvs` 构造，但当前 HAR 中没有明文字段证明它进入 ODM PSM 主链路。
+## 5. 设计依据索引
+
+这一节只保留“为什么正文要这么设计”的索引，不展开论文和标准细节。完整依据放在文末附录。
+
+| 正文设计决策 | 为什么需要它 | 详细依据 |
+|---|---|---|
+| 设备侧保留原始敏感信号，只输出 task-bound claim / compatibility artifact | 原始设备流适合短期、端侧处理，不应永久中心化 | 附录 20.1 |
+| request-level join 放在 confidential plane | personalized optimization 需要 request-level label，但 join 过程不能进入普通数仓 | 附录 20.2、20.7 |
+| aggregate reporting 对齐 DAP / VDAF / budget ledger | 聚合报告不是普通 SQL 导出，需要 task、batch、collector、anti-replay、budget 状态 | 附录 20.3、20.5、20.10、20.11 |
+| label contract 显式包含 contribution / credit / owner 信息 | multi-touch 和多 owner 数据里，贡献上界会影响隐私与训练质量 | 附录 20.4 |
+| DP 作为后续 release 加固，而不是 Phase 1 强制前置 | DP 需要预算、审计和交互式 release 分析，不能只在 SQL 末尾加噪声 | 附录 20.5、20.6 |
+| TEE/CVM 只是执行边界，不是万能隐私证明 | confidential processing 仍要考虑 side-channel、debug、access pattern 与 workload 测试 | 附录 20.7 |
+| 主链路必须兼容 MMP / SRN Ask-Claim-Confirm | 真实商业归因仍然围绕 MMP/SRN 工作流，不应绕开它另造孤岛 | 附录 20.8、20.9 |
+| ODM / ODC 建模为 OPRF/PSM candidate retrieval + local filtering | HAR 证据显示真实实现不是单个本地 token，也不是裸 matched bit | 附录 20.13、17A |
+
+这张表的作用是把“研究/标准/产品资料”转成正文里的实现约束。第一次阅读时可以继续往下读第 6 节；只有在需要追溯依据时再看附录。
 
 ## 6. 总体架构
 
@@ -379,7 +174,7 @@ Config 下发上下文
    - 生命周期: 极短
 2. `Confidential Plane`
    - 位置: TEE/CVM 或严格隔离的 confidential service
-   - 内容: artifact 验证、SRN claim/confirm join、敏感特征派生
+   - 内容: claim verification、token-to-`req_id` join、敏感特征派生；兼容路径下也可包含 artifact validation
    - 生命周期: 中短期，受 retention policy 控制
 3. `Optimization Plane`
    - 位置: 训练样本与线上优化系统
@@ -407,191 +202,253 @@ Config 下发上下文
   - 用来证明一次 on-device match 已发生
   - token alone 不应允许 MMP 伪造归因
 - `artifact_id:bytes`
+  - 兼容路径对象
   - 设备侧生成或设备侧签名对象中的唯一标识
   - 只代表一次 measurement artifact
   - 不是长期标识符
 - `odm_info:string`
+  - 兼容路径对象
   - 端上生成并透传给 MMP/AAP 的 opaque envelope
   - 是 bridge object
   - 不能被二次用途化为 durable identifier
 
 ## 7. 端到端数据流
 
-### 7.1 Step A: Ad Request
+本节以 v3.1 legal review 的主链路为准。核心变化是：MMP 不再被建模为“带着 device_fp_hash / odm_info 去问 Ad Network 的一方”；MMP SDK 只是触发 Ask，真正的 device material 采集、hash、blind、OPRF/PSM 查询都发生在 AdNetwork SDK 内。
 
-ad network backend 生成广告请求上下文：
+主链路：
 
-- `server_request_id:int64`
-- `auction_id:int64`
-- `campaign_id:int64`
-- `creative_id:int64`
-- `placement_id:int64`
-- `request_ts_ms:int64`
-- `publisher_app_id:string`
-- `country_code:string`
-- `consent_scope:uint32`
-- `measurement_task_id:string`
+```text
+MMP SDK Ask
+  -> AdNetwork SDK 本地生成 device material / device_fp_hash
+  -> AdNetwork SDK 与 AdNetwork Server 运行 EC-OPRF / PSM-with-payload
+  -> AdNetwork SDK 返回 Claim 给 MMP SDK
+  -> MMP SDK 上报 MMP Server
+  -> MMP Server Confirm 给 AdNetwork Server
+  -> AdNetwork Server 通过 mmp_touch_token 找回 req_id
+  -> attribution / optimization
+```
 
-### 7.2 Step B: Ad Response / Exposure
+`OnDeviceMeasurementArtifact`、`ODMInfoEnvelope`、`odm_info` 仍可作为兼容对象存在，尤其用于 Google ICM / AAP 类外部接口；但它们不是本文推荐主链路的起点。推荐主链路的起点是 `MMP SDK -> AdNetwork SDK Ask`。
 
-SDK 在设备侧拿到最小必要元数据：
+### 7.1 Step A: Touchpoint Ingestion
 
-- `server_request_id`
-- `auction_id`
-- `ad_network_id:int32`
+用户在 AdNetwork App / publisher surface 中发生 impression 或 click。AdNetwork Server 写入 touchpoint row：
+
+- `req_id` / `server_request_id`
+- `user_id`，仅 AdNetwork 内部使用
+- `adv_app_id`
+- `advertiser_id`
 - `campaign_id`
+- `ad_group_id`
 - `creative_id`
-- `measurement_task_id`
+- `touch_ts_ms`
+- `touch_time_bucket`
+- `feature_ptr`
 
-随后记录：
-
-- `impression_ts_ms:int64`
-- `click_ts_ms:int64?`
-- `local_event_seq:int32`
-
-### 7.3 Step C: Device Observation
-
-SDK 观察到以下本地信号，但默认不直接外发原值：
-
-- `boot_time_ms:int64`
-- `device_uptime_ms:int64`
-- `raw_ip:bytes`
-- `network_type:enum`
-- `timezone_offset_min:int32`
-- `locale:string`
-- `disk_reinstall_hint:bool`
-- `bundle_first_install_ts_ms:int64`
-
-这些信号仅用于：
-
-- 端上匹配
-- 端上去重
-- 端上 risk scoring
-- confidential plane 派生特征
-
-### 7.4 Step D: On-Device Artifact Construction
-
-SDK 生成两类对象：
-
-- `OnDeviceMeasurementArtifact`
-  - 发往 ad network confidential endpoint
-- `ODMInfoEnvelope`
-  - 缓存在 app 或 advertiser server，并透传给 MMP / AAP downstream event
-
-### 7.4B Observed Google ODM / ODC Construction Flow
-
-Google ODM / ODC 的逆向样本显示，真实 SDK 可以把 Step D 拆成一个带服务端辅助的本地匹配流程，而不是纯本地 artifact 构造：
-
-1. `GET /odm/config`
-   - SDK 拉取 `prefix_length`、`bucketed_date`、`extension_data/odmed` 和 `matching_id`。
-2. `POST /odm/psm`
-   - SDK 发送 `odmed` 与 `psm_request`。
-   - `psm_request` 包含 prefix bucket、compressed EC blinded point、协议参数和 mode id。
-   - 服务端返回 OPRF-like header 与该 prefix bucket 下的 candidate set。
-3. Local candidate processing
-   - SDK 验证 echoed blinded point。
-   - SDK unblind server evaluation，派生 row key。
-   - SDK 扫描候选行，使用 tag / encrypted package / row meta 完成本地过滤或解密。
-4. `POST /odm/validate`
-   - SDK 提交 opaque `mvs` 与 `odmed`。
-   - 服务端返回 `mv_ga4f`、`mv_aaps` 等渠道化 measurement values。
-
-这意味着本 RFC 的 `OnDeviceMeasurementArtifact` 与 `ODMInfoEnvelope` 应被理解为逻辑对象：具体产品实现可以在生成 envelope 之前先完成一次 `config -> psm -> validate` 子状态机。协议治理上仍然要约束最终外发对象的 TTL、task binding、replay 与用途绑定，但实现层需要给 OPRF/PSM 中间态留出清晰边界。
-
-### 7.4C OPRF/PSM-with-payload 的生产模型
-
-不要把生产 ODM / ODC 建模成：
+同时生成 MMP-facing touch token：
 
 ```text
-Client x, Server set S -> x in S ? true/false
+mmp_touch_token = HMAC_Kmmp(
+  mmp_partner_id
+  || advertiser_id
+  || adv_app_id
+  || req_id
+  || creative_id
+  || touch_time_bucket
+)
 ```
 
-更贴近真实实现的是两层：
+这个 token 可以通过 tracking link / click log 给到 MMP，用于后续 click-conversion join。`req_id` 不给 MMP；AdNetwork Server 维护内部索引：
 
 ```text
-PSM / OPRF layer:
-  隐私安全地定位是否存在命中 touchpoint row，或派生只有命中 row 才能使用的 key/tag。
-
-Associated payload layer:
-  在 row 上挂 payload bytes，例如 mmp_touch_token、creative_id、campaign_id、ad_group_id、touch bucket、claim proof。
+mmp_touch_token -> req_id, creative_id, campaign_id, ad_group_id, feature_ptr, expiry_ts
 ```
 
-因此 Claim 阶段可以返回：
+### 7.2 Step B: Candidate Store Build
+
+AdNetwork Server 离线或准实时构建 OPRF/PSM candidate store。
+
+对每条 touchpoint：
+
+1. 从 AdNetwork 可用的 identity material 派生 normalized input。
+2. 计算 digest 和 prefix bucket。
+3. 用 OPRF server key 生成 row key material。
+4. 把可披露的 reporting payload 加密进 candidate row。
+
+Reporting payload 可以包含：
+
+- `mmp_touch_token`
+- `creative_id`
+- `campaign_id`
+- `ad_group_id`
+- `touch_time_bucket`
+
+不应包含：
+
+- `req_id` 明文
+- raw device signal
+- row key
+- OPRF input / output
+
+### 7.3 Step C: Conversion Event and MMP SDK Ask
+
+广告主 App 内发生 install / first_open / purchase。MMP SDK 捕获事件，然后调用 AdNetwork SDK：
+
+```text
+Ask(event_name, event_ts_ms, adv_app_id, mmp_context)
+```
+
+Ask 阶段的关键边界：
+
+- MMP SDK 不传 `device_fp_hash`。
+- MMP SDK 不传 raw device material。
+- MMP SDK 可以传事件上下文，例如 event name、event time、app id、MMP event id。
+- AdNetwork SDK 负责在本地采集 / normalize / hash device material。
+
+### 7.4 Step D: AdNetwork SDK Local Material and Config
+
+AdNetwork SDK 在本地生成 measurement material：
+
+- device / install / app context
+- time bucket context
+- source / app / measurement task context
+- policy-controlled local signals
+
+然后向 AdNetwork Server 拉取 config：
+
+```text
+GET /odm/config
+```
+
+config 可以包含：
+
+- `prefix_length`
+- `bucketed_date`
+- `extension_data / odmed`
+- `matching_id` 或 opaque context
+- crypto / protocol mode
+
+`matching_id`、`odmed` 这类字段是协议上下文，不是 attribution result，也不应被当成 durable user identifier。
+
+### 7.5 Step E: OPRF / PSM-with-payload
+
+AdNetwork SDK 本地计算 prefix bucket 和 blinded EC point，然后请求 candidate rows：
+
+```text
+POST /odm/psm { odmed, psm_request }
+```
+
+Server 返回：
+
+- OPRF / VOPRF-style response header
+- prefix bucket 下的 candidate rows
+- 每行的 quick tag / encrypted package / row meta
+
+SDK 本地完成：
+
+1. unblind server evaluation；
+2. derive row key；
+3. scan candidate rows；
+4. 用 quick tag 做快速过滤；
+5. 对可能命中的 row 做 decrypt / verify；
+6. 恢复命中 row 的 associated payload。
+
+这一步的输出不是裸 `matched bit`，而是：
+
+```text
+matched + associated payload + proof context
+```
+
+### 7.6 Step F: Optional Validate / Claim Issuance
+
+如果协议需要 validate，AdNetwork SDK 提交 opaque validation material：
+
+```text
+POST /odm/validate { mvs, odmed }
+```
+
+Validate 可以返回 channel-specific measurement values，或参与 claim issuance。最终 AdNetwork SDK 返回给 MMP SDK 的 Claim 推荐为：
 
 ```json
 {
   "matched": true,
-  "payload": {
-    "mmp_touch_token": "AMT_v1_7ec3...",
-    "creative_id": 880011221122,
-    "campaign_id": 8800112200,
-    "ad_group_id": 8800112211,
-    "touch_time_bucket": 4933923
-  },
-  "claim_token": "opaque_claim_token_v1"
+  "mmp_touch_token": "AMT_v1_7ec3...",
+  "creative_id": 74019912,
+  "campaign_id": 74012091,
+  "ad_group_id": 7401209102,
+  "touch_time_bucket": 4933923,
+  "match_type": "on_device_psm",
+  "claim_token": "opaque_claim_token_v1",
+  "expires_at_ms": 1777518000000
 }
 ```
 
-这里 payload 不是 PSM bit 本身，而是命中 row 上的 associated data。资源代价也随之从 `O(1) membership result` 变成 `O(bucket_size * row_payload_size)`。2026-04-14 HAR 样本中 `/odm/psm` response decoded length 为 123,189 bytes，核心 payload 可切成 `1009 rows x 3 columns`，这与 “prefix bucket candidate rows + local filtering/decryption” 模型一致。
+Claim 不应包含：
 
-### 7.5 Step E: MMP Ask
+- `req_id`
+- `device_fp_hash`
+- raw matching id
+- OPRF tail / output
+- row key
+- bucket tail / tag
 
-MMP 检测到 install / first_open / purchase 后，进入 Ask 阶段。这里最容易犯的错，是让 MMP 把设备指纹或派生指纹带给 Ad Network 查询。推荐做法是：MMP 只带事件上下文和 bridge object；真正的 device material 由 AdNetwork SDK 在本地处理。
+### 7.7 Step G: MMP Server Attribution and Confirm
 
-Ask 可以包含：
+MMP SDK 把 conversion + Claim 上报给 MMP Server。MMP Server 执行自己的多渠道 winner selection。
 
-- MMP 常规 query fields
-- `odm_info`
-- MMP 事件上下文
-- 不包含由 MMP 生成或传递的 `device_fp_hash`
+如果 MMP 最终决定归因给该 AdNetwork，则 Confirm：
 
-### 7.6 Step F: Ad Network Claim
+```json
+{
+  "partner": "ExampleMMP",
+  "adv_app_id": "com.example.game",
+  "event_name": "first_open",
+  "event_ts_ms": 1777500905123,
+  "final_decision": "WIN",
+  "mmp_touch_token": "AMT_v1_7ec3...",
+  "claim_token": "opaque_claim_token_v1",
+  "confirm_idempotency_key": "confirm_01JTRP7V8W5T7A8Y4A8V2P"
+}
+```
 
-ad network 在 confidential plane 内：
+Confirm 阶段必须校验：
 
-- 校验 `odm_info` 与 `artifact_id`
-- 校验 task binding
-- 校验 TTL
-- 校验 anti-replay
-- 可选结合 network engagement log、fraud policy、MMP query template 进行 claim
+- `claim_token` valid / not expired / not replayed
+- `claim_token` 与 `mmp_touch_token` 绑定一致
+- partner / app / event / policy context 一致
+- token 仍在 attribution window 内
 
-Claim 返回的是“我是否认为这个转化可以由我 claim，以及我给 MMP 什么凭证”。它不是把内部请求明细交给 MMP。
+### 7.8 Step H: Token to req_id and Optimization Release
 
-返回可以包含：
+AdNetwork Server 在 Confirm 后做内部 join：
 
-- `claim_status`
-- `mmp_touch_token` 或等价 MMP-facing touch token，取决于 legal option
-- `claim_token`
-- `claim_confidence`
-- `measurement_task_id`
-- creative / campaign / ad group / touch bucket 等 reporting metadata，取决于 policy
+```text
+mmp_touch_token -> req_id -> feature_ptr -> attribution / optimization label
+```
 
-### 7.7 Step G: MMP Confirm
+输出两个方向：
 
-MMP 根据全局 winner selection 结果回传 Confirm。Confirm 的含义是：MMP 已经在自己的多渠道规则里决定这次转化是否归因给该 Ad Network。
+- request-level optimization label，用于训练和模型反馈；
+- aggregate reporting contribution，用于 partner-facing / BI-facing 聚合报告。
 
-Confirm 可以包含：
+这里的关键边界是：
 
-- `mmp_decision`
-- `mmp_touch_token`，如果选用 Option 2 / Option 4
-- `winning_touch_ts_ms`
-- `confirm_ts_ms`
-- `claim_token`
+- MMP 只看到 scoped attribution material 和 claim receipt。
+- `req_id` 只在 AdNetwork Server 内部恢复。
+- optimization plane 消费 request-level label，但不消费 raw device material、`device_fp_hash` 或 `odm_info`。
+- aggregate reporting plane 继续执行 threshold、budget、DP 或 DAP/VDAF 对齐策略。
 
-### 7.8 Step H: Confidential Join and Release
+### 7.9 兼容对象的位置
 
-ad network 在 confidential plane 中 join：
+`OnDeviceMeasurementArtifact`、`ODMInfoEnvelope`、`odm_info` 的合理位置是兼容层和桥接层：
 
-- `AdRequestContext`
-- `OnDeviceMeasurementArtifact`
-- `MmpAskRequest`
-- `ClaimResponse`
-- `MmpConfirmRequest`
+- 用于 Google ICM / AAP 类外部 API；
+- 用于 advertiser app / advertiser server 缓存 opaque bridge object；
+- 用于排查和跨系统 correlation，但必须 TTL-bound、purpose-bound；
+- 不作为主链路里 MMP 提供 device matching material 的方式。
 
-输出两个主对象：
-
-- `RequestScopedOptimizationLabel`
-- `AggregateMeasurementContribution`
+因此，后文 schema 仍保留这些对象，但语义应理解为 compatibility / bridge object，而不是 v3.1 主流程的核心输入。
 
 ## 8. 协议对象与 schema
 
@@ -647,7 +504,7 @@ message DeviceLocalObservation {
 }
 ```
 
-### 8.3 OnDeviceMeasurementArtifact
+### 8.3 Compatibility OnDeviceMeasurementArtifact
 
 ```proto
 message OnDeviceMeasurementArtifact {
@@ -679,7 +536,7 @@ message OnDeviceMeasurementArtifact {
 - `encrypted_feature_blob`
   - 只允许 confidential plane 解密
 
-### 8.4 ODMInfoEnvelope
+### 8.4 Compatibility ODMInfoEnvelope
 
 ```proto
 message ODMInfoEnvelope {
@@ -749,6 +606,16 @@ Compatibility guidance:
 
 ### 8.5 MmpAskRequest
 
+这个对象用于描述 MMP / AAP 兼容 API 中的 server-side Ask 记录，不是 v3.1 主链路中 `MMP SDK -> AdNetwork SDK` 的原始调用参数。
+
+v3.1 主链路里，MMP SDK 对 AdNetwork SDK 的 Ask 应尽量薄：
+
+```text
+Ask(event_name, event_ts_ms, adv_app_id, mmp_event_id, partner_context)
+```
+
+它不应携带 `device_fp_hash`、raw device material、OPRF input/output 或 row key。下面的 `device_id` / `odm_info` 字段只用于兼容已有 MMP / AAP / ICM 接口，不能被理解成推荐主流程的匹配输入。
+
 ```proto
 message MmpAskRequest {
   string mmp_name = 1;
@@ -774,8 +641,9 @@ message MmpAskRequest {
 
 说明：
 
-- `device_id` 可是 `idfa`、`idfv`、`gaid`、`appsetid`，也可能为空或全零。
-- `odm_info` 用于让 network 在缺少稳定 device ID 时仍可进行 privacy-preserving claim。
+- `device_id` 可是 `idfa`、`idfv`、`gaid`、`appsetid`，也可能为空或全零；它只属于 partner compatibility surface。
+- `odm_info` 用于兼容 Google ICM / AAP 类 bridge object，不是 v3.1 主链路中由 MMP 提供的 matching material。
+- v3.1 主链路的 private matching material 由 AdNetwork SDK 在本地生成，并通过 OPRF/PSM 子流程处理。
 
 ### 8.6 ClaimResponse
 
@@ -888,7 +756,7 @@ message AggregateMeasurementContribution {
 
 ### 8.10 PostInstallConversionEvent
 
-这个对象代表 advertiser app 在 install 之后继续上报给 ad network / MMP 的 conversion 事件。它不是原始设备信号，也不是最终训练标签，而是进入 ask/claim/confirm 与 confidential join 之前的业务事件。
+这个对象代表 advertiser app 在 install 之后继续上报给 ad network / MMP 的 conversion 事件。它不是原始设备信号，也不是最终训练标签。v3.1 主链路中，Ask 由 MMP SDK 调 AdNetwork SDK 触发；这里的 compatibility fields 只服务已有 partner API。
 
 ```proto
 message PostInstallConversionEvent {
@@ -901,7 +769,7 @@ message PostInstallConversionEvent {
   int64 event_value_micros = 7;
   string currency_code = 8;
   string event_dedupe_key = 9;
-  string odm_info = 10;
+  string compatibility_odm_info = 10;
   int64 advertiser_user_id = 11;
   string event_schema_id = 12;
   map<string, string> event_dimensions = 13;
@@ -916,7 +784,7 @@ message PostInstallConversionEvent {
 message AttributionHandshakeState {
   string handshake_id = 1;
   string mmp_event_id = 2;
-  int64 server_request_id = 3;
+  int64 server_request_id = 3; // populated after Confirm/token-to-req_id join
   string measurement_task_id = 4;
   string ask_status = 5;     // RECEIVED, REJECTED, EXPIRED
   string claim_status = 6;   // CLAIMED, DECLINED, SOFT_DECLINED
@@ -928,6 +796,7 @@ message AttributionHandshakeState {
   string policy_version = 12;
   bytes replay_cache_key = 13;
   string failure_reason_code = 14;
+  string mmp_touch_token = 15;
 }
 ```
 
@@ -1116,7 +985,9 @@ message AggregateCollectorBudgetState {
 }
 ```
 
-### 9.2 端上 artifact
+### 9.2 compatibility 端上 artifact
+
+这是兼容 / bridge path 的对象，不是 v3.1 主链路的必需输入。
 
 ```json
 {
@@ -1158,6 +1029,8 @@ message AggregateCollectorBudgetState {
 
 ### 9.3 advertiser app / server 缓存的 `odm_info`
 
+这是 Google ICM / AAP 类接口的兼容对象。v3.1 主链路不要求 MMP 用 `odm_info` 作为 matching material。
+
 ```json
 {
   "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f-28sN5qN9GTZ_FztjL0OLFzgxUJD...",
@@ -1169,6 +1042,37 @@ message AggregateCollectorBudgetState {
 ```
 
 ### 9.4 MMP Ask
+
+v3.1 主链路中，MMP SDK 对 AdNetwork SDK 的 Ask 应该是薄触发，不携带 device matching material：
+
+```json
+{
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "mmp_name": "ExampleMMP",
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "event_name": "first_open",
+  "event_ts_ms": 1777500905123,
+  "adv_app_id": "com.example.game",
+  "ask_idempotency_key": "ask_01JTRP7V8W5T7A8Y4A8V2P",
+  "partner_context": {
+    "mmp_install_id": "mmp_install_120045_9981",
+    "country_code": "US",
+    "query_template_id": "mmp_install_query_v2"
+  }
+}
+```
+
+不应包含：
+
+- `device_fp_hash`
+- raw device material
+- OPRF input / output
+- row key
+
+### 9.4B Compatibility MMP Ask with `odm_info`
+
+如果对接已有 MMP / AAP / ICM server-side API，可以存在兼容形态：
 
 ```json
 {
@@ -1182,7 +1086,7 @@ message AggregateCollectorBudgetState {
   "event_name": "first_open",
   "id_type": "idfv",
   "device_id": "CCB300A0-DE1B-4D48-BC7E-599E453B8DD4",
-  "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+  "compatibility_odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
   "query_template_id": "mmp_install_query_v2",
   "country_code": "US",
   "ask_idempotency_key": "ask_01JTRP7V8W5T7A8Y4A8V2P",
@@ -1190,6 +1094,8 @@ message AggregateCollectorBudgetState {
   "query_contract_id": "google_icm_install_query_v3"
 }
 ```
+
+这类对象属于 compatibility surface，不改变 v3.1 主链路的边界：MMP 仍不提供 `device_fp_hash`，AdNetwork SDK 仍负责本地 material 和 OPRF/PSM。
 
 ### 9.5 Claim Response
 
@@ -1323,7 +1229,7 @@ def handle_confirm(req):
   "event_value_micros": 4990000,
   "currency_code": "USD",
   "event_dedupe_key": "purchase_120045_user_9981_order_771",
-  "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+  "compatibility_odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
   "advertiser_user_id": 998100771,
   "event_schema_id": "purchase_event_v2",
   "event_dimensions": {
@@ -1350,7 +1256,8 @@ def handle_confirm(req):
   "confirm_ts_ms": 1777500907120,
   "expiry_ts_ms": 1777502706201,
   "policy_version": "claim_policy_v5",
-  "failure_reason_code": ""
+  "failure_reason_code": "",
+  "mmp_touch_token": "AMT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12"
 }
 ```
 
@@ -1552,7 +1459,7 @@ def handle_confirm(req):
   - 只在 partner compat contract 需要时短期存在
   - 不得作为内部通用 join key
 - `odm_info`
-  - 只用于 bridge / ask 流程
+  - 只用于兼容 bridge / compatibility ask 流程
   - 不得进入 trainer row
   - 不得进入长期画像表
 - `mmp_touch_token`
@@ -1589,7 +1496,8 @@ def handle_confirm(req):
 
 ### 11.2 Ask 阶段要求
 
-- `odm_info` `SHOULD` 作为 ask 的可选增强字段。
+- v3.1 主链路中，Ask 是 `MMP SDK -> AdNetwork SDK` 的薄触发，不应携带 `device_fp_hash` 或 raw device material。
+- `odm_info` 只在兼容 MMP / AAP / ICM server-side API 时作为 optional bridge field，不是推荐主流程的 matching input。
 - `query_template_id` `MUST` 明确，防止 partner 任意探测。
 - `query_hash` `SHOULD` 绑定进 `claim_token`。
 
@@ -1684,23 +1592,29 @@ Google 的 [request/response spec](https://developers.google.com/app-conversion-
   - 生成方: ad network backend
   - 写入方: ad response / SDK exposure metadata
   - 生命周期负责人: ad network
-- `odm_info`
-  - 生成方: advertiser app 中的 ODM SDK
-  - 缓存方: advertiser app 或 advertiser server
-  - 透传方: MMP / AAP
-  - 过期负责人: advertiser app 与 ad network 共同约束
+- `mmp_touch_token`
+  - 生成方: ad network backend
+  - 接收方: MMP click log / tracking-link path
+  - 使用方: MMP Claim join 与 Confirm 回传
+  - 过期负责人: ad network
 - `ask_idempotency_key`
   - 生成方: MMP
   - 生命周期负责人: MMP
 - `claim_token`
-  - 生成方: ad network confidential service
+  - 生成方: AdNetwork SDK / ad network confidential service
   - 使用方: MMP confirm
   - 过期负责人: ad network
 - `confirm_idempotency_key`
   - 生成方: MMP
   - 生命周期负责人: MMP
+- `odm_info`
+  - 仅兼容路径需要
+  - 生成方: advertiser app 中的 ODM SDK
+  - 缓存方: advertiser app 或 advertiser server
+  - 透传方: MMP / AAP compatibility surface
+  - 过期负责人: advertiser app 与 ad network 共同约束
 
-如果责任不清晰，线上最容易出现两种事故：一是同一 install 被多次问询，二是 `odm_info` 被错误地缓存成长期用户标识。
+如果责任不清晰，线上最容易出现三种事故：一是同一 install 被多次问询，二是 `claim_token` 被重放，三是 `odm_info` 或 `mmp_touch_token` 被错误地缓存成长期用户标识。
 
 ## 12. Optimization 规范
 
@@ -1824,20 +1738,19 @@ Phase 1 推荐：
 
 把一次真实 purchase 优化闭环按时间顺序写开，会更容易看懂为什么要保留这些字段：
 
-1. ad network 在广告请求时生成 `server_request_id=922337203600012345`，并把 campaign、creative、placement、geo、consent 写入 `AdRequestContext`。
-2. SDK 在端上看到 impression / click，同时观察到 `boot_time_ms`、`raw_ip`、`timezone_offset_min`、`bundle_first_install_ts_ms` 等本地信号。
-3. 端上不直接上送这些原值，而是生成：
-   - `OnDeviceMeasurementArtifact`
-   - `odm_info`
-4. 用户完成安装，MMP 发起 `MmpAskRequest`，其中包含自己的 `mmp_event_id`、query contract，以及透传的 `odm_info`。
-5. ad network 在 confidential plane 内把 ask 与 artifact 绑定，判断这次 install 是否 eligible to claim，并返回短期 `claim_token`。
-6. MMP 在多家 SRN 返回结果之间做 winner selection，然后只对 winner 发 `MmpConfirmRequest`。
-7. ad network 在 confidential plane 内做最终 join，输出：
+1. ad network 在广告触点发生时生成 `server_request_id=922337203600012345` / `req_id`，并把 campaign、creative、placement、geo、consent 写入 touchpoint store。
+2. ad network 同步生成 scoped `mmp_touch_token`，通过 tracking link / click log 给到 MMP；内部维护 `mmp_touch_token -> req_id` index。
+3. 用户完成安装或 purchase，MMP SDK 捕获事件，并调用 AdNetwork SDK Ask；MMP SDK 不传 `device_fp_hash`。
+4. AdNetwork SDK 在本地观察 `boot_time_ms`、`raw_ip`、`timezone_offset_min`、`bundle_first_install_ts_ms` 等本地信号，但不把原值交给 MMP。
+5. AdNetwork SDK 与 AdNetwork Server 运行 `config -> psm -> local filtering -> optional validate`，从命中 candidate row 恢复 associated payload。
+6. AdNetwork SDK 返回 Claim 给 MMP SDK，推荐包含 `mmp_touch_token + claim_token + creative metadata`，不包含 `req_id`。
+7. MMP 在多家 SRN 返回结果之间做 winner selection，然后只对 winner 发 `MmpConfirmRequest`。
+8. AdNetwork Server 校验 `claim_token`，再用 `mmp_touch_token -> req_id` 做最终 join，输出：
    - `RequestScopedOptimizationLabel`
    - `ServerFeatureDerivationRecord`
    - `OptimizationFeedbackRecord`
-8. trainer materialization 作业按 `server_request_id` 内联 join label 与 feature release，生成 `OptimizationTrainingRow`。
-9. 线上 bidding / ranking 系统拿到的是训练安全的 request row，而不是 `odm_info`、`raw_ip`、完整 `User-Agent` 或 partner `ad_event_id`。
+9. trainer materialization 作业按 `server_request_id` / `req_id` 内联 join label 与 feature release，生成 `OptimizationTrainingRow`。
+10. 线上 bidding / ranking 系统拿到的是训练安全的 request row，而不是 `device_fp_hash`、`raw_ip`、完整 `User-Agent`、`odm_info` 或 partner `ad_event_id`。
 
 这个 walkthrough 的关键点是：个性化优化依赖的是 request-level 对齐能力，不依赖把原始 PII 长期放进训练面。
 
@@ -1928,26 +1841,34 @@ RFC 不需要强制“今天就部署哪一个 collector”，但应先把 metri
 
 以下对象都 `MUST` 有 expiry：
 
-- `OnDeviceMeasurementArtifact`
-- `odm_info`
 - `claim_token`
+- `mmp_touch_token -> req_id` index row
+- OPRF/PSM session context，例如 `odmed`、`matching_id`、candidate cache handle
+- validate / `mvs` context
+- `OnDeviceMeasurementArtifact`，如果启用兼容 artifact 路径
+- `odm_info`，如果启用 ICM / AAP bridge path
 - `compatibility egress cache`
 
 ### 14.2 Anti-replay
 
 至少要求：
 
-- `artifact_id`
-- `replay_nonce`
-- `query_hash`
+- `claim_token` single-use
+- `confirm_idempotency_key`
+- `ask_idempotency_key`
+- PSM / validate session nonce
 - `replay_cache_key`
 - bounded-shot query count
+- `artifact_id` / `query_hash`，如果启用兼容 artifact path
 
 ### 14.3 Purpose binding
 
-每次 confidential upload `SHOULD` 绑定：
+每次 Ask / Claim / Confirm / confidential processing `SHOULD` 绑定：
 
 - `measurement_task_id`
+- `adv_app_id`
+- `mmp_partner_id`
+- event name / event timestamp
 - `workflow_manifest_digest`
 - `allowed_release_surface`
 - `retention_policy_id`
@@ -1970,7 +1891,7 @@ confidential plane `SHOULD` 保留：
 
 结合 [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/) 与 [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)，高敏 workflow 至少要求：
 
-- 按 `artifact_validation`、`claim_join`、`feature_derivation`、`egress_adapter` 拆 workflow
+- 按 `claim_verification`、`token_to_req_id_join`、`feature_derivation`、`egress_adapter` 拆 workflow；兼容 artifact path 再保留 `artifact_validation`
 - debug 日志默认关闭 request-level 敏感字段
 - 对高敏路径优先使用批处理、固定模板、减少 data-dependent branching
 - 做 side-channel regression test
@@ -2054,18 +1975,21 @@ confidential plane `SHOULD` 保留：
 包含：
 
 - `server_request_id`
-- device artifact
-- opaque `odm_info`
-- `MMP Ask -> Claim -> Confirm`
-- confidential join
+- touchpoint store
+- `mmp_touch_token -> req_id` index
+- `MMP SDK Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`
+- `claim_token` TTL / replay gate
+- Confirm 后的 token-to-`req_id` join
 - request-level labels
 - thresholded aggregate reporting
+- opaque `odm_info` / device artifact，仅在兼容 ICM / AAP path 时启用
 
 ### 17.2 Profile B: Recommended Default
 
 在 Profile A 基础上增加：
 
 - TEE-backed confidential processing
+- versioned OPRF/PSM config and candidate store
 - versioned contribution policy
 - DP-backed aggregate reporting
 - policy-aware audit trail
@@ -2835,9 +2759,229 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 
 一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，以及谁能在 Confirm 后恢复 req_id”定义成严格协议。
 
-## 20. 参考资料
+## 20. 附录：研究、标准与产品依据
 
-### 20.1 Research
+这一节是第 5 节索引背后的详细依据。它不属于主阅读路径；当你想追溯“为什么正文里要有某个字段、边界或治理要求”时，再回来看这一节。
+
+### 20.1 Ephemeral on-device analytics 已经工程化
+
+Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-aggregate-insights-from-ephemeral-streams-of-on-device-user-data/) 证明了三件事：
+
+- 敏感原始流可以保留在设备侧的短期窗口内，而不是永久中心化存储；
+- query template、windowing、contribution bounding 应当是协议主体，不是实现细节；
+- 上行对象可以是受限 artifact，而不是完整明细。
+
+对本 RFC 的直接影响是：
+
+- `measurement_task_id`
+- `query_template_id`
+- `observation_window_sec`
+- `contribution_policy_id`
+
+这些都必须进入协议对象，而不是只写在内部 wiki。
+
+### 20.2 Confidential server-side processing 已经不是“概念”
+
+[Confidential Federated Computations](https://research.google/pubs/confidential-federated-computations/)（2024）和 [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute) 说明：
+
+- 服务端可以在 TEE/CVM 中完成隐私敏感的 processing graph；
+- 上传对象可以绑定允许的 workflow；
+- verifiable processing 需要 manifest、signature、attestation，而不是只说“我们会小心处理”。
+
+因此，本 RFC 采用 `confidential plane` 作为 request-level join 的默认部署边界。
+
+### 20.3 DAP / VDAF / Taskprov 已经足够成熟到值得对齐对象模型
+
+截至 2026-04-29：
+
+- [DAP draft-ietf-ppm-dap-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-01-30；
+- [DAP Taskprov draft-ietf-ppm-dap-taskprov-03](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/) 最近一次修订发布于 2025-09-05，且 datatracker 在 2026-03-16 将其标记为 expired & archived，但其中的 task binding 语义仍然直接可用；
+- [VDAF draft-irtf-cfrg-vdaf-19](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/) 最近一次更新时间是 2026-04-14；
+- [DAP Extensions for the Attribution API draft-thomson-ppm-dap-attribution-01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 最近一次更新时间是 2026-02-17，让 attribution 类 measurement 与 PPM/DAP 更接近。
+
+这意味着即使 Phase 1 不直接部署完整 DAP，aggregate object model 也应该主动对齐：
+
+- `task`
+- `report_id`
+- `batch_id`
+- `task_expiration`
+- `extension_fields`
+
+更进一步，aggregate plane 不应再停留在“以后再看怎么聚合”的抽象层。既然 VDAF 对象模型已经稳定，生产 RFC 应直接偏向已有 primitive：
+
+- `Prio3Count`
+  - 适合 install / purchase user count
+- `Prio3Sum`
+  - 适合 revenue、cost、value sum
+- `Prio3Histogram`
+  - 适合 retention day bucket、latency bucket、value bucket
+- `Prio3SumVec`
+  - 适合多维 campaign bucket 的固定长度向量聚合
+
+这样做的意义不是“马上部署完整 DAP/VDAF”，而是避免 aggregate schema 将来卡死在自定义半协议上。
+
+### 20.4 Contribution bounding 现在是生产问题，不是论文角落
+
+[Scalable contribution bounding to achieve privacy](https://research.google/pubs/scalable-contribution-bounding-to-achieve-privacy/)（2025）以及 [It's My Data Too](https://research.google/pubs/its-my-data-too-private-ml-for-datasets-with-multi-user-training-examples/)（ICML 2025）都指向同一件事：
+
+- 一个训练样本可能对应多个“拥有者”或多个 touch；
+- multi-touch / multi-user 数据里，contribution bounding 是一等公民；
+- 如果 bounding 只藏在离线 SQL 里，后续隐私和训练质量都不可控。
+
+因此，本 RFC 要求：
+
+- `conversion_group_id`
+- `credit_fraction_micros`
+- `contribution_policy_id`
+
+必须进入 label contract。
+
+### 20.5 交互式 release 的隐私分析已经不能忽略
+
+[On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)（PETS 2025）强调：
+
+- 查询会依赖之前的输出；
+- 数据库本身也会因为系统状态变化而变化；
+- release 不能被当成“静态 SQL 导出”。
+
+对本 RFC 的含义是：
+
+- aggregate reporting 必须有显式 budget ledger；
+- provisional / final / correction 必须有规则；
+- 任何重复 collect 都必须视为额外 privacy cost 或额外治理风险。
+
+### 20.6 “DP 可审计”已经从研究走向工程
+
+[DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)（2024）和 [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)（NeurIPS 2025）说明：
+
+- DP 不能只信数学证明和实现自信；
+- 黑盒审计、持续审计、序列式审计都已经可做；
+- 如果后续引入 DP release，审计栈应该提前预留。
+
+### 20.7 TEE 不是 magic box
+
+2026 年的 [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/) 和 [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/) 说明：
+
+- Confidential VM 仍然存在 side-channel 风险；
+- 工作负载本身必须考虑 access pattern、timing、batching、debug 策略；
+- “放进 TEE 就安全”是错误的。
+
+因此，本 RFC 对 confidential workflows 要求分级、限 debug、加回归测试。
+
+### 20.8 公开产品形态已经验证 ODM / ICM 是现实路径
+
+截至 2026-04-29：
+
+- Google Ads 帮助文档显示 [Integrated Conversion Measurement](https://support.google.com/google-ads/answer/16203286?hl=en-EN) 自 2025 年 5 月起逐步 rollout；
+- [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 文档指出 event-data 方案使用临时、去标识化事件数据，且 Firebase iOS SDK `11.14.0` 于 2025 年 6 月提供相关版本；
+- [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 已明确 `odm_info` 是 ICM 所需字段；
+- [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 说明 standalone SDK 路线可行。
+
+同时，Google 2026 年的产品文档还把两个生产边界写得更清楚了：
+
+- [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743) 明确 ICM 是 AAP UI 中的 granular, event-level, cross-network view，而不是 Google Ads UI 中的同一条 reporting surface；
+- [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 明确该功能对位于 `EEA`、`UK`、`Switzerland` 的用户 inactive。
+
+这直接支持本文把 `ODMInfoEnvelope` 视为正式协议对象，而不是 SDK 内部细节；也支持把 `reporting_surface_id`、`region_eligibility_code` 和 `feature_active=false` 视为正式状态，而不是埋在 FAQ 里的例外逻辑。
+
+### 20.9 MMP 的 SRN 工作流没有消失
+
+[AppsFlyer SRN 文档](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks) 和 [Adjust SAN 文档](https://help.adjust.com/en/marketer/self-attributing-networks) 仍表明：
+
+- MMP / attribution provider 先检测 install / event；
+- 再向 self-reporting network 查询或通知；
+- network 基于自身 engagement data 做 claim；
+- 某些回调和 postback 仍依赖 device ID 或 network-specific transaction object。
+
+所以，on-device measurement 必须服务于 SRN，而不是与 SRN 平行、互不相干。
+
+进一步地，截至 2026-04-29，产品文档还显示两个值得写进 RFC 的现实：
+
+- [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model) 页面在 2026-04-19 更新，仍明确区分 deterministic、probabilistic、SRN query、assist 等多条归因路径；
+- [AppsFlyer Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model) 在 2026-03-19 公开说明了设备侧 flooding 检测后仅保留 eligible click / impression 的做法。
+
+这对本文的直接影响是：
+
+- RFC 不能只建模“最后一次 click 是否胜出”，还要建模 `eligible_candidate_count`、`prefilter_candidate_count`、`assist_count` 这类质量上下文；
+- request-level optimization 不能只消费二元 `is_attributed`，还应消费 winner 选择过程中的质量切片与延迟反馈。
+
+### 20.10 Privacy Sandbox 的 aggregate 优化研究说明 bucket 设计本身也是协议
+
+[Summary Reports Optimization in the Privacy Sandbox Attribution Reporting API](https://research.google/pubs/summary-reports-optimization-in-the-privacy-sandbox-attribution-reporting-api/)（PETS 2024）虽然主要针对 Attribution Reporting API，但对本 RFC 有一个很现实的启发：
+
+- 同样的 privacy guardrail 下，bucket 设计和 contribution budget 分配会显著影响可用性；
+- “先把数据聚出来，之后分析时再想怎么切桶” 往往太晚；
+- measurement task、aggregation key、value bucket、reporting window 应一起设计。
+
+因此，本 RFC 把 `aggregation_key_schema_id`、`value_bucket_schema_id`、`reporting_window_id` 视为 production contract，而不是 BI 侧随手改的维表配置。
+
+### 20.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
+
+[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 在 2026-04-28 发布了新的 Working Draft。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
+
+- on-device attribution 与 off-device aggregation 可以明确分层；
+- aggregate service `MUST` 处理 anti-replay，而不是只做求和；
+- privacy budget、epoch 和 per-site / per-surface 限额应该是正式协议状态，而不是分析平台外部约定。
+- multi-party aggregation、DAP/VDAF 和 collector state 应作为一等设计对象进入协议，而不是留给后续实现随意发挥。
+
+对本 RFC 的意义是：广告 App 场景里的 aggregate reporting plane 也应该显式拥有 `budget ledger + replay rejection + report lifecycle + collector identity`，而不是只导出一个聚合表。
+
+### 20.12 Verifiable local reporting 说明“端上上报正确性”也要入 RFC
+
+[Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)（2025）指出一个很现实的问题：
+
+- 只要 measurement 的部分逻辑发生在设备侧，系统就不只是担心“服务端看太多”，还要担心“端上报了假的东西”；
+- 本地私有化或本地裁剪后的上报，如果没有 provenance 约束，容易被 poisoning、flooding、伪造 engagement 或脚本化设备利用；
+- 可验证随机性、第三方 ground truth、或至少更强的 event provenance，会明显改变系统可用性上限。
+
+对广告场景的直接含义是：
+
+- RFC 不能只定义 `artifact` 长什么样，还要定义 `artifact` 证明了什么；
+- 端上 `impression` / `click` / `first_open` / `purchase` 的来源级别，应该进入 policy；
+- `artifact_auth_level`、`event_provenance`、`sdk_build_fingerprint` 这类字段值得成为正式 contract，而不是埋在风控旁路里。
+
+### 20.13 ODC / ODM 逆向证据把 OPRF / PSM 放回主链路
+
+2026-04-14 的 Google ODC / ODM HAR 样本，以及 2026-04-30 的 wire-format 逆向整理，给了一个比公开产品文档更具体的实现信号。样本来自 `com.underdogsports.fantasy`，SDK 为 `odm-sdk-i-v3.2.0`，`source=aaps`。它不是官方 SDK 文档，但足以改变本 RFC 对 Google ODM 兼容层的默认模型。
+
+可直接从 HAR 确认的链路是：
+
+```text
+GET  /odm/config
+POST /odm/psm
+POST /odm/validate
+```
+
+关键观察：
+
+- `/odm/config` 返回 `matching_id`、`bucketed_date`、`prefix_length=22`、`extension_data`；其中 `extension_data` 在后续请求里以 `odmed` 原样复用。
+- `/odm/psm` request 中的 `psm_request` 解码后为 50 bytes，包含 3-byte prefix-like blob、33-byte compressed EC point、`prefix_length=22` 参数和 `mode=35`。
+- `/odm/psm` response 解码后约 123KB，核心 payload 是 `1009` 条 candidate rows，而不是一个单值 membership result。
+- response header 中有两个 33-byte compressed EC points，第一个与 request 里的 blinded point 一致，第二个很像服务端 OPRF evaluation 或 VOPRF proof element。
+- `/odm/validate` body 是 `mvs + odmed`，response 返回渠道化 measurement values：`mv_ga4f` 与 `mv_aaps`。
+
+因此，Google ODM 的现实路径不应再被描述成“端上算一个 opaque token 后直接上传”。更贴近 HAR 的模型是：
+
+```text
+Config 下发上下文
+  -> Client 生成 prefix bucket + EC blinded query
+  -> Server 对 blinded point 做 OPRF/PSM 评估，并返回该 prefix bucket 下的候选记录集合
+  -> Client 本地 unblind / derive key / filter or decrypt candidate rows
+  -> Client 生成 mvs
+  -> Validate 派生 mv_ga4f / mv_aaps
+  -> SDK 暴露 aggregateConversionInfo / odm_info 给后续归因或上报链路
+```
+
+这也修正了几条旧判断：
+
+- `matching_id` 不是 `/psm` 成功后签发；它在 `/config` 阶段已返回，更像 opaque context / cache key / correlation key。
+- `tfo=1776212580` 按 Unix epoch 秒解释接近抓包本地时间，不像 “time from first open” duration。
+- Paillier / PIR 仍可作为更强隐私设计方案，但当前 HAR 没有 Paillier selection vector 或 2048-bit ciphertext 的形态；主链路更像 `OPRF + prefix bucket candidate retrieval + client-side local filtering`。
+- `boot_time` 仍然可能参与本地 material 或 `mvs` 构造，但当前 HAR 中没有明文字段证明它进入 ODM PSM 主链路。
+
+## 21. 参考资料
+
+### 21.1 Research
 
 1. [Mayfly: Private Aggregate Insights from Ephemeral Streams of On-Device User Data](https://research.google/pubs/mayfly-private-aggregate-insights-from-ephemeral-streams-of-on-device-user-data/)
 2. [Confidential Federated Computations](https://research.google/pubs/confidential-federated-computations/)
@@ -2851,7 +2995,7 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 10. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
 11. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
 
-### 20.2 Standards
+### 21.2 Standards
 
 1. [DAP](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/)
 2. [DAP Taskprov](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/)
@@ -2862,7 +3006,7 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 7. [EDPB Guidelines 01/2025 on Pseudonymisation](https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf)
 8. [California Consumer Privacy Act statute](https://cppa.ca.gov/regulations/pdf/ccpa_statute.pdf)
 
-### 20.3 Product / Integration
+### 21.3 Product / Integration
 
 1. [Integrated Conversion Measurement](https://support.google.com/google-ads/answer/16203286?hl=en-EN)
 2. [About on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en)
@@ -2876,7 +3020,7 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 10. [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743)
 11. Google ODC / ODM On-Device Measurement 技术逆向与实现模型，2026-04-30，基于 2026-04-14 HAR 样本。
 
-### 20.4 Engineering Components
+### 21.4 Engineering Components
 
 1. [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute)
 2. [OpenDP](https://github.com/opendp/opendp)
