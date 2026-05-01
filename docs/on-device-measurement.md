@@ -1,4 +1,4 @@
-# On-Device Measurement RFC
+# On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
 最后更新: 2026-05-01<br>
@@ -6,17 +6,27 @@
 
 ## 1. 摘要
 
-本文把 `on-device measurement` 整理成一份面向广告场景的工程 RFC。目标不是解释几个公式，而是定义一套从端上采集、OPRF/PSM-with-payload、MMP/SRN 协同、服务端 confidential join、request-level optimization、aggregate reporting 到 legal/privacy review 的完整规范。
+本文讨论一个很具体的问题：
 
-核心结论有五条：
+> 用户点击广告后，广告主 App 里发生了安装、打开、购买等转化。我们希望广告网络能知道这次转化是否来自自己，从而做归因和模型优化；但又不希望把设备指纹、原始设备信号、请求级内部 ID 直接交给 MMP 或沉进普通数仓。
+
+`on-device measurement` 不是“所有东西都在设备上完成”，也不是“设备上算个 token 然后上传”。更准确地说，它是一套分层协议：
+
+- 设备侧保留最敏感的原始观察；
+- SDK 用 OPRF/PSM 这类协议做私密匹配；
+- MMP 仍然走现实世界里的 Ask / Claim / Confirm 流程；
+- Ad Network 只在受控服务端边界内把归因结果恢复成 request-level 优化信号；
+- 对外报告只释放受限、聚合、可审计的结果。
+
+如果只记一版结论，可以记这五条：
 
 1. `on-device measurement` 不等于“设备上算个 token 再上传”。
-2. 如果要支撑 personalized optimization，就必须保留服务端生成的 `server_request_id` 这类 request-scoped join key，但它只能存在于严格受控的数据面。
-3. MMP 的 SRN 流程仍然是现实世界的主协议形态，因此系统必须围绕 `MMP Ask -> Ad Network Claim -> MMP Confirm` 设计，而不是试图绕过它。
-4. 生产 ODM / ODC 类协议不应建模成裸 PSM 的 `matched bit`。更准确的模型是 `OPRF/PSM layer + associated payload layer`：PSM 用来定位或派生命中行密钥，payload 用来承载 touch-scoped attribution material。
-5. 推荐折中是 `mmp_touch_token + opaque claim_token`：MMP 可以完成 click-conversion join 和 creative-level reporting；Ad Network 在 Confirm 后通过 token 找回内部 `req_id`；MMP 不接触 `device_fp_hash`、OPRF 输入输出、bucket tail/tag 或 `req_id`。
+2. 如果要支撑个性化优化，就必须保留 `server_request_id` / `req_id` 这类 request-scoped join key；但它们只能留在 Ad Network 受控边界内。
+3. MMP 的 SRN 流程没有消失，所以主链路应该围绕 `MMP Ask -> Ad Network Claim -> MMP Confirm` 设计。
+4. 生产 ODM / ODC 类协议不应理解成裸 PSM 的 `matched bit`。更准确的模型是 `OPRF/PSM layer + associated payload layer`：前者负责私密匹配，后者承载可披露的归因上下文。
+5. 推荐折中是 `mmp_touch_token + opaque claim_token`：MMP 可以做 click-conversion join 和 creative-level reporting；Ad Network 在 Confirm 后通过 token 找回内部 `req_id`；MMP 不接触 `device_fp_hash`、OPRF 输入输出、bucket tail/tag 或 `req_id`。
 
-2026-04-30 追加的 ODM / ODC HAR 逆向把第 1 点进一步具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。2026-05-01 的 legal review 进一步修正了披露边界：文档不应写成 “no PII leaves device”，而应写成 “raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process; MMP may receive scoped pseudonymous attribution material depending on the selected option”。
+2026-04-30 追加的 ODM / ODC HAR 逆向把第 4 点具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。2026-05-01 的 legal review 进一步修正了披露边界：文档不应写成 “no PII leaves device”，而应写成 “raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process; MMP may receive scoped pseudonymous attribution material depending on the selected option”。
 
 本文刻意兼顾生产实用性：
 
@@ -24,6 +34,17 @@
 - 优先复用公开可用的 SDK、TEE/CVM、DP、审计和训练库；
 - 在能放松的地方明确放松，例如 Phase 1 不强制 optimization plane 上 DP；
 - 在不能放松的地方明确收紧，例如不允许把 `odm_info` 演化为长期标识符。
+
+### 1.1 怎么读这份文档
+
+这份文档比较长，不同读者可以按不同路径读：
+
+- 如果你只想理解方案，先读 `1-4`、`7`、`9.4-9.6`、`17C`。
+- 如果你要评审架构，重点读 `6-8`、`10-14`、`17B`。
+- 如果你关心 legal / privacy risk，重点读 `10`、`11`、`17C`、`19`。
+- 如果你要实现或调 SDK，重点读 `7.4B`、`7.4C`、`8`、`9`、`17A`、`17B`。
+
+第一次阅读时可以先跳过大段 schema。schema 的作用是把边界写死，不是让人从字段定义开始理解系统。
 
 ## 2. 背景与问题定义
 
@@ -59,7 +80,14 @@
 
 ## 4. 最小心智模型
 
-可以用十步理解整个系统：
+先把它想成两条线：
+
+- `转化归因线`：MMP 想知道这次 install / purchase 最终应不应该归因给某个 ad network。
+- `模型优化线`：Ad Network 想把这次转化回灌到当时那一次广告请求，用来训练出价、排序、创意和反作弊模型。
+
+隐私技术的作用，是让这两条线能闭环，但不要把原始设备信号或内部 `req_id` 直接交给第三方。
+
+完整流程可以拆成十步：
 
 1. 广告请求发生时，ad network backend 生成一次性的 `server_request_id:int64`。
 2. ad network backend 同时写入 touchpoint row，并生成 MMP-facing 的 `mmp_touch_token` 或等价 touch-scoped token；内部 `req_id` 不给 MMP。
@@ -98,6 +126,21 @@ MMP SDK Ask
 - MMP 可以按 legal 选择看到 advertiser-scoped / touch-scoped attribution material，例如 `mmp_touch_token`、`creative_id`、`campaign_id`、`ad_group_id`、`touch_time_bucket`。
 - MMP 不应看到 `req_id`、raw device signal、OPRF tail/tag、raw matching key、row decryption key。
 - AdNetwork Server 通过 `mmp_touch_token -> req_id` 找回 request-level optimization context，而不是让 MMP 明文回传 `req_id`。
+
+### 4.1 名词小抄
+
+| 名词 | 可以怎么理解 | 不要误解成 |
+|---|---|---|
+| `device material` | SDK 在本地看到的设备侧信号，例如安装、时间、网络、重装 hint 等 | 可以随便外发的设备 ID |
+| `device_fp_hash` | 从设备信号派生出的匹配材料 | MMP 应该传给 Ad Network 的字段 |
+| `OPRF/PSM` | 让 SDK 和服务器协同判断“是否命中某条触点”的私密匹配层 | 只能输出 yes/no 的完整产品协议 |
+| `associated payload` | 命中触点后可释放的上下文字节，例如 token、creative、campaign | 原始设备信号 |
+| `mmp_touch_token` | 给 MMP 用的 touch-scoped join handle | 跨 app / 跨广告主的 User ID |
+| `claim_token` | 一次性的、不可伪造的 on-device match receipt | MMP 能解开的明文字段包 |
+| `req_id` | Ad Network 内部请求级优化 key | MMP 或 partner-facing payload |
+| `odm_info` | 外部兼容协议里的 opaque bridge object | 长期用户标识符 |
+
+这张表的核心判断是：`mmp_touch_token` 可以让 MMP 做归因协同，`claim_token` 证明端侧匹配发生过，`req_id` 则留在 Ad Network 内部做优化。三者不能混用。
 
 ## 5. 截至 2026-04-29 的研究与标准更新
 
@@ -323,7 +366,12 @@ Config 下发上下文
 
 ### 6.1 逻辑平面
 
-系统划分为四个数据面：
+系统划分为四个数据面。不要把它理解成四套独立系统；更像同一条数据在不同风险级别下的四个停靠站：
+
+- 设备侧负责“看到但不乱发”；
+- confidential plane 负责“能验证、能 join、但不外泄明细”；
+- optimization plane 负责“把归因变成训练样本”；
+- aggregate reporting plane 负责“对外只给聚合结果”。
 
 1. `Device Raw Plane`
    - 位置: advertiser app + ad network SDK
@@ -488,11 +536,13 @@ Associated payload layer:
 
 ### 7.5 Step E: MMP Ask
 
-MMP 检测到 install / first_open / purchase 后，向 ad network 发起查询：
+MMP 检测到 install / first_open / purchase 后，进入 Ask 阶段。这里最容易犯的错，是让 MMP 把设备指纹或派生指纹带给 Ad Network 查询。推荐做法是：MMP 只带事件上下文和 bridge object；真正的 device material 由 AdNetwork SDK 在本地处理。
 
-- 包含 MMP 常规 query fields
-- 包含 `odm_info`
-- 包含 MMP 事件上下文
+Ask 可以包含：
+
+- MMP 常规 query fields
+- `odm_info`
+- MMP 事件上下文
 - 不包含由 MMP 生成或传递的 `device_fp_hash`
 
 ### 7.6 Step F: Ad Network Claim
@@ -505,7 +555,9 @@ ad network 在 confidential plane 内：
 - 校验 anti-replay
 - 可选结合 network engagement log、fraud policy、MMP query template 进行 claim
 
-返回：
+Claim 返回的是“我是否认为这个转化可以由我 claim，以及我给 MMP 什么凭证”。它不是把内部请求明细交给 MMP。
+
+返回可以包含：
 
 - `claim_status`
 - `mmp_touch_token` 或等价 MMP-facing touch token，取决于 legal option
@@ -516,7 +568,9 @@ ad network 在 confidential plane 内：
 
 ### 7.7 Step G: MMP Confirm
 
-MMP 根据全局 winner selection 结果回传：
+MMP 根据全局 winner selection 结果回传 Confirm。Confirm 的含义是：MMP 已经在自己的多渠道规则里决定这次转化是否归因给该 Ad Network。
+
+Confirm 可以包含：
 
 - `mmp_decision`
 - `mmp_touch_token`，如果选用 Option 2 / Option 4
@@ -542,6 +596,14 @@ ad network 在 confidential plane 中 join：
 ## 8. 协议对象与 schema
 
 以下 schema 是 RFC 的逻辑规范，生产实现建议使用 `Protobuf + buf` 管理。
+
+读这一节时不用从字段细节开始。它的作用有三个：
+
+1. 把“谁能看到什么”写成字段边界；
+2. 把 TTL、replay、policy version 这类治理要求变成正式 contract；
+3. 让 SDK、MMP、confidential service、训练系统对同一批对象有共同语言。
+
+如果只是理解架构，可以先跳到第 9 节看 mock payload，再回来查 schema。
 
 ### 8.1 AdRequestContext
 
