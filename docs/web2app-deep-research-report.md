@@ -75,6 +75,32 @@ Web 页在这条链路里通常承担 5 个职责：
 
 因此，Web2App 真正优化的是 `点击 -> 首次关键行为`，而不是单独优化 `点击 -> 商店`。
 
+### 3.1 四类常见落地架构
+
+业界 Web2App 方案大体可以归为四类，区别不在页面长短，而在谁负责保存上下文、谁负责路由、谁负责把事件回传给媒体：
+
+| 架构 | 典型路径 | 适用场景 | 主要风险 |
+| --- | --- | --- | --- |
+| 媒体直达商店 | ad click -> store -> install | 低解释成本、安装意图强的 App Install campaign | Web 意图缺失，安装后通常难恢复具体内容 |
+| Web 承接后跳商店 | ad click -> H5 -> store -> first_open | 商品、内容、订阅、游戏试玩等需要二次说服的场景 | H5 若不接 MMP / deep link，只会增加流失 |
+| Smart link / Smart banner | ad or owned traffic -> web -> smart link -> app/store | 自有站、SEO、CRM、内容页转 App | 需要 Web SDK、App SDK、Universal Links / App Links 协同 |
+| 桌面 Web 到移动 App | desktop web -> QR code -> mobile store/app -> first_open | PC 决策、移动履约，如旅游、票务、金融、游戏、Console/PC 增长 | 跨设备归因弱，需要 QR link、session 和事件口径单独设计 |
+
+成熟团队通常不会只选一种架构，而是按流量来源组合使用：买量链路优先保证媒体点击和事件回传，自有站链路优先保证首开恢复，桌面链路优先保证 QR 扫码后的跨设备上下文。
+
+### 3.2 端到端状态机
+
+真正上线时，Web2App 应被设计成状态机，而不是一个按钮：
+
+1. `ad_click_captured`：媒体或 MMP 先捕获点击，保留 click id、UTM、creative、placement。
+2. `web_context_created`：Web 页生成一次会话上下文，绑定内容、落地页版本、实验组和 CTA。
+3. `route_decided`：根据 OS、浏览器、是否可能已安装、是否在 in-app browser 中决定直达 App、商店、Deepview、Smart Banner 或 QR。
+4. `store_handoff`：进入 App Store / Google Play / OEM 市场前，把必要参数写入 MMP link、install referrer 或 deferred deep link 载荷。
+5. `first_open_restored`：App 首开时先恢复页面和 onboarding 分支，再等待归因响应补齐媒体来源。
+6. `first_key_event_reported`：首个关键事件同时带上业务上下文和媒体上下文，用于投放优化和内部复盘。
+
+这个状态机的价值是把“体验路由”和“归因报表”拆开：用户首开不能等 SKAN、AdAttributionKit 或 MMP 慢响应；但投放优化必须在后续事件里拿到足够完整的来源和内容字段。
+
 ## 4. 基础设施要求
 
 ### 4.1 Universal Links / App Links
@@ -245,6 +271,8 @@ X Business 公开资料仍以 `App installs campaign` 为主，强调：
 
 一句话：广告平台决定流量和优化目标，MMP / deep link 平台决定上下文能否跨 Web、商店和 App 继续传递。
 
+补充判断：广告平台的 Web2App 能力越强，越要注意它解决的是“媒体可见性”还是“用户路由”。Google 的 `indirect installs`、TikTok 的非 App 目标 app activity measurement、X 的 App Conversions measurement 都能提升 web campaign 对 app 结果的可见性，但它们并不自动生成安装后页面恢复能力。页面恢复仍要由 App 路由、MMP deferred deep link 或自建 session 方案完成。
+
 ## 6. 深链 / MMP / 归因平台能力梳理
 
 ### 6.1 AppsFlyer：最典型的 web-to-app 增长底座
@@ -297,6 +325,8 @@ Adjust 过去更偏归因底座，现在公开能力里也已补上了 Web2App �
 
 因此，Adjust 更适合重视稳定性、fallback 与 iOS 恢复成功率的团队。
 
+落地时要把 Adjust 这类能力当作“首开恢复加速层”，而不是归因准确性的唯一来源。尤其在 iOS 场景下，LinkMe、ODDL、概率匹配、SKAN / AdAttributionKit 分别服务不同目标：前两者偏体验恢复，后两者偏归因和聚合测量，不能混成一个验收指标。
+
 ### 6.4 Singular：参数转发与平台优化信号回流强
 
 Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下来，并继续输送给归因和媒体优化层。
@@ -311,6 +341,8 @@ Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下
 - 文档明确提醒 Facebook、Instagram、TikTok 等 in-app browser 到系统浏览器的上下文切换会造成归因损耗，应使用对应广告网络的 tracking link 格式先捕获点击
 
 这类能力尤其适合多平台买量、归因体系复杂、希望把 Web 来源继续喂给媒体优化模型的团队。
+
+如果团队主要诉求是“让媒体优化模型知道这个 app install 来自哪个 web campaign”，Singular 这类参数转发方案通常比单纯做一个短链更关键。它把 `utm_source`、`utm_campaign`、`utm_content` 等 Web 维度映射到移动归因报表，避免所有自有站安装都被粗暴归到 “Mobile Web to App” 一类。
 
 ### 6.5 Firebase：保留为测量层，不再适合作主链路
 
@@ -473,6 +505,21 @@ MVP 的验收标准不是“能跳到商店”，而是至少能回答三件事�
 
 如果只能完成其中一部分，优先级应是：直达和首开恢复 > 参数继承 > 事件回传 > 页面转化优化。
 
+### 8.6 测试矩阵
+
+Web2App 不适合只用一台手机点一遍验收。上线前至少按以下矩阵抽样：
+
+| 维度 | 必测组合 |
+| --- | --- |
+| OS | iOS 已安装 / iOS 未安装 / Android 已安装 / Android 未安装 |
+| 浏览器容器 | Safari、Chrome、Facebook/Instagram in-app browser、TikTok in-app browser、X/Snap 内置浏览器 |
+| 入口来源 | Google Search / PMax、TikTok web campaign、Meta 或 Snap 创意、SEO/CRM、自有桌面 Web QR |
+| 链路动作 | 广告点击、落地页曝光、CTA、商店打开、安装、首次打开、首个关键事件 |
+| 上下文字段 | click id、UTM、campaign、creative、content_id、landing_variant、deep_link_value、fallback_url |
+| 报表口径 | Web analytics、MMP install、first_open、媒体后台 conversion、内部业务事件 |
+
+验收时不要只看“是否打开 App”。更应该逐条确认：已安装用户是否进对页面，未安装用户首开是否恢复上下文，媒体后台是否能看到可优化事件，内部报表是否能把 Web 页面版本和 App 首个关键行为连起来。
+
 ## 9. 平台对比结论
 
 | 类型 | 代表 | 强项 | 边界 |
@@ -537,7 +584,7 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
 11. Facebook Help Center, View websites in the Facebook app  
     https://www.facebook.com/help/289776536190480/
 12. Snapchat for Business, App Power Pack  
-    https://forbusiness.snapchat.com/blog/app-power-pack
+    https://forbusiness.snapchat.com/blog/app-power-pack?lang=en-US
 13. Snapchat for Business, Sponsored Snaps  
     https://forbusiness.snapchat.com/advertising/sponsored-snaps
 14. Snapchat for Business, Snap Pixel  
@@ -545,59 +592,65 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
 15. X Business, App installs campaign  
     https://business.x.com/en/advertising/campaign-types/app-installs
 16. X Business, Mobile app measurement and attribution  
-    https://business.x.com/en/help/campaign-setup/create-an-app-installs-campaign/mobile-app-measurement-and-attribution.html
+    https://business.x.com/en/help/campaign-setup/create-an-app-installs-campaign/mobile-app-measurement-and-attribution
+17. X Business, Mobile app advertising guide  
+    https://business.x.com/en/resources/mobile-app-advertising-guide
+18. Snapchat for Business, Drive App Growth with Snapchat Ads  
+    https://forbusiness.snapchat.com/advertising/app-growth
 
 ### 深链、归因与系统基础设施
 
-17. Apple Developer, Promoting Apps with Smart App Banners  
+19. Apple Developer, Promoting Apps with Smart App Banners  
     https://developer.apple.com/documentation/webkit/promoting-apps-with-smart-app-banners
-18. Apple Developer, Allowing apps and websites to link to your content  
+20. Apple Developer, Allowing apps and websites to link to your content  
     https://developer.apple.com/documentation/xcode/allowing-apps-and-websites-to-link-to-your-content/
-19. Apple Developer, Measuring ad performance with AdAttributionKit  
+21. Apple Developer, Measuring ad performance with AdAttributionKit  
     https://developer.apple.com/app-store/ad-attribution/
-20. Apple Ads, Using AdAttributionKit to measure app ad performance  
+22. Apple Ads, Using AdAttributionKit to measure app ad performance  
     https://ads.apple.com/app-store/help/attribution/0093-adattributionkit-to-measure-performance
-21. Apple Ads, Measuring performance of ads on the App Store  
+23. Apple Ads, Measuring performance of ads on the App Store  
     https://ads.apple.com/app-store/help/attribution/0028-measuring-ad-performance
-22. Android Developers, About App Links  
+24. Android Developers, About App Links  
     https://developer.android.com/training/app-links/about
-23. Android Developers, Google Play Install Referrer  
+25. Android Developers, Google Play Install Referrer  
     https://developer.android.com/google/play/installreferrer
-24. AppsFlyer, Smart Banners—mobile web-to-app (for marketers)  
+26. AppsFlyer, Smart Banners—mobile web-to-app (for marketers)  
     https://support.appsflyer.com/hc/en-us/articles/360000764837-Smart-Banners-mobile-web-to-app-for-marketers-
-25. AppsFlyer, Web-to-App Deep Linking Solution  
+27. AppsFlyer, Web-to-App Deep Linking Solution  
     https://www.appsflyer.com/products/deep-linking/web-to-app/
-26. AppsFlyer, Deferred Deep Linking Solution  
+28. AppsFlyer, Deferred Deep Linking Solution  
     https://www.appsflyer.com/products/deep-linking/deferred-deep-linking/
-27. Branch, Web to App  
+29. Branch, Web to App  
     https://help.branch.io/marketer-hub/docs/web-to-app
-28. Branch, Enable Deepviews  
+30. Branch, Enable Deepviews  
     https://help.branch.io/marketer-hub/docs/enable-deepviews
-29. Branch, Journeys Assist  
+31. Branch, Journeys Assist  
     https://help.branch.io/marketer-hub/docs/journeys-assist
-30. Adjust, Deep links  
+32. Adjust, Deep links  
     https://help.adjust.com/en/article/deep-links
-31. Adjust, LinkMe  
+33. Adjust, LinkMe  
     https://help.adjust.com/en/article/linkme
-32. Adjust, Optimized Deferred Deep Linking  
+34. Adjust, Optimized Deferred Deep Linking  
     https://help.adjust.com/en/article/optimized-deferred-deep-linking-oddl
-33. Adjust, Smart banners  
+35. Adjust, Smart banners  
     https://help.adjust.com/en/article/smart-banners
-34. Singular, Website-to-Mobile App Attribution Forwarding for Mobile Web  
+36. Singular, Website-to-Mobile App Attribution Forwarding for Mobile Web  
     https://support.singular.net/hc/en-us/articles/360042283811-Website-to-Mobile-App-Attribution-Forwarding-for-Mobile-Web
-35. Singular, Web, Web-to-App, PC, & Console Campaign Optimization  
+37. Singular, Web, Web-to-App, PC, & Console Campaign Optimization  
     https://support.singular.net/hc/en-us/articles/30577283058459-Optimize-Web-Campaigns-for-Mobile-PC-Console-Acquisition-Using-Conversion-APIs
-36. Firebase, Dynamic Links Deprecation FAQ  
+38. Firebase, Dynamic Links Deprecation FAQ  
     https://firebase.google.com/support/dynamic-links-faq
-37. Firebase, Migrate from Dynamic Links to App Links & Universal Links  
+39. Firebase, Migrate from Dynamic Links to App Links & Universal Links  
     https://firebase.google.com/support/guides/app-links-universal-links
-38. Singular, Web SDK - Overview & Getting Started
+40. Singular, Web SDK - Overview & Getting Started
     https://support.singular.net/hc/en-us/articles/41862111062299-Web-SDK-Overview-Getting-Started
-39. Singular, Web SDK - Native JavaScript Implementation Guide
+41. Singular, Web SDK - Native JavaScript Implementation Guide
     https://support.singular.net/hc/en-us/articles/41863502734619-Web-SDK-Native-JavaScript-Implementation-Guide
-40. Branch, Journeys Overview
+42. Branch, Journeys Overview
     https://help.branch.io/v1/docs/journeys-overview
-41. Branch, Deepviews Overview
+43. Branch, Deepviews Overview
     https://help.branch.io/docs/deepviews
-42. Branch, Journeys: Desktop Banners
+44. Branch, Journeys: Desktop Banners
     https://help.branch.io/docs/desktop-journeys
+45. Branch, Activation Migration Guide
+    https://help.branch.io/marketer-hub/docs/activation-migration-guide
