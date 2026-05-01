@@ -341,7 +341,7 @@ Config 下发上下文
    - 位置: partner-facing / BI-facing aggregate service
    - 内容: bounded, thresholded, optional-DP aggregate outputs
 
-### 6.2 三类关键键
+### 6.2 关键键
 
 - `server_request_id:int64`
   - 服务端生成
