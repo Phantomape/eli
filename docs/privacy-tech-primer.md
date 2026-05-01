@@ -2296,6 +2296,206 @@ GROUP BY 1, 2;
 - access budget 和 privacy budget 解决的是不同问题：前者限制访问次数，后者限制统计泄漏
 - 真实落地里，audit log 要能解释“为什么这条记录没有参与这次 collaboration”
 
+### 16B.21 Clean Rooms ML / 合成训练数据 / Consent Function 的 Mock Data
+
+这个例子把 2026 年已经能在主流 clean room 产品里看到的几条线放在一起：
+
+- `privacy-enhanced synthetic dataset generation`
+- `Clean Rooms ML lookalike / audience modeling`
+- `DP privacy budget`
+- `membership inference attack threshold`
+- `GPP / TCF consent string decode`
+- `result receiver / activation policy`
+
+业务场景：
+
+- 零售商有购买和会员标签
+- 媒体平台有广告曝光和受众 seed
+- 双方想训练 lookalike / propensity 模型
+- 但不希望把真实 join 后训练明细交给任一方
+- 同时必须尊重每条记录上的 consent signal
+
+输入 1：媒体平台的 seed audience：
+
+```json
+[
+  {
+    "publisher_user_id": "pub_1001",
+    "hashed_email": "sha256:8b4f...",
+    "campaign_id": "spring_running_2026",
+    "seed_reason": "clicked_product_video",
+    "gpp_string": "DBABLA~CPXxRfAPXxRfAAfKABENB-CgAAAAAAAAAAYgAAAAAAAA",
+    "event_ts": "2026-04-29T10:14:03Z"
+  },
+  {
+    "publisher_user_id": "pub_1002",
+    "hashed_email": "sha256:aa19...",
+    "campaign_id": "spring_running_2026",
+    "seed_reason": "visited_category_page",
+    "gpp_string": "DBABLA~CPXxRfAPXxRfAAfKABENB-CgAAAAAAAAAAYgAAAAAAAA",
+    "event_ts": "2026-04-29T10:19:44Z"
+  }
+]
+```
+
+输入 2：零售商的训练特征，只暴露给 collaboration 内的受控任务：
+
+```json
+[
+  {
+    "retailer_user_id": "ret_771",
+    "hashed_email": "sha256:8b4f...",
+    "features": {
+      "shoe_category_views_30d": 6,
+      "running_purchase_180d": 1,
+      "avg_order_value_bucket": "75_100",
+      "loyalty_tier": "gold"
+    },
+    "label": {
+      "purchased_running_shoes_14d": 1
+    },
+    "consent": {
+      "measurement": true,
+      "model_training": true,
+      "activation": false,
+      "source": "gpp_decode"
+    }
+  },
+  {
+    "retailer_user_id": "ret_882",
+    "hashed_email": "sha256:aa19...",
+    "features": {
+      "shoe_category_views_30d": 1,
+      "running_purchase_180d": 0,
+      "avg_order_value_bucket": "25_50",
+      "loyalty_tier": "standard"
+    },
+    "label": {
+      "purchased_running_shoes_14d": 0
+    },
+    "consent": {
+      "measurement": true,
+      "model_training": false,
+      "activation": false,
+      "source": "gpp_decode"
+    }
+  }
+]
+```
+
+平台侧可以先把 GPP / TCF consent string 解析成可执行字段。真实产品里这通常不是隐私算法本身，但它决定了后续 PET 是否用在了合法的数据子集上：
+
+```sql
+SELECT
+  hashed_email,
+  consent_gpp_v1_decode(gpp_string) AS decoded_gpp,
+  CASE
+    WHEN decoded_gpp.sale_opt_out = false
+     AND decoded_gpp.targeted_advertising = true
+    THEN true
+    ELSE false
+  END AS eligible_for_model_training
+FROM publisher_seed_events;
+```
+
+合成训练数据模板可以把输出强制设为 synthetic，并要求配置 DP 参数和 membership inference 约束：
+
+```json
+{
+  "template_id": "lookalike_training_synthetic_v1",
+  "output_mode": "synthetic_only",
+  "join_key": "hashed_email",
+  "filters": [
+    "publisher.eligible_for_model_training = true",
+    "retailer.consent.model_training = true"
+  ],
+  "synthetic_data_parameters": {
+    "epsilon": 1.25,
+    "max_membership_inference_attack_score": 0.62,
+    "column_classification": {
+      "shoe_category_views_30d": "numerical",
+      "running_purchase_180d": "categorical",
+      "avg_order_value_bucket": "categorical",
+      "loyalty_tier": "categorical",
+      "purchased_running_shoes_14d": "categorical"
+    }
+  },
+  "minimum_training_rows": 500,
+  "result_receiver": "media_platform_activation_account"
+}
+```
+
+clean room 内部会生成一个不可回溯到真实用户的 synthetic training channel：
+
+```json
+[
+  {
+    "synthetic_row_id": "syn_000001",
+    "shoe_category_views_30d": 5,
+    "running_purchase_180d": 1,
+    "avg_order_value_bucket": "75_100",
+    "loyalty_tier": "gold",
+    "purchased_running_shoes_14d": 1
+  },
+  {
+    "synthetic_row_id": "syn_000002",
+    "shoe_category_views_30d": 2,
+    "running_purchase_180d": 0,
+    "avg_order_value_bucket": "50_75",
+    "loyalty_tier": "standard",
+    "purchased_running_shoes_14d": 0
+  }
+]
+```
+
+训练 / 推理任务只看到 synthetic channel 或受控 lookalike job 输出：
+
+```json
+{
+  "clean_rooms_ml_job_id": "crm_ml_20260430_0182",
+  "job_type": "lookalike_audience",
+  "training_input": "synthetic_channel:syn_train_20260430_01",
+  "seed_min_size": 500,
+  "privacy_controls": {
+    "epsilon_spent": 1.25,
+    "membership_inference_attack_score": 0.58,
+    "user_level_metrics_released": false
+  },
+  "output": {
+    "audience_segment_id": "seg_running_lal_20260430",
+    "rows": 184230,
+    "contains_seed_users": false,
+    "contains_training_user_ids": false
+  }
+}
+```
+
+审计日志要能解释数据为什么没有进入训练：
+
+```json
+{
+  "audit_event_id": "audit_20260430_8912",
+  "template_id": "lookalike_training_synthetic_v1",
+  "records_seen": 1280441,
+  "records_excluded": {
+    "missing_join_key": 19302,
+    "gpp_or_tcf_not_eligible": 310448,
+    "retailer_model_training_consent_false": 221905,
+    "minimum_group_threshold": 487
+  },
+  "release_decision": "approved",
+  "reason": "synthetic output passed privacy threshold and consent filters"
+}
+```
+
+这个 mock data 想说明：
+
+- `consent decode` 是把法律 / 产品同意信号变成计算条件，不是事后报表
+- synthetic data 的隐私参数应该出现在模板和审计日志里，而不是藏在训练脚本里
+- Clean Rooms ML 的重点不是“模型完全看不到任何统计规律”，而是减少双方通过 seed、训练集、输出 segment 反推出对方用户的机会
+- membership inference threshold、minimum seed size、user-level metric suppression 和 DP epsilon 应该一起看
+- 对广告和零售媒体场景来说，落地架构通常是 `consent-aware filtering -> protected join -> synthetic or lookalike job -> controlled result receiver -> audit`
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -2963,6 +3163,57 @@ NDSS 2026 的 SNPeek / FARFETCH'D 研究继续提醒：CVM / TEE 很适合做 pr
 
 换句话说，TEE 的成熟落地路径不是少做治理，而是把可信执行、泄漏评估和输出控制一起产品化。
 
+### 18A.19 Clean room 的最新产品化信号：从 API 到 UI，再到自然语言辅助治理
+
+截至 2026-05-01，Snowflake Data Clean Rooms 的 2026 年 4 月更新给了一个很清晰的落地信号：clean room 正在从“专家 API / 专家 SQL 工具”继续向“多人协作平台”演进。
+
+最值得注意的是：
+
+- 2026-04-09：Collaboration API GA，支持对称多方协作、灵活角色和细粒度访问控制
+- 2026-04-23：provider 可以查看 Freeform SQL Data Offering 的 view 名称和 column policy
+- 2026-04-30：Snowsight 里的 Data Clean Rooms UI 进入 public preview，可浏览、创建、加入、编辑 collaboration、运行分析，并接入 Cortex Code 做自然语言辅助
+
+这对技术选型的启发是：
+
+- clean room 的核心能力正在从 `secure query` 扩展为 `secure collaboration operations`
+- 治理面不仅要控制数据和 SQL，还要控制成员、模板、审批、代码、可见性和 UI 操作
+- AI assistant / natural-language coding 进入 clean room 后，审批、可见性和审计会更重要，因为用户更容易生成复杂查询
+
+所以，面向 2026 的 clean room 设计不能只问“有没有 DP / PSI / TEE”。更实际的问题是：
+
+- 谁能创建 collaboration
+- 谁能把数据 offering 注册进去
+- 谁能批准模板或 freeform SQL
+- provider 能否看见 view 和 column policy
+- UI / agentic assistant 生成的操作是否能被审计
+
+### 18A.20 Privacy-enhanced synthetic data 开始 API 化：epsilon 与攻击阈值进入配置面
+
+AWS Clean Rooms 的合成数据 API 文档把一个研究界常讨论的问题变成了很具体的产品接口：生成 synthetic ML data 时，参数里直接包含：
+
+- `epsilon`
+- `columnClassification`
+- `maxMembershipInferenceAttackScore`
+
+这说明 synthetic data 的工程化方向正在从“生成看起来像的数据”转向“生成过程有可配置的隐私阈值和失败条件”。
+
+对 primer 来说，这个信号很重要：
+
+- `epsilon` 让团队能把 synthetic data 纳入 DP 预算讨论
+- `membership inference attack score` 让平台能在结果过于接近原始数据时拒绝发布
+- `column classification` 迫使团队先说明哪些字段是数值、类别或敏感字段，而不是把整张表直接扔给生成器
+
+这也提醒一个常见误区：synthetic data 不是自动安全。真正可落地的 synthetic data pipeline 应该至少包括：
+
+- 输入字段分类
+- 训练 / 生成权限控制
+- DP 或其他隐私参数
+- membership inference / attribute inference 检查
+- 输出用途限制
+- 审计日志
+
+如果没有这些控制，它更像测试数据生成工具，而不是 privacy technology。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -3272,6 +3523,65 @@ Snowflake Data Clean Rooms 在 2026-02-05 预览新的 Collaboration Data Clean 
 
 这说明 privacy tech 的落地越来越像一套控制面，而不是单个计算协议。
 
+### 18B.19 Snowflake Data Clean Rooms UI in Snowsight：clean room 进入日常协作界面
+
+Snowflake 在 2026-04-30 的 Data Clean Rooms 更新中把 Snowsight 里的 clean room UI 推到 public preview。
+
+这个案例值得引用，因为它说明 clean room 已经不再只是 API 或后台流程，而是进入数据团队日常使用的工作台：
+
+- browse collaboration
+- create / join / edit collaboration
+- run analysis
+- use Cortex Code for natural-language assistance
+
+对企业落地来说，这意味着隐私系统的风险边界也变了：
+
+- 更多非底层工程用户会直接操作 collaboration
+- natural-language assistance 会降低复杂查询和配置变更的门槛
+- 因此 template approval、column policy visibility、operation audit 和 role design 会变得更关键
+
+简化地说，clean room 的成熟不是“让更多人绕过治理更快查数据”，而是“让更多人能在治理框架里完成协作”。
+
+### 18B.20 AWS Clean Rooms privacy-related functions：把 consent string 变成可执行查询条件
+
+AWS Clean Rooms SQL reference 已经提供 `consent_gpp_v1_decode` 和 `consent_tcf_v2_decode` 这类 privacy-related functions。
+
+这条落地案例很适合补进 primer，因为它连接了两个过去常常分离的层：
+
+- consent / policy 层：用户是否同意某类处理
+- computation 层：某条记录是否能进入某次 clean room analysis
+
+在广告、publisher、retail media 和跨境数据协作里，真实问题经常不是“能不能安全 join”，而是：
+
+- 这条记录在当前 jurisdiction 下能不能用于 measurement
+- 是否能用于 targeted advertising
+- 是否能进入 model training
+- 用户撤回后，后续分析是否自动排除
+
+因此，这类函数不是小工具，而是 `policy-aware computation` 的基础积木。它让 clean room 查询可以直接把 GPP / TCF 解析结果作为 filter、template precondition 或 audit field。
+
+### 18B.21 AWS Clean Rooms ML privacy protections：lookalike 建模的保护边界更明确
+
+AWS Clean Rooms ML 文档把 lookalike / audience modeling 的隐私风险讲得比较工程化：核心风险是 membership inference，即训练数据方推断 seed data 里有哪些人，或 seed data 方推断训练数据里有哪些人。
+
+文档列出的产品保护包括：
+
+- seed data provider 不直接观察 Clean Rooms ML 输出
+- training data provider 看不到 seed data
+- lookalike model 基于训练数据的随机样本创建，并包含大量不匹配 seed audience 的用户
+- 每个 seed-specific 参数可使用多个 seed customer
+- 建议 seed data 至少 500 用户
+- 不向 training data provider 提供 user-level metrics
+
+这对 primer 很有价值，因为它把“privacy-preserving ML”从抽象口号落到了具体 threat model：
+
+- 谁可能从输出反推谁在输入里
+- 哪些中间指标不能暴露
+- seed size 为什么是隐私控制，而不只是模型质量要求
+- 为什么用户级指标通常比聚合模型效果更危险
+
+在实际设计 ad network / retail media lookalike 时，这类保护边界比“用了 ML，所以先进”更重要。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -3334,6 +3644,10 @@ Snowflake Data Clean Rooms 在 2026-02-05 预览新的 Collaboration Data Clean 
 36. Snowflake Data Clean Rooms, Collaboration API GA
 37. Snowflake Data Clean Rooms, Freeform SQL Data Offering visibility
 38. Snowflake Trust Center, Data Security GA
+39. Snowflake Data Clean Rooms, UI in Snowsight public preview
+40. AWS Clean Rooms, privacy-related consent functions
+41. AWS Clean Rooms ML, privacy protections for lookalike modeling
+42. AWS Clean Rooms API, ML synthetic data parameters
 
 ### 论文与研究资料
 
@@ -3432,5 +3746,9 @@ Snowflake Data Clean Rooms 在 2026-02-05 预览新的 Collaboration Data Clean 
 - Snowflake Data Clean Rooms updates, Apr 9 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-04-09-dcr.html
 - Snowflake Data Clean Rooms updates, Apr 23 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-04-23-dcr.html
 - Snowflake Data Security in the Trust Center GA: https://docs.snowflake.com/en/release-notes/2026/other/2026-04-24-data-security-trust-center-ga
+- Snowflake Data Clean Rooms updates, Apr 30 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-04-30-dcr
+- AWS Clean Rooms, privacy-related functions: https://docs.aws.amazon.com/clean-rooms/latest/sql-reference/privacy-related-functions.html
+- AWS Clean Rooms ML, privacy protections: https://docs.aws.amazon.com/clean-rooms/latest/userguide/ml-privacy.html
+- AWS Clean Rooms API, MLSyntheticDataParameters: https://docs.aws.amazon.com/clean-rooms/latest/apireference/API_MLSyntheticDataParameters.html
 - NIST, De-Identification of Personal Information: https://www.nist.gov/publications/de-identification-personal-information
 - NIST, Guidelines for Evaluating Differential Privacy Guarantees: https://www.nist.gov/publications/guidelines-evaluating-differential-privacy-guarantees
