@@ -474,7 +474,7 @@ Associated payload layer:
 {
   "matched": true,
   "payload": {
-    "mmp_touch_token": "MTT_v1_7ec3...",
+    "mmp_touch_token": "AMT_v1_7ec3...",
     "creative_id": 880011221122,
     "campaign_id": 8800112200,
     "ad_group_id": 8800112211,
@@ -1144,7 +1144,7 @@ message AggregateCollectorBudgetState {
   "claim_reason_code": "MATCHED_ODM_AND_ELIGIBLE_TOUCH",
   "request_accepted": true,
   "match_type": "on_device_psm",
-  "mmp_touch_token": "MTT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
+  "mmp_touch_token": "AMT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
   "creative_id": 74019912,
   "campaign_id": 74012091,
   "ad_group_id": 7401209102,
@@ -1183,7 +1183,7 @@ Privacy-max 版本可以降级为 Option 3，只返回 opaque claim receipt：
   "winning_network": "example_ad_network",
   "confirm_idempotency_key": "confirm_01JTRP7V8W5T7A8Y4A8V2P",
   "confirm_attempt_ts_ms": 1777500907120,
-  "mmp_touch_token": "MTT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
+  "mmp_touch_token": "AMT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
   "partner": "ExampleMMP",
   "adv_app_id": "com.example.game",
   "event_name": "first_open",
@@ -2461,7 +2461,7 @@ AdNetwork 在点击或曝光发生时写入 touchpoint row：
   "req_id": "749b1ecf4d8f4b50a3cc1e2fb91b7ad2a7f",
   "server_request_id": 91833720368540001,
   "click_ts_ms": 1777500009231,
-  "source": "tt",
+  "source": "ad_network",
   "feature_ptr": "creative_id x req_id"
 }
 ```
