@@ -1413,6 +1413,7 @@ def handle_confirm(req):
 - 原始 `boot_time`、原始 `ip`、完整 `User-Agent`、长期稳定设备标识 `MUST NOT` 进入普通 BI、通用日志或通用湖仓。
 - 如果协议兼容需要把某些字段传给外部 API，这些字段也 `MUST NOT` 自动下沉到 optimization plane。
 - “为了兼容 partner API 先缓存一下” 不等于 “这个字段可以成为训练特征”。
+- 不要写 “no PII leaves device”。推荐写法是：raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process；MMP 可能根据 legal option 收到 scoped pseudonymous attribution material。
 
 ### 10.2 推荐的数据流
 
@@ -1492,6 +1493,16 @@ def handle_confirm(req):
   - 只用于 bridge / ask 流程
   - 不得进入 trainer row
   - 不得进入长期画像表
+- `mmp_touch_token`
+  - 允许存在于 tracking link、Claim、Confirm 和 MMP click-conversion join
+  - 必须绑定 `mmp_partner_id / advertiser_id / adv_app_id / creative_id / touch_time_bucket`
+  - TTL 不应超过 attribution window
+  - 不得跨 advertiser、app、MMP 或 purpose 复用
+  - 不应命名为 `UserID`，避免 reviewer 误解为 network-level user identifier
+- `claim_token`
+  - 允许 MMP 透传
+  - 必须 opaque、single-use、short TTL、anti-replay
+  - 不得让 MMP 解出 `req_id`、device material 或 row key
 - `ad_event_id`
   - 允许存在于 external response mapping
   - 不得直接进入 bid / ranking / pacing 训练
@@ -2431,6 +2442,311 @@ for each candidate row:
 | `matching_id` 消费点 | 搜索 local plist / keychain / request queue | 确认是否用于 cache、report、dedupe 或 ack |
 | BootTime 是否进入 material | hook `sysctl`、`mach_absolute_time`、`systemUptime`、hash input buffer | 若进入，应在 hash/normalization 前看到 boot-related value |
 
+## 17B. AdNetwork OPRF/PSM-with-payload 推荐实现
+
+这一节把 v3.1 legal review 里的实现判断合并进主 RFC。它不是替代 17A 的 HAR 证据，而是把证据转成推荐产品架构。
+
+### 17B.1 Touchpoint row 与 MMP-facing token
+
+AdNetwork 在点击或曝光发生时写入 touchpoint row：
+
+```json
+{
+  "user_id": 7312459812234501123,
+  "adv_app_id": "com.example.game",
+  "advertiser_id": 120045,
+  "campaign_id": 74012091,
+  "ad_group_id": 7401209102,
+  "creative_id": 74019912,
+  "req_id": "749b1ecf4d8f4b50a3cc1e2fb91b7ad2a7f",
+  "server_request_id": 91833720368540001,
+  "click_ts_ms": 1777500009231,
+  "source": "tt",
+  "feature_ptr": "creative_id x req_id"
+}
+```
+
+然后生成 MMP-facing touch token：
+
+```text
+mmp_touch_token = HMAC_Kmmp(
+  mmp_partner_id
+  || advertiser_id
+  || adv_app_id
+  || req_id
+  || creative_id
+  || touch_time_bucket
+)
+```
+
+设计重点：
+
+- token 从 touch context 派生，而不是从 raw `user_id` 单独派生。
+- token 名称避免 `UserID`，推荐 `mmp_touch_token` / `ad_touch_token`。
+- 服务端维护 `mmp_touch_token -> req_id` index；MMP 不看到 `req_id`。
+- `creative_id` 是 reporting metadata；`req_id` 是内部 optimization join key。
+
+### 17B.2 Candidate row 与 associated payload
+
+每条 touchpoint 可以进入 prefix bucket candidate store：
+
+```proto
+message CandidateRow {
+  bytes quick_tag = 1;
+  bytes opaque_payload = 2;
+  bytes row_meta = 3;
+}
+
+message ReportingPayload {
+  string mmp_touch_token = 1;
+  int64 creative_id = 2;
+  int64 campaign_id = 3;
+  int64 ad_group_id = 4;
+  int64 touch_time_bucket = 5;
+}
+```
+
+逻辑构建：
+
+```python
+def build_candidate_row(touchpoint, server_key, cfg):
+    z = normalize_identity_material(touchpoint.identity_material)
+    d = sha256(z, touchpoint.adv_app_id, cfg.source, cfg.bucketed_date)
+    prefix = high_bits(d, cfg.prefix_length)
+    P = hash_to_curve(d)
+    Y = scalar_mul(server_key, P)
+
+    row_key = hkdf(Y, cfg.odmed, cfg.bucketed_date, "row-key")
+    quick_tag = trunc8(hmac(row_key, "quick-tag"))
+    reporting_payload = encode({
+        "mmp_touch_token": touchpoint.mmp_touch_token,
+        "creative_id": touchpoint.creative_id,
+        "campaign_id": touchpoint.campaign_id,
+        "ad_group_id": touchpoint.ad_group_id,
+        "touch_time_bucket": bucket(touchpoint.click_ts_ms),
+    })
+    opaque_payload = aead_encrypt(row_key, reporting_payload, aad=prefix)
+    CandidateStore[prefix].append({
+        "quick_tag": quick_tag,
+        "opaque_payload": opaque_payload,
+        "row_meta": encode_meta(touchpoint.click_ts_ms)
+    })
+```
+
+### 17B.3 在线 Ask / Claim
+
+```python
+def ad_network_sdk_ask(event, adv_app_id):
+    cfg = get_config(adv_app_id)
+    z = derive_local_measurement_material()
+    d = sha256(z, adv_app_id, cfg.source, cfg.bucketed_date)
+    prefix = high_bits(d, cfg.prefix_length)
+
+    P = hash_to_curve(d)
+    r = random_scalar()
+    A = scalar_mul(r, P)
+
+    psm_resp = post_psm({
+        "odmed": cfg.odmed,
+        "prefix": prefix,
+        "blinded_point": compress(A),
+        "prefix_length": cfg.prefix_length
+    })
+
+    B = psm_resp.server_eval_point
+    Y = scalar_mul(inv(r), decompress(B))
+    row_key = hkdf(Y, cfg.odmed, cfg.bucketed_date, "row-key")
+
+    for row in psm_resp.candidate_rows:
+        if row.quick_tag != trunc8(hmac(row_key, "quick-tag")):
+            continue
+        payload = aead_decrypt(row_key, row.opaque_payload, aad=prefix)
+        if payload is not None:
+            return build_claim(payload, cfg, event)
+
+    return {"matched": False, "match_type": "on_device_psm"}
+```
+
+`claim_token` 建议包含：
+
+```text
+claim_token = Sign_or_AEAD_Enc(
+  K_claim,
+  {
+    claim_id,
+    mmp_touch_token,
+    adv_app_id,
+    event_type,
+    event_ts_ms,
+    psm_context_hash,
+    sdk_attestation_hash,
+    expiry_ts,
+    nonce,
+    policy_version
+  }
+)
+```
+
+### 17B.4 性能直觉
+
+2026-04-14 HAR 样本给出的量级是：
+
+```text
+/config response: ~192B JSON
+/psm request: psm_request 50B decoded
+/psm response: 123,189B decoded; JSON/base64 text roughly 164KB
+candidate rows: 1009
+average decoded row: ~122B
+```
+
+所以主瓶颈通常不是 OPRF 标量乘本身，而是移动网络下的 `/psm` response 和 SDK 冷启动。若 bucket 平均 1K rows，一次查询是百 KB 级，不能再按 5-15KB 小包估算。
+
+如果 `quick_tag = 8 bit`，1009 rows 中进入 AEAD decrypt 尝试的误候选期望约为：
+
+```text
+1009 / 256 ~= 4
+```
+
+端侧 AEAD 成本可控；系统调优重点应放在 bucket sizing、cache、TLS/session reuse、retry budget 和后台调度。
+
+## 17C. MMP Claim / Confirm 数据披露选项与 Legal Review
+
+本节用于 legal / privacy / security review。它不是法律意见，也不是最终合规结论；目标是把不同技术折中、数据可见性、产品能力、剩余风险和必要控制项写清楚。
+
+### 17C.1 评估前提
+
+需要区分两类数据：
+
+```text
+Raw identity material:
+  IDFV / IDFA / boot signal / device fingerprint / device_fp_hash /
+  raw user_id / OPRF input / unblinded OPRF output
+
+Pseudonymous attribution material:
+  mmp_touch_token / claim_token /
+  creative_id / campaign_id / ad_group_id / touch_time_bucket
+```
+
+当前主方案的目标不是宣称 “no personal data leaves the device”，而是更精确地控制：
+
+```text
+1. raw device identity / raw fingerprinting material stays inside AdNetwork SDK;
+2. MMP does not receive device_fp_hash, OPRF inputs/outputs, bucket tags/tails, row keys, or req_id;
+3. MMP may receive purpose-limited attribution material depending on selected integration option;
+4. req_id remains server-side and is recovered by AdNetwork only after Confirm.
+```
+
+### 17C.2 选项总览
+
+| 方案 | Claim 返回给 MMP | Confirm 回传给 AdNetwork | raw PII 是否出端 | MMP 是否拿稳定 join key | AdNetwork 是否能恢复 req_id | 推荐 |
+|---|---|---|---:|---:|---:|---|
+| Option 0: 明文 PII / device_fp | `device_fp_hash` / raw identity | raw identity / req_id | 是 | 是 | 是 | Reject |
+| Option 1: Encrypted PII Relay | `Enc_AdNetwork(device_fp_hash)` | encrypted blob | 是，密文形式 | 取决于加密方式 | 是 | 仅 fallback |
+| Option 2: OPRF/PSM + 明文 `mmp_touch_token` | `mmp_touch_token + creative metadata` | `mmp_touch_token + claim_token` | 否 | 是，touch-scoped | 是 | 可行 |
+| Option 3: OPRF/PSM + opaque `claim_token` only | `claim_token + creative metadata` | `claim_token` | 否 | 否 | 是 | Privacy-max |
+| Option 4: Hybrid tracking-link token + opaque claim | `mmp_touch_token + claim_token + creative metadata` | 两者都回传 | 否 | 是，但 click 侧已存在 | 是 | 推荐折中 |
+| Option 5: Aggregation-only | coarse matched / aggregate claim | aggregate confirm | 否 | 否 | 部分或不能 | fallback |
+
+### 17C.3 推荐排序
+
+```text
+Primary recommendation:
+  Option 4 — Hybrid: tracking-link mmp_touch_token + opaque claim_token
+
+Privacy-max alternative:
+  Option 3 — OPRF/PSM + opaque claim_token only
+
+Fast-launch fallback:
+  Option 1 — Encrypted PII Relay
+
+Not recommended:
+  Option 0 — Plain device_fp_hash / raw identity
+
+Aggregation fallback:
+  Option 5 — Aggregation-only
+```
+
+Option 4 的关键叙事：
+
+```text
+Claim does not introduce a new user identifier.
+It returns the same MMP-facing touch token that was already delivered on the tracking link.
+The new information in Claim is the on-device match proof / claim_token.
+```
+
+必须控制：
+
+- token name: `mmp_touch_token`, not `AdNetworkUserID` / `UserID`
+- token generated from `req_id / touch context`, not raw `uid` alone
+- scope: `mmp_partner_id / advertiser_id / adv_app_id / creative_id / touch_time_bucket`
+- TTL <= attribution window
+- no cross-advertiser reuse
+- no cross-MMP reuse
+- claim_token required for Confirm; token alone cannot confirm
+- AdNetwork Server validates token + claim_token pair
+- separate internal mapping: `mmp_touch_token -> req_id`
+
+### 17C.4 Privacy-max 与 fallback
+
+Option 3 只返回一次性的 `claim_token`：
+
+```json
+{
+  "matched": true,
+  "creative_id": 74019912,
+  "campaign_id": 74012091,
+  "ad_group_id": 7401209102,
+  "touch_time_bucket": 4933923,
+  "claim_token": "opaque_claim_token_v1"
+}
+```
+
+它让 MMP 无法形成稳定 join key，但会削弱 MMP-side click/conversion join 和 reporting 灵活性。适合 privacy-max mode 或强监管场景。
+
+Option 1 `Encrypted PII Relay` 只能作为 lower-privacy fallback。它只能说 `PII is encrypted in transit and opaque to MMP`，不能说 `raw PII stays on device`，因为 raw identity material 以可解密密文形式离开设备。
+
+Option 0 明文 `device_fp_hash` / raw identity 直接违背 on-device measurement 主目标，应拒绝。Option 5 aggregation-only 最保守，但会削弱 creative-level reporting、request-level optimization 和 MMP SRN-style reconciliation。
+
+### 17C.5 Legal / Privacy 需要重点判断的问题
+
+建议直接给 legal / privacy review 以下问题：
+
+1. `mmp_touch_token` 是否会被归类为 personal data / pseudonymous identifier？
+2. 如果 `mmp_touch_token` 已经在 tracking link 阶段给到 MMP，Claim 阶段再次返回同一 token 是否属于新增披露？
+3. token 是否必须避免包含 uid-derived semantics？
+4. token 是否必须由 `req_id / touch context` 派生，而不是由 `user_id` 派生？
+5. MMP 是否作为 processor / service provider / contractor 处理该 token？
+6. MMP 是否被合同禁止用于 cross-advertiser join、profiling、retargeting 或二次用途？
+7. token TTL 应该等于 attribution window，还是应更短？
+8. 用户 opt-out / deletion 请求是否需要同步删除 `mmp_touch_token -> req_id` index？
+9. Confirm 后 AdNetwork Server 用 token -> `req_id` 做 model optimization，是否需要单独披露和 consent / legitimate interest assessment？
+10. `creative_id / campaign_id / ad_group_id` 返回给 MMP 是否属于 reporting metadata，还是与 token 组合后构成更高风险的 user-level measurement data？
+
+### 17C.6 推荐措辞
+
+不要写：
+
+```text
+No PII leaves device.
+```
+
+更稳妥的英文写法：
+
+```text
+Raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process.
+The MMP does not receive device_fp_hash, OPRF inputs/outputs, bucket tags, tails, row keys, or req_id.
+Depending on the selected integration option, the MMP may receive either:
+  (a) an opaque single-use claim_token only, or
+  (b) a scoped mmp_touch_token that was already delivered through the tracking link, plus a claim_token.
+In all cases, req_id remains server-side and is recovered by the AdNetwork only after Confirm.
+```
+
+中文写法：
+
+```text
+本方案控制的是 raw device PII / raw fingerprinting material 的出端风险，而不是宣称所有 measurement data 都不出端。MMP 不接触设备指纹、OPRF 输入输出、bucket/tag/tail、row key 或 req_id。根据 legal 选择的集成模式，MMP 可以只接收一次性的 opaque claim_token，或者接收一个已在 tracking link 阶段提供过的、广告主 scoped、touch-scoped 的 mmp_touch_token 加 claim_token。req_id 始终留在 AdNetwork Server 内部，并只在 MMP Confirm 后通过 token 映射找回。
+```
+
 ## 18. Open Questions
 
 以下问题应由具体产品 RFC 继续收敛：
@@ -2450,11 +2766,12 @@ for each candidate row:
 
 建议的工程优先级是：
 
-1. 先把边界做对：原始敏感字段不外泄，`server_request_id` 不下沉，`odm_info` 不复用。
-2. 再把可用性做稳：`MMP Ask -> Claim -> Confirm` 打通，并能稳定回流 request-level label。
-3. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐。
+1. 先把边界做对：raw device material 不出 AdNetwork SDK crypto boundary，`req_id` 不给 MMP，`odm_info` 不复用。
+2. 再把可用性做稳：采用 `MMP Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`，默认 Option 4：tracking-link `mmp_touch_token + opaque claim_token`。
+3. 再把优化闭环做稳：Confirm 后用 `mmp_touch_token -> req_id` 恢复 request-level label，支撑 creative_id x req_id 级别训练。
+4. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐。
 
-一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，而是把“哪些数据能离开设备、去哪一层、以什么粒度、为了什么目的离开”定义成严格协议。
+一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，以及谁能在 Confirm 后恢复 req_id”定义成严格协议。
 
 ## 20. 参考资料
 
@@ -2479,6 +2796,9 @@ for each candidate row:
 3. [VDAF](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/)
 4. [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/)
 5. [W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/)
+6. [GDPR Article 4 Definitions](https://gdpr-info.eu/art-4-gdpr/)
+7. [EDPB Guidelines 01/2025 on Pseudonymisation](https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf)
+8. [California Consumer Privacy Act statute](https://cppa.ca.gov/regulations/pdf/ccpa_statute.pdf)
 
 ### 20.3 Product / Integration
 
