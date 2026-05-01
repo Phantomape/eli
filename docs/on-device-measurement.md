@@ -1,20 +1,22 @@
 # On-Device Measurement RFC
 
 状态: Draft<br>
-最后更新: 2026-04-30<br>
+最后更新: 2026-05-01<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
 
-本文把 `on-device measurement` 整理成一份面向广告场景的工程 RFC。目标不是解释几个公式，而是定义一套从端上采集、MMP/SRN 协同、服务端 confidential join、request-level optimization、aggregate reporting 到后续 DP 加固的完整规范。
+本文把 `on-device measurement` 整理成一份面向广告场景的工程 RFC。目标不是解释几个公式，而是定义一套从端上采集、OPRF/PSM-with-payload、MMP/SRN 协同、服务端 confidential join、request-level optimization、aggregate reporting 到 legal/privacy review 的完整规范。
 
-核心结论只有三条：
+核心结论有五条：
 
 1. `on-device measurement` 不等于“设备上算个 token 再上传”。
 2. 如果要支撑 personalized optimization，就必须保留服务端生成的 `server_request_id` 这类 request-scoped join key，但它只能存在于严格受控的数据面。
 3. MMP 的 SRN 流程仍然是现实世界的主协议形态，因此系统必须围绕 `MMP Ask -> Ad Network Claim -> MMP Confirm` 设计，而不是试图绕过它。
+4. 生产 ODM / ODC 类协议不应建模成裸 PSM 的 `matched bit`。更准确的模型是 `OPRF/PSM layer + associated payload layer`：PSM 用来定位或派生命中行密钥，payload 用来承载 touch-scoped attribution material。
+5. 推荐折中是 `mmp_touch_token + opaque claim_token`：MMP 可以完成 click-conversion join 和 creative-level reporting；Ad Network 在 Confirm 后通过 token 找回内部 `req_id`；MMP 不接触 `device_fp_hash`、OPRF 输入输出、bucket tail/tag 或 `req_id`。
 
-2026-04-30 追加的 ODM / ODC HAR 逆向把第 1 点进一步具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。
+2026-04-30 追加的 ODM / ODC HAR 逆向把第 1 点进一步具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。2026-05-01 的 legal review 进一步修正了披露边界：文档不应写成 “no PII leaves device”，而应写成 “raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process; MMP may receive scoped pseudonymous attribution material depending on the selected option”。
 
 本文刻意兼顾生产实用性：
 
@@ -57,22 +59,45 @@
 
 ## 4. 最小心智模型
 
-可以用八步理解整个系统：
+可以用十步理解整个系统：
 
 1. 广告请求发生时，ad network backend 生成一次性的 `server_request_id:int64`。
-2. ad network SDK 在设备侧观察 impression、click、install、purchase，以及本地敏感信号。
-3. 设备侧把原始观察压缩成两个对象：
+2. ad network backend 同时写入 touchpoint row，并生成 MMP-facing 的 `mmp_touch_token` 或等价 touch-scoped token；内部 `req_id` 不给 MMP。
+3. ad network SDK 在设备侧观察 impression、click、install、purchase，以及本地敏感信号。
+4. 设备侧把原始观察压缩成两个对象：
    - 发给 ad network confidential backend 的 `OnDeviceMeasurementArtifact`
    - 透传给 MMP/AAP 的 `ODMInfoEnvelope`
-4. MMP 观察到 install 或 event 后，发起 `MmpAskRequest`。
-5. ad network 在 confidential plane 内验证 artifact、task binding、TTL、replay，再返回 `ClaimResponse`。
-6. MMP 完成 winner 选择后，再回传 `MmpConfirmRequest`。
-7. ad network 在 confidential plane 中把 `AdRequestContext + Artifact + Confirm` join 成：
+5. 对 Google ODM / ODC 风格实现，AdNetwork SDK 在返回 final bridge object 前，可以先运行 `GET /config -> POST /psm -> local candidate processing -> POST /validate` 子状态机。
+6. MMP 观察到 install 或 event 后，发起 `MmpAskRequest`；Ask 不携带 `device_fp_hash`，而是调用 AdNetwork SDK / bridge object。
+7. ad network 在 confidential plane 内验证 artifact、task binding、TTL、replay，再返回 `ClaimResponse`；推荐返回 `mmp_touch_token + claim_token + creative metadata`，不返回 `req_id`。
+8. MMP 完成 winner 选择后，再回传 `MmpConfirmRequest`；Confirm 必须带 `claim_token`，token alone 不能完成确认。
+9. ad network 在 confidential plane 中把 `AdRequestContext + Artifact + Confirm` join 成：
    - `RequestScopedOptimizationLabel`
    - `AggregateMeasurementContribution`
-8. downstream 分层消费：
+10. downstream 分层消费：
    - optimization plane 消费 request-level label
    - aggregate reporting plane 消费 thresholded / bounded / optional-DP 的聚合输出
+
+一个更贴近 v3.1 legal review 的主链路可以写成：
+
+```text
+MMP SDK Ask
+  -> AdNetwork SDK 在本地生成 device material / device_fp_hash
+  -> AdNetwork SDK 与 AdNetwork Server 运行 EC-OPRF / PSM-with-payload
+  -> AdNetwork SDK 返回 Claim 给 MMP SDK
+  -> MMP SDK 上报 MMP Server
+  -> MMP Server Confirm 给 AdNetwork Server
+  -> AdNetwork Server 通过 mmp_touch_token 找回 req_id
+  -> attribution / optimization
+```
+
+最重要的不变式：
+
+- raw device material、`device_fp_hash`、OPRF input、unblinded OPRF output 不出 AdNetwork SDK crypto boundary。
+- MMP 不生成、不传递、不保存 `device_fp_hash`。
+- MMP 可以按 legal 选择看到 advertiser-scoped / touch-scoped attribution material，例如 `mmp_touch_token`、`creative_id`、`campaign_id`、`ad_group_id`、`touch_time_bucket`。
+- MMP 不应看到 `req_id`、raw device signal、OPRF tail/tag、raw matching key、row decryption key。
+- AdNetwork Server 通过 `mmp_touch_token -> req_id` 找回 request-level optimization context，而不是让 MMP 明文回传 `req_id`。
 
 ## 5. 截至 2026-04-29 的研究与标准更新
 
@@ -323,6 +348,16 @@ Config 下发上下文
   - 一次 ad request 唯一
   - 是 optimization join key
   - 不是 user ID
+- `mmp_touch_token:string`
+  - 服务端生成
+  - MMP-facing、advertiser-scoped、touch-scoped attribution token
+  - 用于 MMP click-conversion join 和 Confirm 回传
+  - 不是 network-level user ID，不得跨 advertiser / app / MMP / purpose 复用
+- `claim_token:bytes`
+  - AdNetwork SDK / confidential service 生成或签发
+  - opaque、single-use、short-TTL、partner/app/event scoped
+  - 用来证明一次 on-device match 已发生
+  - token alone 不应允许 MMP 伪造归因
 - `artifact_id:bytes`
   - 设备侧生成或设备侧签名对象中的唯一标识
   - 只代表一次 measurement artifact
@@ -415,6 +450,42 @@ Google ODM / ODC 的逆向样本显示，真实 SDK 可以把 Step D 拆成一�
 
 这意味着本 RFC 的 `OnDeviceMeasurementArtifact` 与 `ODMInfoEnvelope` 应被理解为逻辑对象：具体产品实现可以在生成 envelope 之前先完成一次 `config -> psm -> validate` 子状态机。协议治理上仍然要约束最终外发对象的 TTL、task binding、replay 与用途绑定，但实现层需要给 OPRF/PSM 中间态留出清晰边界。
 
+### 7.4C OPRF/PSM-with-payload 的生产模型
+
+不要把生产 ODM / ODC 建模成：
+
+```text
+Client x, Server set S -> x in S ? true/false
+```
+
+更贴近真实实现的是两层：
+
+```text
+PSM / OPRF layer:
+  隐私安全地定位是否存在命中 touchpoint row，或派生只有命中 row 才能使用的 key/tag。
+
+Associated payload layer:
+  在 row 上挂 payload bytes，例如 mmp_touch_token、creative_id、campaign_id、ad_group_id、touch bucket、claim proof。
+```
+
+因此 Claim 阶段可以返回：
+
+```json
+{
+  "matched": true,
+  "payload": {
+    "mmp_touch_token": "MTT_v1_7ec3...",
+    "creative_id": 880011221122,
+    "campaign_id": 8800112200,
+    "ad_group_id": 8800112211,
+    "touch_time_bucket": 4933923
+  },
+  "claim_token": "opaque_claim_token_v1"
+}
+```
+
+这里 payload 不是 PSM bit 本身，而是命中 row 上的 associated data。资源代价也随之从 `O(1) membership result` 变成 `O(bucket_size * row_payload_size)`。2026-04-14 HAR 样本中 `/odm/psm` response decoded length 为 123,189 bytes，核心 payload 可切成 `1009 rows x 3 columns`，这与 “prefix bucket candidate rows + local filtering/decryption” 模型一致。
+
 ### 7.5 Step E: MMP Ask
 
 MMP 检测到 install / first_open / purchase 后，向 ad network 发起查询：
@@ -422,6 +493,7 @@ MMP 检测到 install / first_open / purchase 后，向 ad network 发起查询�
 - 包含 MMP 常规 query fields
 - 包含 `odm_info`
 - 包含 MMP 事件上下文
+- 不包含由 MMP 生成或传递的 `device_fp_hash`
 
 ### 7.6 Step F: Ad Network Claim
 
@@ -436,15 +508,18 @@ ad network 在 confidential plane 内：
 返回：
 
 - `claim_status`
+- `mmp_touch_token` 或等价 MMP-facing touch token，取决于 legal option
 - `claim_token`
 - `claim_confidence`
 - `measurement_task_id`
+- creative / campaign / ad group / touch bucket 等 reporting metadata，取决于 policy
 
 ### 7.7 Step G: MMP Confirm
 
 MMP 根据全局 winner selection 结果回传：
 
 - `mmp_decision`
+- `mmp_touch_token`，如果选用 Option 2 / Option 4
 - `winning_touch_ts_ms`
 - `confirm_ts_ms`
 - `claim_token`
@@ -655,8 +730,21 @@ message ClaimResponse {
   string policy_version = 9;
   string claim_reason_code = 10;
   bool request_accepted = 11;
+  string mmp_touch_token = 12;
+  int64 creative_id = 13;
+  int64 campaign_id = 14;
+  int64 ad_group_id = 15;
+  int64 touch_time_bucket = 16;
+  string match_type = 17; // on_device_psm, opaque_claim_only, aggregate_only
 }
 ```
+
+字段边界：
+
+- `mmp_touch_token` `MUST` 是 advertiser-scoped / touch-scoped，不得从 raw `user_id` 单独派生。
+- `claim_token` `MUST` 是 opaque、short-TTL、anti-replay、partner/app/event scoped。
+- `creative_id` / `campaign_id` / `ad_group_id` 是 reporting metadata；是否返回由 partner contract 和 legal option 决定。
+- `req_id`、`device_fp_hash`、OPRF output、bucket tail/tag、row key `MUST NOT` 出现在 `ClaimResponse`。
 
 ### 8.7 MmpConfirmRequest
 
@@ -671,8 +759,20 @@ message MmpConfirmRequest {
   map<string, string> attribution_metadata = 7;
   string confirm_idempotency_key = 8;
   int64 confirm_attempt_ts_ms = 9;
+  string mmp_touch_token = 10;
+  string partner = 11;
+  string adv_app_id = 12;
+  string event_name = 13;
+  int64 event_ts_ms = 14;
 }
 ```
+
+Confirm 处理约束：
+
+- `claim_token` `MUST` 校验签名/解密、expiry、nonce、partner、app、event 和 replay state。
+- 如果携带 `mmp_touch_token`，服务端 `MUST` 校验它与 `claim_token` 中绑定的 touch context 一致。
+- `mmp_touch_token` 只能解析到 AdNetwork 内部的 `req_id` / feature pointer，不得向 MMP 返回 `req_id`。
+- token alone 不能完成 Confirm；必须有 valid `claim_token`。
 
 ### 8.8 RequestScopedOptimizationLabel
 
@@ -1042,7 +1142,32 @@ message AggregateCollectorBudgetState {
   "claim_expiry_ts_ms": 1777502706201,
   "policy_version": "claim_policy_v5",
   "claim_reason_code": "MATCHED_ODM_AND_ELIGIBLE_TOUCH",
-  "request_accepted": true
+  "request_accepted": true,
+  "match_type": "on_device_psm",
+  "mmp_touch_token": "MTT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
+  "creative_id": 74019912,
+  "campaign_id": 74012091,
+  "ad_group_id": 7401209102,
+  "touch_time_bucket": 4933923
+}
+```
+
+这个版本对应 legal Option 4：MMP 在 tracking link 阶段已经拿过同一个 `mmp_touch_token`，Claim 只补充 on-device match proof / `claim_token`。Claim 不返回 `req_id`、`device_fp_hash`、OPRF output、bucket tag/tail 或 row key。
+
+Privacy-max 版本可以降级为 Option 3，只返回 opaque claim receipt：
+
+```json
+{
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "claim_status": "CLAIMED",
+  "claim_token": "opaque_claim_token_v1",
+  "claim_confidence": 0.91,
+  "measurement_task_id": "icm_install_v3",
+  "creative_id": 74019912,
+  "campaign_id": 74012091,
+  "ad_group_id": 7401209102,
+  "touch_time_bucket": 4933923,
+  "match_type": "opaque_claim_only"
 }
 ```
 
@@ -1057,9 +1182,44 @@ message AggregateCollectorBudgetState {
   "winning_touch_ts_ms": 1777500009231,
   "winning_network": "example_ad_network",
   "confirm_idempotency_key": "confirm_01JTRP7V8W5T7A8Y4A8V2P",
-  "confirm_attempt_ts_ms": 1777500907120
+  "confirm_attempt_ts_ms": 1777500907120,
+  "mmp_touch_token": "MTT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
+  "partner": "ExampleMMP",
+  "adv_app_id": "com.example.game",
+  "event_name": "first_open",
+  "event_ts_ms": 1777500905123
 }
 ```
+
+AdNetwork Server 处理逻辑：
+
+```python
+def handle_confirm(req):
+    claim = verify_claim_token(req.claim_token)
+    assert claim.mmp_touch_token == req.mmp_touch_token
+    assert claim.adv_app_id == req.adv_app_id
+    assert claim.partner == req.partner
+    assert claim.event_name == req.event_name
+    assert not expired(claim)
+    assert not replayed(claim.nonce)
+
+    row = TouchTokenIndex.get(req.mmp_touch_token)
+    assert row is not None
+
+    emit_conversion({
+        "server_request_id": row.server_request_id,
+        "req_id": row.req_id,
+        "creative_id": row.creative_id,
+        "campaign_id": row.campaign_id,
+        "ad_group_id": row.ad_group_id,
+        "event": req.event_name,
+        "event_ts_ms": req.event_ts_ms,
+        "attributed_by": req.partner,
+        "feature_ptr": row.feature_ptr
+    })
+```
+
+关键点：`req_id` 只在 AdNetwork Server 内部恢复，用于 optimization feature join；MMP 不看到它。
 
 ### 9.7 优化标签
 
