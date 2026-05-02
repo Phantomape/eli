@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-01<br>
+最后更新: 2026-05-02<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -305,6 +305,31 @@ Ask 阶段的关键边界：
 - MMP SDK 不传 raw device material。
 - MMP SDK 可以传事件上下文，例如 event name、event time、app id、MMP event id。
 - AdNetwork SDK 负责在本地采集 / normalize / hash device material。
+
+### 7.3A iOS optional AdNetwork SDK and Ask eligibility
+
+iOS 上要额外处理一个现实：MMP SDK 通常是广告主 App 必装，但每个 ad network SDK 是选装。协议不能假设所有 ad network SDK 都存在，也不应该为了 ODM 迫使开发者集成所有 network SDK。
+
+推荐模型是 `MMP SDK -> local capability registry -> optional network adapter -> AdNetwork SDK`：
+
+```text
+App starts
+  -> MMP SDK initializes AdapterRegistry
+  -> linked AdNetwork adapter registers capability if present
+  -> MMP SDK caches per-network AskEligibility
+  -> conversion event arrives
+  -> MMP SDK calls Ask only for eligible local adapters
+```
+
+iOS 侧落地建议：
+
+- MMP SDK 暴露稳定的 `MmpMeasurementAdapter` protocol 和 `AdapterRegistry`。
+- ad network 提供一个很薄的 optional adapter package，内部再调用自己的完整 SDK。
+- 如果 app 没有链接该 adapter / SDK，registry 里没有该 network，MMP SDK 直接记录 `ASK_SKIPPED_SDK_NOT_PRESENT`。
+- 如果 adapter 存在但版本、地区、consent、功能开关不满足，则记录明确 skip reason，不发 Ask。
+- remote config 只能决定“是否允许某 network 参与”，不能替代本地 `sdk_present=true` 判断。
+
+这样开发者体验是可控的：装了哪个 network SDK，就自动获得哪个 network 的 ODM Ask 能力；没装的 network 不报错、不超时、不要求开发者写额外 glue code。
 
 ### 7.4 Step D: AdNetwork SDK Local Material and Config
 
@@ -645,6 +670,38 @@ message MmpAskRequest {
 - `odm_info` 用于兼容 Google ICM / AAP 类 bridge object，不是 v3.1 主链路中由 MMP 提供的 matching material。
 - v3.1 主链路的 private matching material 由 AdNetwork SDK 在本地生成，并通过 OPRF/PSM 子流程处理。
 
+### 8.5A LocalAskEligibilityRecord
+
+这个对象描述 MMP SDK 在本地决定“是否应该调用某个 ad network Ask”的结果。它主要是 iOS 端上对象，也可以作为低敏集成健康诊断批量上报给 MMP server。它不是归因结果，也不能被训练面消费。
+
+```proto
+message LocalAskEligibilityRecord {
+  string mmp_name = 1;
+  string mmp_event_id = 2;
+  string network_id = 3;
+  string app_bundle = 4;
+  string platform = 5; // ios
+  bool sdk_present = 6;
+  string sdk_version = 7;
+  bool adapter_present = 8;
+  string adapter_version = 9;
+  bool supports_odm_ask = 10;
+  string ask_eligibility_status = 11; // ELIGIBLE, SDK_NOT_PRESENT, ADAPTER_NOT_PRESENT, VERSION_UNSUPPORTED, REGION_INELIGIBLE, CONSENT_DISABLED, REMOTE_CONFIG_DISABLED
+  string skip_reason_code = 12;
+  int64 evaluated_ts_ms = 13;
+  int64 capability_cache_expiry_ts_ms = 14;
+  string discovery_method = 15; // REGISTRY, INFO_PLIST_MANIFEST, NSCLASS_FROM_STRING, REMOTE_CONFIG_ONLY
+  string registry_policy_id = 16;
+}
+```
+
+关键约束：
+
+- `REMOTE_CONFIG_ONLY` 不得产生 `ELIGIBLE`，最多只能产生 `REMOTE_CONFIG_DISABLED` 或等待本地 adapter discovery。
+- `NSCLASS_FROM_STRING` 只能作为兼容兜底，优先级低于显式 adapter registry。
+- `sdk_present=false` 时不得向 ad network server 发起 Ask，也不得把缺失解释成 attribution negative。
+- `LocalAskEligibilityRecord` 可用于集成排障，但不得进入 `OptimizationTrainingRow`。
+
 ### 8.6 ClaimResponse
 
 ```proto
@@ -883,6 +940,10 @@ message AttributionDecisionRecord {
   float winner_confidence = 11;
   int64 decision_ts_ms = 12;
   string decision_policy_id = 13;
+  int32 eligible_click_count = 14;
+  int32 eligible_impression_count = 15;
+  string srn_partner_id = 16;
+  string claim_path = 17; // ODM_EVENT_DATA, FIRST_PARTY_DATA, DEVICE_ID, PROBABILISTIC
 }
 ```
 
@@ -905,6 +966,11 @@ message OptimizationFeedbackRecord {
   string source_object = 11; // RequestScopedOptimizationLabel, PostInstallConversionEvent
   string trainer_policy_id = 12;
   string feedback_policy_id = 13;
+  string currency_code = 14;
+  string srn_partner_id = 15;
+  string feedback_revision_id = 16;
+  int64 observation_window_sec = 17;
+  string value_source = 18; // EVENT_VALUE, MODELED_VALUE, CURRENCY_BUCKET
 }
 ```
 
@@ -933,6 +999,9 @@ message OptimizationTrainingRow {
   string feature_vector_ref = 17;
   string sample_weight_policy_id = 18;
   int32 sample_weight_micros = 19;
+  string decision_id = 20;
+  string srn_partner_id = 21;
+  int64 feedback_snapshot_ts_ms = 22;
 }
 ```
 
@@ -1069,6 +1138,56 @@ v3.1 主链路中，MMP SDK 对 AdNetwork SDK 的 Ask 应该是薄触发，不�
 - raw device material
 - OPRF input / output
 - row key
+
+### 9.4A iOS local Ask eligibility
+
+MMP SDK 在调用某个 ad network Ask 前，应先在本地得到类似下面的 capability 结果：
+
+```json
+{
+  "mmp_name": "ExampleMMP",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "network_id": "adn_123",
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "sdk_present": false,
+  "sdk_version": "",
+  "adapter_present": false,
+  "adapter_version": "",
+  "supports_odm_ask": false,
+  "ask_eligibility_status": "SDK_NOT_PRESENT",
+  "skip_reason_code": "IOS_ADNETWORK_SDK_NOT_LINKED",
+  "evaluated_ts_ms": 1777500905000,
+  "capability_cache_expiry_ts_ms": 1777504505000,
+  "discovery_method": "REGISTRY",
+  "registry_policy_id": "ios_adapter_registry_policy_v1"
+}
+```
+
+如果 SDK / adapter 存在，则 eligibility 可以变成：
+
+```json
+{
+  "mmp_name": "ExampleMMP",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "network_id": "adn_456",
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "sdk_present": true,
+  "sdk_version": "3.2.0",
+  "adapter_present": true,
+  "adapter_version": "1.4.1",
+  "supports_odm_ask": true,
+  "ask_eligibility_status": "ELIGIBLE",
+  "skip_reason_code": "",
+  "evaluated_ts_ms": 1777500905000,
+  "capability_cache_expiry_ts_ms": 1777504505000,
+  "discovery_method": "REGISTRY",
+  "registry_policy_id": "ios_adapter_registry_policy_v1"
+}
+```
+
+只有第二种状态才允许进入 `MMP SDK -> AdNetwork SDK Ask`。第一种状态应被视为 integration state，而不是 ad network declined attribution。
 
 ### 9.4B Compatibility MMP Ask with `odm_info`
 
@@ -1412,7 +1531,11 @@ def handle_confirm(req):
   "flooding_suspected": true,
   "winner_confidence": 0.94,
   "decision_ts_ms": 1777500907199,
-  "decision_policy_id": "decision_policy_v3"
+  "decision_policy_id": "decision_policy_v3",
+  "eligible_click_count": 1,
+  "eligible_impression_count": 1,
+  "srn_partner_id": "appsflyer",
+  "claim_path": "ODM_EVENT_DATA"
 }
 ```
 
@@ -1432,7 +1555,12 @@ def handle_confirm(req):
   "is_revision": false,
   "source_object": "PostInstallConversionEvent",
   "trainer_policy_id": "trainer_gbdt_purchase_v4",
-  "feedback_policy_id": "feedback_publish_v2"
+  "feedback_policy_id": "feedback_publish_v2",
+  "currency_code": "USD",
+  "srn_partner_id": "appsflyer",
+  "feedback_revision_id": "fb_rev_01JTRQH4D8F9AM4GQ3YB4A1M3S",
+  "observation_window_sec": 604800,
+  "value_source": "EVENT_VALUE"
 }
 ```
 
@@ -1464,7 +1592,10 @@ def handle_confirm(req):
   ],
   "feature_vector_ref": "fv://trainer-ready/2026-04-29/922337203600012345",
   "sample_weight_policy_id": "sample_weight.purchase_quality_v2",
-  "sample_weight_micros": 1000000
+  "sample_weight_micros": 1000000,
+  "decision_id": "dec_01JTRPF2VY9T21Q2FJAA1K8M7X",
+  "srn_partner_id": "appsflyer",
+  "feedback_snapshot_ts_ms": "1761795105123"
 }
 ```
 
@@ -1521,11 +1652,13 @@ def handle_confirm(req):
   - `rdid`
   - `X-Forwarded-For`
   - `ad_event_id`
+  - `odm_info`
   - 允许短期缓存用于 partner API，但 `MUST NOT` 进入训练特征表
 - `optimization-safe derived`
   - `network_stability_bucket`
   - `ip_churn_bucket`
   - `reinstall_hint_bucket`
+  - `boot_time_freshness_bucket`
   - 允许进入 optimization plane，但必须有 `feature_policy_id`
 - `aggregate-only`
   - `metric_name`
@@ -1547,6 +1680,7 @@ def handle_confirm(req):
 - `raw_ip`
   - 允许短期出现于 `Device Raw Plane`
   - 允许短期出现于 partner compat egress
+  - 可以在 confidential plane 派生 `ip_churn_bucket`、`same_country_as_touch` 之类低敏特征
   - 默认不允许进入训练明细或普通数仓
 - `rdid`
   - 只在 partner compat contract 需要时短期存在
@@ -1555,6 +1689,7 @@ def handle_confirm(req):
   - 只用于兼容 bridge / compatibility ask 流程
   - 不得进入 trainer row
   - 不得进入长期画像表
+  - 若 advertiser app 缓存它用于后续 `purchase` / `session_start` 上报，缓存 TTL 应受 `compat_retention_policy_id` 约束
 - `mmp_touch_token`
   - 允许存在于 tracking link、Claim、Confirm 和 MMP click-conversion join
   - 必须绑定 `mmp_partner_id / advertiser_id / adv_app_id / creative_id / touch_time_bucket`
@@ -1593,6 +1728,35 @@ def handle_confirm(req):
 - `odm_info` 只在兼容 MMP / AAP / ICM server-side API 时作为 optional bridge field，不是推荐主流程的 matching input。
 - `query_template_id` `MUST` 明确，防止 partner 任意探测。
 - `query_hash` `SHOULD` 绑定进 `claim_token`。
+
+### 11.2A Optional SDK discovery and skip semantics
+
+在 iOS 上，MMP SDK `MUST NOT` 对所有 SRN / ad network 盲目广播 Ask。Ask 前必须先完成本地 eligibility 判断：
+
+1. MMP SDK 读取本地 `AdapterRegistry`。
+2. registry 中存在该 network adapter，且 adapter 声明 `supports_odm_ask=true`。
+3. adapter 版本、ad network SDK 版本、region、consent、remote config 都满足当前 measurement task。
+4. MMP SDK 才调用该 adapter 的 `Ask`。
+
+如果上述任一条件不满足，MMP SDK `MUST` 生成本地 `LocalAskEligibilityRecord`，但 `MUST NOT` 调用 ad network SDK / server。
+
+推荐 skip code：
+
+- `ASK_SKIPPED_SDK_NOT_PRESENT`
+- `ASK_SKIPPED_ADAPTER_NOT_PRESENT`
+- `ASK_SKIPPED_VERSION_UNSUPPORTED`
+- `ASK_SKIPPED_REGION_INELIGIBLE`
+- `ASK_SKIPPED_CONSENT_DISABLED`
+- `ASK_SKIPPED_REMOTE_CONFIG_DISABLED`
+
+这些状态的语义是“本地没有可执行 Ask 的能力”，不是“ad network claim declined”。MMP attribution graph 应把它们记为 integration / eligibility state，而不是 negative attribution evidence。
+
+为了不破坏开发者体验，RFC 推荐 iOS 采用下面的优先级：
+
+- 首选：ad network adapter 显式注册到 MMP SDK 的 `AdapterRegistry`
+- 次选：广告主 App 在 `Info.plist` / MMP dashboard 中声明启用 network，MMP SDK 再要求本地 adapter 也存在
+- 兜底：`NSClassFromString` 检查已知 adapter class，但只用于兼容旧集成
+- 禁止：只因为 MMP server remote config 写了某 network enabled，就在本地无 SDK 的情况下发 Ask 或等待 timeout
 
 ### 11.3 Claim 阶段要求
 
@@ -1780,10 +1944,13 @@ Phase 1 推荐：
   - `is_attributed`
   - `conversion_group_id`
   - `credit_fraction_micros`
+  - `decision_id`
+  - `srn_partner_id`
 - lifecycle state
   - `observation_window_sec`
   - `right_censored`
   - `label_ts_ms`
+  - `feedback_snapshot_ts_ms`
 - policy state
   - `trainer_policy_id`
   - `feature_policy_id`
@@ -1826,6 +1993,13 @@ Phase 1 推荐：
 - bidding / pacing / exploration 系统消费 feedback ledger，而不是直接监听杂乱的 post-install 业务事件流。
 
 推荐把 `RequestScopedOptimizationLabel` 视为“首次监督信号”，把 `OptimizationFeedbackRecord` 视为“持续监督流”。两者共同构成线上优化闭环。
+
+进一步说，如果要支持 production pacing / bidder calibration，而不仅仅是离线 trainer，反馈 ledger 至少还要满足四个要求：
+
+- 同一个 `server_request_id` 可以发布多次 feedback，但每次都必须带 `feedback_revision_id`
+- revenue 类 feedback 必须显式带 `currency_code`，不能依赖外部 campaign 配置猜
+- trainer / bidder 消费快照时应该固定 `feedback_snapshot_ts_ms`，避免同一批训练样本混入不同观测窗口
+- `srn_partner_id` 与 `claim_path` 应能下钻到 request-level 反馈行，便于比较 ODM event-data、first-party data、classic device-id 等路径的真实增益
 
 ### 12.7 purchase optimization walkthrough
 
@@ -1988,6 +2162,10 @@ confidential plane `SHOULD` 保留：
 - debug 日志默认关闭 request-level 敏感字段
 - 对高敏路径优先使用批处理、固定模板、减少 data-dependent branching
 - 做 side-channel regression test
+- 对外部可观察响应做固定尺寸或分桶填充，避免 `candidate_count`、`row_hit_count`、`validation_path` 直接暴露在响应大小和延迟上
+- 禁止把 page-fault trace、HPC / PMC、fine-grained perf telemetry 默认开放给生产 operator；需要 break-glass 流程与审计
+- 对 `token_to_req_id_join` 和 `feature_derivation` 优先做 constant-shape memory access review，而不是只做功能正确性 review
+- 对 side-channel test 结果建立基线版本；workflow、编译器、内核、CVM 固件升级后必须回归
 
 ## 15. Trade-off 设计
 
@@ -2033,6 +2211,16 @@ confidential plane `SHOULD` 保留：
 - 本地仅保留短期加密缓存，不保留长期稳定 token。
 - 如果自研 Google-compatible ODM 子流程，默认按 `OPRF/VOPRF-style PSM + prefix bucket candidate retrieval + local filtering` 建模；不要把 Paillier/PIR 当成当前 HAR 已证实的主路径。
 - SDK 状态机需要显式记录 `config_loaded`、`psm_candidate_set_received`、`local_match_evaluated`、`mvs_validated`，而不是只记录一个布尔 `odm_info_generated`。
+
+iOS optional SDK 的推荐实现：
+
+- MMP SDK 定义一个小而稳定的 Objective-C-compatible protocol，例如 `MmpMeasurementAdapter`，避免 Swift ABI / module 名称变化影响 discovery。
+- ad network 提供 `AdNetworkMmpAdapter` 这类轻量 package；广告主只有在已经接入该 ad network SDK 时才需要链接它。
+- adapter 可以在初始化时显式调用 `MmpAdapterRegistry.register(networkId:adapter:)`；自动注册可用，但应允许开发者关闭。
+- MMP SDK 启动后缓存 capability，缓存 TTL 建议 30-60 分钟；app foreground、consent 改变、remote config 改变时重新评估。
+- 没有 adapter 时，MMP SDK 只产生 `ASK_SKIPPED_SDK_NOT_PRESENT` 或 `ASK_SKIPPED_ADAPTER_NOT_PRESENT`，不抛异常、不弹日志噪音、不阻断 app 启动。
+- 对开发者暴露一个集成诊断 API，例如 `getMeasurementIntegrations()`，返回哪些 network eligible、哪些被 skip，以及 skip reason。
+- 诊断 API 不应返回 raw device material、`device_fp_hash`、`odm_info`、`claim_token` 或 `server_request_id`。
 
 ### 16.2 confidential processing
 
@@ -2959,6 +3147,8 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 - 工作负载本身必须考虑 access pattern、timing、batching、debug 策略；
 - “放进 TEE 就安全”是错误的。
 
+[Hardening Confidential Federated Compute against Side-channel Attacks](https://arxiv.org/abs/2603.21469) 则进一步说明：即使系统已经围绕 DP / confidential compute 设计，side-channel 仍可能绕过原本假设的 release 边界，因此 side-channel hardening 必须和 privacy mechanism 一起设计，而不是在上线后补洞。
+
 因此，本 RFC 对 confidential workflows 要求分级、限 debug、加回归测试。
 
 ### 20.8 公开产品形态已经验证 ODM / ICM 是现实路径
@@ -2980,7 +3170,7 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.9 MMP 的 SRN 工作流没有消失
 
-[AppsFlyer SRN 文档](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks) 和 [Adjust SAN 文档](https://help.adjust.com/en/marketer/self-attributing-networks) 仍表明：
+[AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model) 页面在 `2026-04-19` 更新，[Adjust Self-attributing network setup](https://help.adjust.com/en/article/self-attributing-network-san-setup) 与 [Adjust Assists](https://help.adjust.com/en/article/assists) 在 2026 年当前版本里仍表明：
 
 - MMP / attribution provider 先检测 install / event；
 - 再向 self-reporting network 查询或通知；
@@ -2989,10 +3179,11 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 所以，on-device measurement 必须服务于 SRN，而不是与 SRN 平行、互不相干。
 
-进一步地，截至 2026-04-29，产品文档还显示两个值得写进 RFC 的现实：
+进一步地，截至 2026-05-01，产品文档还显示三个值得写进 RFC 的现实：
 
-- [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model) 页面在 2026-04-19 更新，仍明确区分 deterministic、probabilistic、SRN query、assist 等多条归因路径；
+- AppsFlyer 当前文档仍明确区分 deterministic、probabilistic、SRN query、assist 等多条归因路径；
 - [AppsFlyer Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model) 在 2026-03-19 公开说明了设备侧 flooding 检测后仅保留 eligible click / impression 的做法。
+- [Adjust Assists](https://help.adjust.com/en/article/assists) 进一步把 SAN 现实写得很直白：Adjust 会把 SDK 上报的每个 app session 发给 SAN，若 network 识别到活动则 claim attribution；这意味着 `session_start` / `first_open` 级别的 request trace 对排障和优化都是真需求，而不是“日志细节”。
 
 这对本文的直接影响是：
 
@@ -3088,6 +3279,7 @@ Config 下发上下文
 9. [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)
 10. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
 11. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
+12. [Hardening Confidential Federated Compute against Side-channel Attacks](https://arxiv.org/abs/2603.21469)
 
 ### 21.2 Standards
 
@@ -3107,9 +3299,9 @@ Config 下发上下文
 3. [App Conversion Tracking and Remarketing - Request/Response Specifications](https://developers.google.com/app-conversion-tracking/api/request-response-specs)
 4. [Implement on-device conversion measurement with a standalone SDK](https://support.google.com/google-ads/answer/16384720?hl=en)
 5. [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk)
-6. [AppsFlyer SRN](https://support.appsflyer.com/hc/en-us/articles/360001546905-Self-Reporting-Networks)
-7. [Adjust SAN](https://help.adjust.com/en/marketer/self-attributing-networks)
-8. [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model)
+6. [AppsFlyer attribution model](https://support.appsflyer.com/hc/en-us/articles/207447053-AppsFlyer-attribution-model)
+7. [Adjust Self-attributing network setup](https://help.adjust.com/en/article/self-attributing-network-san-setup)
+8. [Adjust Assists](https://help.adjust.com/en/article/assists)
 9. [Adjust self-attributing callbacks](https://help.adjust.com/en/article/self-attributing-network-callbacks)
 10. [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743)
 11. Google ODC / ODM On-Device Measurement 技术逆向与实现模型，2026-04-30，基于 2026-04-14 HAR 样本。
