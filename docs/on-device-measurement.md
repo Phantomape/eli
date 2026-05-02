@@ -1284,6 +1284,99 @@ def handle_confirm(req):
 }
 ```
 
+### 9.10A Google-compatible first_open / downstream conversion contract
+
+下面这组字段不是 ODM core protocol 本身，而是为了兼容当前 Google App Conversion / ICM 接口必须落地的 partner contract。RFC 必须显式写出这些字段，因为它们决定了 app、MMP、Ad Network、compat gateway 到 confidential plane 之间究竟如何透传数据。
+
+`first_open` 示例：
+
+```json
+{
+  "request_contract_id": "google_app_conversion_first_open_v4",
+  "http_method": "POST",
+  "path": "/pagead/conversion/app/1.1",
+  "query": {
+    "dev_token": "Z_eErE4DkvcKjDM1OVE4c4",
+    "link_id": "31FF8D67E5BB5DD5029DCC2734C2F884",
+    "app_event_type": "first_open",
+    "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+    "id_type": "idfv",
+    "rdid": "CCB300A0-DE1B-4D48-BC7E-599E453B8DD4",
+    "ctry_c": "US",
+    "eea": 0,
+    "ad_user_data": 1,
+    "ad_personalization": 1,
+    "lat": 0,
+    "app_version": "8.3.1",
+    "os_version": "18.1",
+    "sdk_version": "mmp-ios-8.1.0",
+    "timestamp": 1777500905.123456
+  },
+  "headers": {
+    "User-Agent": "ExampleMMP/8.1.0 (iOS 18.1; en_US; iPhone16,2; Build/22B82; Proxy)",
+    "X-Forwarded-For": "203.0.113.24",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "app_event_data": {
+      "install_source": "app_store",
+      "sdk_flow": "icm_first_open"
+    }
+  }
+}
+```
+
+`purchase` 示例：
+
+```json
+{
+  "request_contract_id": "google_app_conversion_purchase_v4",
+  "http_method": "POST",
+  "path": "/pagead/conversion/app/1.1",
+  "query": {
+    "dev_token": "Z_eErE4DkvcKjDM1OVE4c4",
+    "link_id": "31FF8D67E5BB5DD5029DCC2734C2F884",
+    "app_event_type": "ecommerce_purchase",
+    "odm_info": "XYZr_AB8C-_zGtKjUhqtzPLeQ8lbJB5dADVR0tpZ9f...",
+    "id_type": "idfv",
+    "rdid": "CCB300A0-DE1B-4D48-BC7E-599E453B8DD4",
+    "ctry_c": "US",
+    "eea": 0,
+    "ad_user_data": 1,
+    "ad_personalization": 1,
+    "lat": 0,
+    "app_version": "8.3.1",
+    "os_version": "18.1",
+    "sdk_version": "mmp-ios-8.1.0",
+    "timestamp": 1777504507.123456,
+    "fot": 1777500905.123456,
+    "value": 4.99,
+    "currency_code": "USD"
+  },
+  "headers": {
+    "User-Agent": "ExampleMMP/8.1.0 (iOS 18.1; en_US; iPhone16,2; Build/22B82; Proxy)",
+    "X-Forwarded-For": "203.0.113.24",
+    "Content-Type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "app_event_data": {
+      "sku": "gem_pack_1",
+      "store": "app_store",
+      "order_bucket": "lt_10_usd"
+    }
+  }
+}
+```
+
+字段级约束：
+
+- `odm_info` 是 ICM / ODM 兼容层的 bridge object。它必须缓存并复用于 downstream conversions，但不能进入 optimization features，也不能二次演化为 durable user identifier。
+- `id_type` 与 `rdid` 属于 partner-required compatibility fields。它们可以经过 compat gateway，但默认不得进入训练样本；若 ATT 未授权或 advertising id 不可用，应允许使用 partner contract 允许的 fallback，并保留全零 UUID 之类的 partner-specified sentinel value。
+- `ctry_c`、`eea`、`ad_user_data`、`ad_personalization` 不只是“请求参数”，也是 release policy input。它们决定 compat 请求是否可发、可发到哪里，以及返回结果可否用于哪些 reporting surfaces。
+- `fot` 只应在 `first_open` 之后的 session / post-install conversions 中携带，用来把下游事件绑定到同一安装上下文，而不是做通用跨事件追踪键。
+- `User-Agent`、`X-Forwarded-For`、`rdid`、`ad_event_id` 都属于 compat plane 或 debugging plane 可见字段；它们进入内部系统后必须先映射成 policy-scoped facts，不得直接进入 optimization join。
+- `app_event_data` 可以承载业务维度，但必须遵守 allowlist；禁止把原始 `ip`、`boot_time_ms`、`device_fp_hash`、`odm_info`、`claim_token` 重新塞回 JSON body。
+
 ### 9.11 server feature derivation record
 
 ```json
@@ -2792,9 +2885,9 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.3 DAP / VDAF / Taskprov 已经足够成熟到值得对齐对象模型
 
-截至 2026-04-29：
+截至 2026-04-30：
 
-- [DAP draft-ietf-ppm-dap-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-01-30；
+- [DAP draft-ietf-ppm-dap-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-01-30，Datatracker 当前仍显示 `WG Consensus: Waiting for Write-Up`；
 - [DAP Taskprov draft-ietf-ppm-dap-taskprov-03](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/) 最近一次修订发布于 2025-09-05，且 datatracker 在 2026-03-16 将其标记为 expired & archived，但其中的 task binding 语义仍然直接可用；
 - [VDAF draft-irtf-cfrg-vdaf-19](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/) 最近一次更新时间是 2026-04-14；
 - [DAP Extensions for the Attribution API draft-thomson-ppm-dap-attribution-01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 最近一次更新时间是 2026-02-17，让 attribution 类 measurement 与 PPM/DAP 更接近。
@@ -2870,11 +2963,12 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.8 公开产品形态已经验证 ODM / ICM 是现实路径
 
-截至 2026-04-29：
+截至 2026-04-30：
 
 - Google Ads 帮助文档显示 [Integrated Conversion Measurement](https://support.google.com/google-ads/answer/16203286?hl=en-EN) 自 2025 年 5 月起逐步 rollout；
 - [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 文档指出 event-data 方案使用临时、去标识化事件数据，且 Firebase iOS SDK `11.14.0` 于 2025 年 6 月提供相关版本；
-- [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 已明确 `odm_info` 是 ICM 所需字段；
+- [Integrated Conversion Measurement developer guide](https://developers.google.com/app-conversion-tracking/api/integrated-conversion-measurement) 最近一次更新时间是 `2025-10-22 UTC`，仍要求 app 先设置 first launch time，再抓取 `aggregateConversionInfo` 并作为 `odm_info` 透传；
+- [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 最近一次更新时间是 `2026-03-10 UTC`，已明确 `odm_info` 是 ICM 所需字段，并把 `ad_event_id`、`attributed`、`fot`、`ctry_c`、`eea`、`ad_user_data`、`ad_personalization` 写成正式接口字段；
 - [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 说明 standalone SDK 路线可行。
 
 同时，Google 2026 年的产品文档还把两个生产边界写得更清楚了：
@@ -2917,7 +3011,7 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
 
-[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 在 2026-04-28 发布了新的 Working Draft。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
+[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 在 2026 年持续迭代 Working Draft。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
 
 - on-device attribution 与 off-device aggregation 可以明确分层；
 - aggregate service `MUST` 处理 anti-replay，而不是只做求和；
