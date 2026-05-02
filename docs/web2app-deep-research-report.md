@@ -273,6 +273,26 @@ X Business 公开资料仍以 `App installs campaign` 为主，强调：
 
 补充判断：广告平台的 Web2App 能力越强，越要注意它解决的是“媒体可见性”还是“用户路由”。Google 的 `indirect installs`、TikTok 的非 App 目标 app activity measurement、X 的 App Conversions measurement 都能提升 web campaign 对 app 结果的可见性，但它们并不自动生成安装后页面恢复能力。页面恢复仍要由 App 路由、MMP deferred deep link 或自建 session 方案完成。
 
+### 5.7 媒体能力边界：不要把测量产品当路由产品
+
+公开资料里最容易被误读的一点，是把广告平台的 “web campaign 能看到 app 结果” 理解成 “web landing 能自动恢复 app 上下文”。两者不是同一层能力：
+
+| 能力 | 解决的问题 | 不能替代 |
+| --- | --- | --- |
+| Google `indirect installs` / `Web to app first conv.` | Web campaign 对 app install 和首个 app conversion 的可见性 | App 首开路由、内容 ID 恢复、Universal Links / App Links |
+| TikTok 非 App 推广广告的 app activity measurement | Web / traffic / conversion campaign 后续 app install 与 app event 的测量 | iOS / Android 分组、deferred deep link 载荷设计 |
+| X App Conversions measurement | 非 App campaign 对 app 转化的补充观察 | Web 中间页参数继承、商店后首开恢复 |
+| Snap App Power Pack / Playable App Ads | 广告内互动、试玩和安装意图筛选 | Web SDK、MMP link、安装后上下文恢复 |
+| Meta CAPI / app event 回传 | 更稳定地把 website、app、CRM、offline 事件回传给 Meta | 跨商店安装后的页面恢复与深链分流 |
+
+因此，做方案时应把媒体能力拆成三张表验收：
+
+1. `流量表`：广告点击是否被媒体或 MMP 先捕获，click id、placement、creative 是否进入落地页。
+2. `路由表`：已安装、未安装、受限浏览器、桌面 QR 等路径是否分别有目标页和 fallback。
+3. `回传表`：first_open、首个关键事件、业务转化是否能按媒体要求回传，并与 Web 事件去重。
+
+只完成第三张表，最多说明媒体报表更完整；只有三张表同时成立，才是可运营的 Web2App。
+
 ## 6. 深链 / MMP / 归因平台能力梳理
 
 ### 6.1 AppsFlyer：最典型的 web-to-app 增长底座
@@ -520,6 +540,26 @@ Web2App 不适合只用一台手机点一遍验收。上线前至少按以下矩
 
 验收时不要只看“是否打开 App”。更应该逐条确认：已安装用户是否进对页面，未安装用户首开是否恢复上下文，媒体后台是否能看到可优化事件，内部报表是否能把 Web 页面版本和 App 首个关键行为连起来。
 
+### 8.7 数据看板与归因去重
+
+Web2App 上线后至少需要一张端到端看板，而不是把 Web analytics、MMP 和媒体后台分开看。推荐的最小字段如下：
+
+| 字段组 | 必备字段 | 作用 |
+| --- | --- | --- |
+| 用户与会话 | anonymous_id、web_session_id、mmp_click_id、app_instance_id | 串联 Web 会话、点击、安装与首开 |
+| 媒体来源 | source、campaign、adset、creative、placement、click_id | 还原投放结构，支持平台优化 |
+| 页面上下文 | landing_url、landing_variant、content_id、offer_id、cta_id | 判断 Web 页承接价值和首开恢复质量 |
+| 路由结果 | route_type、store_opened、deep_link_opened、fallback_reason | 定位损耗发生在商店前还是首开前 |
+| App 结果 | first_open_time、restore_success、first_key_event、revenue_event | 验证安装后的业务质量 |
+
+去重口径要提前写清楚，尤其是以下三组关系：
+
+- `web conversion` 与 `app first_open`：前者说明网页行为，后者说明安装后打开，不能直接相加。
+- `install` 与 `first_open`：不同平台口径不同，内部看板应固定一个主口径，另一个作为诊断字段。
+- `媒体归因` 与 `MMP 归因`：媒体自归因、MMP last click、SKAN / AdAttributionKit 聚合回传可能同时出现，报表应区分“优化口径”和“财务/复盘口径”。
+
+实践上，Web2App 看板最有价值的不是总安装量，而是三类成功率：`store_handoff_success_rate`、`deferred_restore_success_rate`、`first_key_event_with_context_rate`。它们分别回答“有没有送到正确商店”“安装后有没有回到正确上下文”“首个关键行为有没有带着原始意图”。
+
 ## 9. 平台对比结论
 
 | 类型 | 代表 | 强项 | 边界 |
@@ -544,6 +584,8 @@ Web2App 不适合只用一台手机点一遍验收。上线前至少按以下矩
 - 只优化商店前 CTR，不追首开恢复成功率和首转质量。
 - 把 iOS Smart App Banner 当成完整 deferred deep link 方案，忽略它主要解决的是 Web 到 App Store / 已安装打开的入口体验。
 - 忽略桌面 Web 到移动 App 的 QR code 路径，导致高意图桌面流量只能停留在网页转化。
+- 把广告平台的 Web2App 测量能力当成路由能力，导致媒体后台能看到部分 app 结果，但用户首开仍落首页。
+- 只做媒体回传，不做内部去重，最后出现 Web conversion、install、first_open、first key event 被重复计入同一增长贡献。
 
 ## 11. 最终结论
 
