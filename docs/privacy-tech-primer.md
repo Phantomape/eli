@@ -2496,6 +2496,93 @@ clean room 内部会生成一个不可回溯到真实用户的 synthetic trainin
 - membership inference threshold、minimum seed size、user-level metric suppression 和 DP epsilon 应该一起看
 - 对广告和零售媒体场景来说，落地架构通常是 `consent-aware filtering -> protected join -> synthetic or lookalike job -> controlled result receiver -> audit`
 
+### 16B.22 Privacy Sandbox + Clean Room / 广告测量的 Mock Data
+
+这个例子把浏览器侧 PET 和企业侧 clean room 放在同一条测量链路里看。真实系统不一定完全长这样，但它能帮助初学者理解：为什么“浏览器不发用户级日志”之后，后端仍然需要 TEE、聚合、阈值和审计。
+
+业务场景：
+
+- DSP 通过 Privacy Sandbox 做转化测量
+- 浏览器只产生 event-level 或 aggregatable report
+- summary report 在可信执行环境或聚合服务中计算
+- 广告主把最终聚合结果带进 clean room，与一方销售数据做 campaign-level 校验
+
+浏览器侧的广告展示事件可以先被压成有限字段，而不是完整用户日志：
+
+```json
+{
+  "browser_report_id": "ara_evt_20260501_001",
+  "source_event_id": "src_9f32",
+  "attribution_destination": "advertiser.example",
+  "trigger_data": "purchase",
+  "campaign_bucket": 4312,
+  "coarse_value": "high",
+  "report_type": "aggregatable",
+  "user_id_available_to_adtech": false
+}
+```
+
+聚合服务或 TEE 看到的是 encrypted aggregatable reports，输出是 bucket-level summary：
+
+```json
+{
+  "aggregation_job_id": "agg_20260501_18",
+  "input_reports": 1249088,
+  "privacy_controls": {
+    "thresholding": true,
+    "noise_added": true,
+    "raw_user_level_export": false
+  },
+  "summary_report": [
+    {
+      "campaign_bucket": 4312,
+      "conversion_type": "purchase",
+      "dp_noisy_count": 18420,
+      "dp_noisy_value_sum": 912340.0
+    },
+    {
+      "campaign_bucket": 4313,
+      "conversion_type": "signup",
+      "dp_noisy_count": 6231,
+      "dp_noisy_value_sum": 0
+    }
+  ]
+}
+```
+
+广告主或 measurement partner 再把 summary report 放进 clean room，与一方订单表做 campaign-level 对账，而不是重新导出浏览器用户日志：
+
+```json
+{
+  "clean_room_query": "campaign_incrementality_check_v2",
+  "join_scope": "campaign_bucket_only",
+  "inputs": [
+    "privacy_sandbox_summary_report",
+    "advertiser_order_aggregate_by_campaign"
+  ],
+  "blocked_columns": [
+    "hashed_email",
+    "device_id",
+    "ip_address",
+    "raw_browser_report_id"
+  ],
+  "output": {
+    "campaign_bucket": 4312,
+    "reported_conversions": 18420,
+    "advertiser_orders": 17988,
+    "delta_pct": 2.4,
+    "release_status": "approved_aggregate_only"
+  }
+}
+```
+
+这条 mock flow 想说明：
+
+- Privacy Sandbox 这类浏览器侧方案把用户级信号变成受限报告，不等于后端治理可以省略
+- TEE / aggregation service 解决的是“如何产生 summary”，clean room 解决的是“summary 如何与合作方数据协作”
+- 后端 clean room 不应该试图把 summary report 还原成用户级明细
+- campaign bucket、阈值、噪声、blocked columns 和 audit log 是同一条隐私设计链路上的控制点
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -3582,6 +3669,103 @@ AWS Clean Rooms ML 文档把 lookalike / audience modeling 的隐私风险讲得
 
 在实际设计 ad network / retail media lookalike 时，这类保护边界比“用了 ML，所以先进”更重要。
 
+### 18B.22 PrunePrivyTune：把模型压缩、DP fine-tuning 和泄漏评估放在一条链路里
+
+2026 年 4 月发表的 PrunePrivyTune 很适合放进 primer，因为它不是只说“给 LLM 加 DP”，而是把三个生产中会同时出现的问题连起来：
+
+- 模型太大，部署和推理成本高
+- fine-tuning 可能记住敏感训练样本
+- 合成文本看起来有用，但可能仍然过于接近原始训练数据
+
+它的工程链路可以简化成：
+
+1. 先用 layer representation 的相似性找出冗余 transformer layer，做结构化 pruning
+2. 再用 LoRA 做参数高效 fine-tuning
+3. fine-tuning 阶段使用 DP-SGD，限制单个样本对更新的影响
+4. 最后用训练数据抽取攻击、perplexity、BERTScore 等指标评估合成输出是否过度贴近训练数据
+
+这条研究线给落地系统的启发是：`privacy-preserving LLM` 不应该只看训练时有没有 DP，还要看压缩、微调、合成输出、攻击评估是不是连成闭环。
+
+### 18B.23 Privacy Sandbox case studies：浏览器侧 PET 已经进入广告投放与测量试点
+
+Google Privacy Sandbox 的公开案例能帮助初学者看到另一类落地路径：不是把所有数据放进 clean room，而是先在浏览器侧减少可用的用户级跟踪信号。
+
+两个值得放进导论的案例：
+
+- MiQ 测试 Attribution Reporting API，用于 conversion measurement，并探索把 summary reports 放到云端 TEE 中处理。
+- Audigent / NextRoll 使用 Protected Audience API，把 interest group 激活到 DSP 工作流里，公开案例提到大规模浏览器覆盖、数百万次 impressions 和跨大量域名投放。
+
+这里的技术重点不是“浏览器 API 取代所有 PET”，而是：
+
+- 用户级事件被限制在浏览器 / API 边界内
+- 输出更偏 aggregate、delayed、thresholded 或 noisy
+- 后端仍然需要 TEE、aggregation service、clean room、审计和业务校验
+
+因此，Privacy Sandbox 更适合被理解成 `on-device / browser-mediated privacy boundary`，它和 clean room、TEE、DP 是互补关系。
+
+### 18B.24 Fifty5Blue / Meta / AWS Clean Rooms：PSI 落地的关键是 consent + audit + scale
+
+AWS 2026 年 3 月的 Fifty5Blue 案例很适合作为真实落地引用。它的业务问题不是抽象的“安全求交”，而是 cross-media measurement 里的 panel data exchange：
+
+- Fifty5Blue 有一组已同意参与的 panelists
+- publisher 有广告 impression logs
+- Fifty5Blue 只想拿到这些 consented panelists 的曝光数据
+- publisher 不应该知道完整 panelist membership
+- 外部 auditor 要能验证 Fifty5Blue 确实只请求了已同意用户
+
+案例里把 AWS Clean Rooms 用作 PSI 协作环境，并配合 S3、KMS、CloudTrail、bucket versioning 做审计。它还提到，相比此前基于 HE 的 PSI 方案，这种方式在集成和单日数据分析上更容易扩展。
+
+这给 primer 的落地启发是：
+
+- PSI 不是单独存在的协议，而是业务流程的一步
+- consent 过滤必须发生在 match 前后都可解释的位置
+- 审计能力不是附加文档，而是隐私系统的一部分
+- scale、成本、排障时间经常决定 PET 能否上线
+
+### 18B.25 SPH Media / Decentriq：TEE clean room 用于受监管广告主的一方数据协作
+
+Decentriq 的 SPH Media 案例展示了另一条落地路线：用 TEE-backed clean room 支撑 publisher 与受监管广告主的一方数据协作。
+
+这个案例里，SPH Media 和一家 global wealth manager 上传 hashed email，在 clean room 里完成：
+
+- shared customer matching
+- 基于共享特征创建 lookalike audience
+- publisher 侧激活 audience
+- 用点击率和站内继续浏览等指标评估效果
+
+案例还提到，平台和双方都不能直接访问彼此数据，且该设计经过新加坡 PDPC 评估，认为没有导致双方之间披露个人数据；A/B 测试中，更小、更近期的 lookalike segment 表现更好。
+
+它对 primer 的价值在于：TEE clean room 的卖点不是“把所有东西都加密了所以万无一失”，而是把一方数据协作变成受限操作：
+
+- 输入是 hashed identifiers 和有限特征
+- 计算发生在 enclave / clean room 中
+- 输出是可激活 segment 或聚合效果指标
+- 合规评估、audience freshness、segment size 也会影响隐私和业务效果
+
+### 18B.26 Comscore / AWS Clean Rooms：媒体测量正在从“搬数据”转向“协作查询”
+
+Comscore 的 AWS case study 是一个更传统但很重要的落地场景：媒体测量公司需要把 panel data 与多个外部数据源交叉分析，以提升 audience 和 campaign effectiveness 的洞察质量。
+
+这个案例值得放进 primer，因为它说明 clean room 的一个朴素价值：
+
+- 以前常见做法是把数据从一个环境迁移到另一个环境，再在内部分析
+- clean room 让多方可以在受控环境里 match、analyze、collaborate
+- join key、double-blind matching、pre-encrypted S3 data、BI dashboard 都是工程化落地的一部分
+
+这类案例提醒我们，PET 不只是“更强密码学”，也包括减少数据复制、减少长期明文落地、减少为一次分析临时搭建高风险管道。
+
+### 18B.27 PMIRS：多模态检索里的隐私保护开始从单点算法走向系统组合
+
+2026 年 Scientific Reports 的 PMIRS 论文讨论了多用户、多模态 image-text retrieval 的隐私保护。它把几个并不陌生的组件组合在一起：
+
+- federated learning：训练时尽量让用户数据留在本地
+- lightweight CLIP-like encoder：把图文转成 embedding
+- block-wise projection：对 query embedding 做混淆
+- AES-CBC：加密推理过程中的 query / result
+- Diffie-Hellman：处理多用户 key management
+
+它的启发不是“这就是多模态隐私的最终答案”，而是：当 AI 应用变成 retrieval、RAG、agent memory、enterprise search 时，隐私边界会跨过训练、索引、查询、返回结果和多用户授权。只讨论训练集 DP 或只讨论传输加密都不够。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -3648,6 +3832,11 @@ AWS Clean Rooms ML 文档把 lookalike / audience modeling 的隐私风险讲得
 40. AWS Clean Rooms, privacy-related consent functions
 41. AWS Clean Rooms ML, privacy protections for lookalike modeling
 42. AWS Clean Rooms API, ML synthetic data parameters
+43. Google Privacy Sandbox, MiQ Attribution Reporting API case study
+44. Google Privacy Sandbox, Audigent and NextRoll Protected Audience API case study
+45. AWS for Industries, Fifty5Blue cross-media measurement with AWS Clean Rooms
+46. Decentriq, SPH Media first-party data collaboration case study
+47. AWS, Comscore data collaboration with AWS Clean Rooms
 
 ### 论文与研究资料
 
@@ -3679,6 +3868,8 @@ AWS Clean Rooms ML 文档把 lookalike / audience modeling 的隐私风险讲得
 26. Computer Networks, Differential Privacy for Data Sharing: Evolution and Full-Lifecycle Applications in Generative AI
 27. Neural Networks, Differentially private data augmentation via LLM generation with discriminative and distribution-aligned filtering
 28. NDSS 2026, SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs
+29. Machine Learning, PrunePrivyTune: Accelerating Language Models with Pruning and Differentially Private Fine-Tuning
+30. Scientific Reports, A privacy-preserving multi-user retrieval system for multimodal artificial intelligence
 
 ## 20. 参考链接
 
@@ -3750,5 +3941,12 @@ AWS Clean Rooms ML 文档把 lookalike / audience modeling 的隐私风险讲得
 - AWS Clean Rooms, privacy-related functions: https://docs.aws.amazon.com/clean-rooms/latest/sql-reference/privacy-related-functions.html
 - AWS Clean Rooms ML, privacy protections: https://docs.aws.amazon.com/clean-rooms/latest/userguide/ml-privacy.html
 - AWS Clean Rooms API, MLSyntheticDataParameters: https://docs.aws.amazon.com/clean-rooms/latest/apireference/API_MLSyntheticDataParameters.html
+- Google Privacy Sandbox, MiQ Attribution Reporting API case study: https://privacysandbox.google.com/resources/case-studies/miq
+- Google Privacy Sandbox, Audigent and NextRoll Protected Audience API case study: https://privacysandbox.google.com/resources/case-studies/audigent-nextroll
+- AWS for Industries, Fifty5Blue cross-media measurement with AWS Clean Rooms: https://aws.amazon.com/blogs/industries/privacy-enhanced-cross-media-measurement-how-fifty5blue-formerly-kantar-media-leveraged-aws-clean-rooms-to-establish-audit-transparency-during-panel-data-exchange/
+- Decentriq, SPH Media first-party data collaboration case study: https://www.decentriq.com/case-study/sph-media-explores-first-party-data-collaboration-with-decentriqs-data-clean-rooms
+- AWS, Comscore Maintains Privacy while Cross-Analyzing Data Using AWS Clean Rooms: https://aws.amazon.com/solutions/case-studies/comscore/
+- Springer Machine Learning, PrunePrivyTune: https://link.springer.com/article/10.1007/s10994-026-07016-y
+- Scientific Reports, A privacy-preserving multi-user retrieval system for multimodal artificial intelligence: https://www.nature.com/articles/s41598-026-40734-w
 - NIST, De-Identification of Personal Information: https://www.nist.gov/publications/de-identification-personal-information
 - NIST, Guidelines for Evaluating Differential Privacy Guarantees: https://www.nist.gov/publications/guidelines-evaluating-differential-privacy-guarantees
