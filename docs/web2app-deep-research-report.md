@@ -293,6 +293,22 @@ X Business 公开资料仍以 `App installs campaign` 为主，强调：
 
 只完成第三张表，最多说明媒体报表更完整；只有三张表同时成立，才是可运营的 Web2App。
 
+### 5.8 其他广告网络：多数是 App Install / Web Conversion 分离，Web2App 需外部中台串联
+
+除 Google、TikTok、Meta、Snap、X 之外，Reddit、Quora、LinkedIn 等平台也能承接 App 增长或 Web 转化，但公开产品形态通常更接近两条分离链路：
+
+- `App Install / App Promotion`：平台负责安装目标、移动端定向和 MMP 回传。
+- `Website Traffic / Website Conversion`：平台负责落地页访问、站内转化和网页事件回传。
+
+这类平台的共同特点是：它们可以把用户送到 Web，也可以优化 App 安装，但很少把 `web landing -> store -> first_open -> restored app context` 做成原生闭环。因此，实操时应默认采用外部中台串联：
+
+1. 广告点击先进入媒体或 MMP tracking link，保留 click id、campaign、creative、placement。
+2. Web 页只承接必要的内容解释和 CTA，不把归因参数藏在浏览器 cookie 里。
+3. CTA 使用 OneLink、Branch Link、Adjust Link、Singular Link 或自建 smart link，负责 OS 分流、已安装唤起、未安装商店 fallback。
+4. first_open 和首个关键事件通过 MMP 或 Conversion API 回传给对应媒体，而不是只看 Web conversion。
+
+对这类网络的评估口径不应是“能不能投 App”，而是“是否有稳定 MMP 集成、是否支持 iOS / Android 拆分、是否能把 post-install 事件回传为优化信号”。如果这些条件不成立，Web2App 更适合作为自有数据复盘链路，而不适合作为平台自动优化主链路。
+
 ## 6. 深链 / MMP / 归因平台能力梳理
 
 ### 6.1 AppsFlyer：最典型的 web-to-app 增长底座
@@ -364,6 +380,8 @@ Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下
 
 如果团队主要诉求是“让媒体优化模型知道这个 app install 来自哪个 web campaign”，Singular 这类参数转发方案通常比单纯做一个短链更关键。它把 `utm_source`、`utm_campaign`、`utm_content` 等 Web 维度映射到移动归因报表，避免所有自有站安装都被粗暴归到 “Mobile Web to App” 一类。
 
+这一点也适用于自建方案：Web2App 的关键不是把所有参数无差别塞进最终 URL，而是确定哪些字段需要进入三条不同通道。`媒体字段` 要进入媒体和 MMP 报表，`业务字段` 要进入 App 首开路由，`诊断字段` 要进入内部日志和看板。三条通道可以共享同一个 click/session id，但不要依赖单一 query string 在 in-app browser、系统浏览器、商店和 App 之间完整存活。
+
 ### 6.5 Firebase：保留为测量层，不再适合作主链路
 
 Firebase 现在的定位很清楚：
@@ -397,7 +415,7 @@ AppsFlyer、Branch、Adjust、Singular 都能做 deep link / deferred deep link�
 
 选型时应先写清楚主问题：是“转化更多安装”、是“恢复正确内容”、是“减少 iOS 损耗”，还是“让媒体模型吃到更完整信号”。问题不同，最优平台也不同。
 
-## 7. 设计 Web2App 方案时最该先想清楚的 6 件事
+## 7. 设计 Web2App 方案时最该先想清楚的 8 件事
 
 ### 7.1 Web 页究竟承担什么角色
 
@@ -458,6 +476,30 @@ AppsFlyer、Branch、Adjust、Singular 都能做 deep link / deferred deep link�
 - App 化后的留存和首转常常更高
 - 实施难度通常低于跨媒体统一改造
 
+### 7.7 不同流量入口要用不同链路，不要一套 H5 打全场
+
+Web2App 的落地页不是统一模板，而是按流量意图选择链路长度：
+
+| 入口 | 推荐链路 | 核心优化点 |
+| --- | --- | --- |
+| Google Search / Shopping / PMax | 高意图词 -> 信息承接页 -> 商店 / App -> 首个转化 | 保留 `gclid`、导入 `first_open` 与 app 内 primary event，观察 `indirect installs` 和 `Web to app first conv.` |
+| TikTok / Meta 内容流 | 创意种草 -> 试玩 / 预览 / 权益解释 -> 商店 -> 首开恢复 | OS 分组、内容 ID 继承、首开 onboarding 分支 |
+| SEO / 内容页 / CRM | 既有网页 -> Smart Banner / Journey -> App 或商店 | Web SDK、已安装直达、未安装 deferred deep link |
+| 桌面 Web / PC / Console | 桌面页 -> QR code / 手机承接页 -> 商店 / App | QR link 与 Web session 绑定，安装后恢复桌面侧上下文 |
+| 再营销 / 已安装用户 | Web / 邮件 / 广告 -> Universal Link / App Link -> App 内容页 | 不走商店，优先校验直达成功率和 fallback |
+
+如果入口意图弱，Web 页需要承担解释和筛选；如果入口意图强，Web 页应尽量轻，重点放在参数保存、商店分流和首开恢复。
+
+### 7.8 首开路由不要等待归因响应
+
+Web2App 的体验目标和归因目标要拆开：
+
+- 体验侧：首次打开 App 时应尽快恢复页面、活动、商品、内容或 onboarding 分支。
+- 归因侧：MMP、SKAN / AdAttributionKit、媒体 postback 可以延迟补齐，不应阻塞首屏路由。
+- 报表侧：允许同一用户先以 session / deep link 载荷恢复体验，再在后续归因结果返回后补齐媒体来源。
+
+Adjust ODDL 这类能力的价值正在于把 deferred deep link 交付从较慢的 attribution response 中解耦，优先通过更快的 session response 恢复首开内容。即使不用该产品，也应在自建方案里保留类似原则：`先恢复体验，后补齐归因`。
+
 ## 8. 落地蓝图
 
 ### 8.1 最小可行方案
@@ -483,6 +525,15 @@ MVP 的验收标准不是“能跳到商店”，而是至少能回答三件事�
 | 路由层 | `deep_link_value`、`fallback_url`、`store_url`、`platform`、`ddl` | 已安装直达、未安装 fallback、延迟深链 |
 
 参数设计要遵循两个原则：广告平台能读的字段不要只放在内部字段里；App 首开必须使用的字段不要只依赖浏览器 cookie。
+
+还要补充一个工程原则：`参数保真` 优先于 `参数丰富`。落地页可以记录很多诊断字段，但真正进入 smart link / deferred deep link 载荷的字段应保持短、稳定、可验证。推荐把载荷拆成：
+
+- `link_id / session_id`：用于在服务端查完整上下文。
+- `deep_link_value`：用于 App 首开立即路由。
+- `campaign keys`：用于媒体和 MMP 归因。
+- `content keys`：用于恢复商品、内容、活动或 onboarding 分支。
+
+不要把完整落地页 URL、冗长 JSON、价格、用户标识或一次性实验全量塞进深链参数。参数越长，越容易在浏览器跳转、商店重定向、二维码扫描和复制粘贴场景里被截断或转义失败。
 
 ### 8.3 技术分工
 
@@ -559,6 +610,38 @@ Web2App 上线后至少需要一张端到端看板，而不是把 Web analytics�
 - `媒体归因` 与 `MMP 归因`：媒体自归因、MMP last click、SKAN / AdAttributionKit 聚合回传可能同时出现，报表应区分“优化口径”和“财务/复盘口径”。
 
 实践上，Web2App 看板最有价值的不是总安装量，而是三类成功率：`store_handoff_success_rate`、`deferred_restore_success_rate`、`first_key_event_with_context_rate`。它们分别回答“有没有送到正确商店”“安装后有没有回到正确上下文”“首个关键行为有没有带着原始意图”。
+
+### 8.8 上线后的日常排障口径
+
+正式放量后，Web2App 问题不要先按“媒体归因不准”归类，而应按链路断点排查：
+
+| 现象 | 优先排查 | 常见修复方向 |
+| --- | --- | --- |
+| 落地页点击高，但商店打开低 | CTA 链接、in-app browser、store fallback、OS 判断 | 给不同 OS 使用独立链接，保留受限浏览器 fallback 页 |
+| 商店打开正常，但 first_open 低 | 商店页、安装包、应用体积、首开崩溃、MMP SDK 初始化 | 拆 Android / iOS 漏斗，先用内部事件确认真实首开 |
+| first_open 正常，但首开落首页 | deferred deep link 载荷、App 路由解析、session response | 把 `content_id`、`deep_link_value`、`landing_variant` 写入首开事件 |
+| 媒体有安装，内部看板对不上 | 自归因口径、MMP last click、SKAN / AAK 延迟、去重规则 | 分开“优化口径”和“财务 / 复盘口径”，不要直接相加 |
+| iOS 恢复率明显低于 Android | ATT、Safari / in-app browser、Universal Link、LinkMe / ODDL 配置 | 单独设计 iOS 路由与测试矩阵，不复用 Android 假设 |
+| 桌面 QR 安装无法复盘 | QR link 是否带 session、扫码后是否生成 mobile session | 桌面 session、QR token、移动端 first_open 做同一链路 ID |
+
+排障顺序应固定为：`点击捕获 -> Web session -> CTA -> 商店 -> first_open -> 首开恢复 -> 首个关键事件 -> 媒体回传`。这样能避免团队在创意、页面和归因之间来回猜测。
+
+### 8.9 最小监控指标
+
+Web2App 上线后，日常监控不宜只看 CPI、CPA 或安装量。至少需要固定以下 8 个指标：
+
+| 指标 | 说明 |
+| --- | --- |
+| `landing_to_cta_rate` | 判断 Web 页是否有承接价值 |
+| `cta_to_store_rate` | 判断按钮、smart link、OS 分流和 in-app browser 是否稳定 |
+| `store_to_first_open_rate` | 判断商店页、安装包、包体和首开稳定性 |
+| `deferred_restore_success_rate` | 判断未安装用户首开后是否回到正确上下文 |
+| `direct_deep_link_success_rate` | 判断已安装用户是否被正确唤起 |
+| `first_key_event_with_context_rate` | 判断首个关键行为是否保留原始广告和业务上下文 |
+| `media_postback_match_rate` | 判断 MMP / 媒体回传是否与内部事件可对账 |
+| `duplicate_conversion_rate` | 判断 web conversion、install、first_open、first key event 是否被重复计算 |
+
+这些指标要按 `OS`、`媒体`、`浏览器容器`、`落地页版本` 和 `是否已安装` 拆开看。只看总漏斗会掩盖 Web2App 最常见的问题：Android 表现正常、iOS 首开恢复失败；系统浏览器正常、社交 App 内置浏览器丢参；移动 Web 正常、桌面 QR 无法跨设备复盘。
 
 ## 9. 平台对比结论
 
@@ -696,3 +779,13 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
     https://help.branch.io/docs/desktop-journeys
 45. Branch, Activation Migration Guide
     https://help.branch.io/marketer-hub/docs/activation-migration-guide
+46. Reddit for Business, App Install Campaigns
+    https://www.business.reddit.com/campaign-objective/app-installs
+47. Quora Ad Support, How do Quora app install ads work?
+    https://quoraadsupport.zendesk.com/hc/en-us/articles/115010300987-How-do-Quora-app-install-ads-work
+48. LinkedIn Marketing Solutions, LinkedIn Ads
+    https://business.linkedin.com/marketing-solutions/ads
+49. X Ads API, Mobile Conversions
+    https://docs.x.com/x-ads-api/measurement/mobile-conversions
+50. X Ads API, Web Conversions
+    https://docs.x.com/x-ads-api/measurement/web-conversions
