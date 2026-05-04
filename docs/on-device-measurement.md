@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-02<br>
+最后更新: 2026-05-03<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -183,6 +183,19 @@ MMP SDK Ask
 4. `Aggregate Reporting Plane`
    - 位置: partner-facing / BI-facing aggregate service
    - 内容: bounded, thresholded, optional-DP aggregate outputs
+
+### 6.1A 这不是“local vs central”的二元对立，而是 trust graph 分层
+
+2025 的 [Differential Privacy on Trust Graphs](https://research.google/pubs/differential-privacy-on-trust-graphs/) 给了一个很有用的心智模型：真实系统里，各方通常不是“完全互信”或“完全不信任”，而是只信任一部分邻居。广告主 App、Ad Network SDK、MMP、Ad Network confidential service、aggregate collector 就属于这种结构。
+
+这对本 RFC 的直接意义是：
+
+- `Device Raw Plane` 不是为了把所有价值都困在端上，而是为了把最敏感原料只暴露给最小信任域；
+- `Confidential Plane` 不是普通数据仓库前面再加一层 ACL，而是承接“只有少数邻居可见”的 join 和派生；
+- `Optimization Plane` 看到的是为训练释放过的低敏派生特征，而不是原始跨方识别材料；
+- `Aggregate Reporting Plane` 则进一步收缩成 collector / task / budget 约束下的聚合输出。
+
+换句话说，本文的四平面设计，本质上是在把“谁可以看到什么、看到后可以做什么”写成显式 trust graph，而不是把 `on-device measurement` 误解成“除了端上，谁都不该再看任何东西”。
 
 ### 6.2 关键键
 
@@ -1928,6 +1941,17 @@ Phase 1 推荐：
 - 全量 DP-SGD 深度模型
 - 联邦端上训练主路径
 
+如果后续真的把 DP 引入 optimization training，也不要只记录一个 `epsilon/delta` 就结束。2025 的 [Empirical Privacy Variance](https://research.google/pubs/empirical-privacy-variance/) 说明：名义上相同的 DP 保证，在不同超参数下可能表现出不同的经验隐私风险。因此训练契约至少还应固化：
+
+- `dp_accountant_id`
+- `noise_multiplier`
+- `clipping_norm`
+- `sampling_policy_id`
+- `privacy_audit_profile_id`
+- `empirical_privacy_eval_id`
+
+也就是说，Phase 1 可以不先上 DP；但一旦上，就应把“会计、超参、审计、经验评估”一起产品化，而不是只在汇报材料里写一个 epsilon。
+
 这不是因为这些方向不重要，而是因为在广告测量落地里，先把 `label contract + policy versioning + sample lifecycle` 做对，收益更大。
 
 ### 12.4 optimization plane 最低要看到什么
@@ -1959,6 +1983,8 @@ Phase 1 推荐：
   - `network_stability_bucket`
   - `timezone_consistency_bucket`
   - `reinstall_hint_bucket`
+  - `coarse_ip_geo_bucket`
+  - `ip_prefix_churn_bucket`
 
 反过来说，下列字段通常不该进入 optimization plane：
 
@@ -3071,6 +3097,18 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 因此，本 RFC 采用 `confidential plane` 作为 request-level join 的默认部署边界。
 
+### 20.2A Trust graph 研究说明“分层信任”比“全本地化”更贴近现实
+
+[Differential Privacy on Trust Graphs](https://research.google/pubs/differential-privacy-on-trust-graphs/)（ITCS 2025）研究的是一个更贴近现实协作系统的前提：每个参与方只信任一部分邻居，而不是所有人，也不是任何人都不信任。
+
+这对广告场景里的 ODM + MMP + SRN 很有启发，因为这里天然就有：
+
+- advertiser app 对 ad network SDK 的有限信任；
+- MMP 对 ad network claim 的协议化信任，而不是原始数据级信任；
+- ad network 对 confidential workflow 的高信任，但对 partner-facing output 的低披露要求。
+
+因此，本文没有把架构写成“所有有价值的事都必须端上做完”，而是把不同操作放进不同 trust domain：端上保留高敏原料，confidential plane 承接跨事件验证与派生，optimization plane 只消费释放后的低敏信号，aggregate plane 只消费聚合贡献。
+
 ### 20.3 DAP / VDAF / Taskprov 已经足够成熟到值得对齐对象模型
 
 截至 2026-04-30：
@@ -3139,6 +3177,8 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 - 黑盒审计、持续审计、序列式审计都已经可做；
 - 如果后续引入 DP release，审计栈应该提前预留。
 
+进一步地，[Empirical Privacy Variance](https://research.google/pubs/empirical-privacy-variance/)（ICML 2025）提醒了一个很实际的问题：即使名义 `epsilon/delta` 相同，不同训练超参数也可能表现出明显不同的经验隐私风险。对本 RFC 的含义是：如果 Phase 2/3 把 DP 带到 optimization training，就不能只把 privacy accounting 结果写进 PPT，而要把 `noise_multiplier`、`clipping_norm`、`sampling_policy_id`、`privacy_audit_profile_id` 和经验评估结果一起写入训练治理契约。
+
 ### 20.7 TEE 不是 magic box
 
 2026 年的 [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/) 和 [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/) 说明：
@@ -3165,6 +3205,8 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 - [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743) 明确 ICM 是 AAP UI 中的 granular, event-level, cross-network view，而不是 Google Ads UI 中的同一条 reporting surface；
 - [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 明确该功能对位于 `EEA`、`UK`、`Switzerland` 的用户 inactive。
+
+此外，Google 官方 [GoogleAdsOnDeviceConversion SDK](https://github.com/googleads/google-ads-on-device-conversion-ios-sdk) 仓库当前显示最新 release 为 `3.5.0`（2026-04-16），README 还明确说它会引入 “additional de-identified, temporary signals, such as data derived from IP-address-based attributes” 来改进第三方 AAP 场景下的优化和 reporting。它直接支持了本文的一个核心边界判断：`raw_ip` 一类字段并不是“完全没有业务价值”，但它们进入优化面的方式应当是“短期、受控、去标识化派生”，而不是把原始值或稳定可重识别前缀直接送入训练。
 
 这直接支持本文把 `ODMInfoEnvelope` 视为正式协议对象，而不是 SDK 内部细节；也支持把 `reporting_surface_id`、`region_eligibility_code` 和 `feature_active=false` 视为正式状态，而不是埋在 FAQ 里的例外逻辑。
 
@@ -3275,11 +3317,13 @@ Config 下发上下文
 5. [On the Differential Privacy and Interactivity of Privacy Sandbox Reports](https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/)
 6. [DP-Auditorium](https://research.google/pubs/dp-auditorium-a-large-scale-library-for-auditing-differential-privacy/)
 7. [Sequentially Auditing Differential Privacy](https://research.google/pubs/sequentially-auditing-differential-privacy/)
-8. [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/)
-9. [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)
-10. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
-11. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
-12. [Hardening Confidential Federated Compute against Side-channel Attacks](https://arxiv.org/abs/2603.21469)
+8. [Differential Privacy on Trust Graphs](https://research.google/pubs/differential-privacy-on-trust-graphs/)
+9. [Empirical Privacy Variance](https://research.google/pubs/empirical-privacy-variance/)
+10. [SNPeek](https://research.google/pubs/snpeek-side-channel-analysis-for-privacy-applications-on-confidential-vms/)
+11. [TDXRay](https://research.google/pubs/tdxray-microarchitectural-side-channel-analysis-of-intel-tdx-for-real-world-workloads/)
+12. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
+13. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
+14. [Hardening Confidential Federated Compute against Side-channel Attacks](https://arxiv.org/abs/2603.21469)
 
 ### 21.2 Standards
 
