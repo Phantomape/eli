@@ -2583,6 +2583,270 @@ clean room 内部会生成一个不可回溯到真实用户的 synthetic trainin
 - 后端 clean room 不应该试图把 summary report 还原成用户级明细
 - campaign bucket、阈值、噪声、blocked columns 和 audit log 是同一条隐私设计链路上的控制点
 
+### 16B.23 Enterprise RAG / 隐私保护检索的 Mock Data
+
+企业 RAG 和文档检索场景很容易被误解成“只要向量化就安全了”。实际上，embedding、reranker 输入、query log、retrieval result 都可能泄露敏感信息。
+
+假设一家医疗设备公司要做内部文档搜索，原始文档片段长这样：
+
+```json
+{
+  "doc_id": "quality_case_20260429_07",
+  "access_group": "quality_team",
+  "text": "Customer reported intermittent battery swelling in batch B-17 after 11 months.",
+  "labels": ["field_issue", "battery", "regulated_quality_record"]
+}
+```
+
+一个更谨慎的 on-premise / sovereign retrieval flow 可以先把文档处理成受权限和用途约束的索引对象：
+
+```json
+{
+  "chunk_id": "chk_8f21",
+  "doc_id": "quality_case_20260429_07",
+  "embedding_store": "local_vector_db",
+  "access_policy": {
+    "allowed_groups": ["quality_team", "regulatory_affairs"],
+    "blocked_groups": ["sales"],
+    "export_allowed": false
+  },
+  "redaction_status": {
+    "pii_removed": true,
+    "batch_id_generalized": false
+  }
+}
+```
+
+用户查询时，系统不应该把所有 query 和候选文档发给外部 API，而是先在本地完成检索和轻量 rerank：
+
+```json
+{
+  "query_id": "q_20260502_001",
+  "user": {
+    "role": "quality_engineer",
+    "groups": ["quality_team"]
+  },
+  "query": "battery swelling complaints after one year",
+  "retrieval_pipeline": [
+    {"step": "local_sparse_retrieval", "top_k": 100},
+    {"step": "local_vector_retrieval", "top_k": 100},
+    {"step": "policy_filter", "rule": "document_acl_intersection"},
+    {"step": "lightweight_local_reranker", "model": "hr-qda-style"},
+    {"step": "answer_generation", "mode": "grounded_summary_only"}
+  ]
+}
+```
+
+返回结果可以只暴露用户有权看的片段和引用，而不是导出完整文档集合：
+
+```json
+{
+  "query_id": "q_20260502_001",
+  "results": [
+    {
+      "chunk_id": "chk_8f21",
+      "score": 0.87,
+      "citation": "quality_case_20260429_07",
+      "snippet": "Intermittent battery swelling was reported after roughly 11 months in one production batch."
+    }
+  ],
+  "audit": {
+    "chunks_filtered_by_acl": 37,
+    "external_api_used": false,
+    "query_logged": "metadata_only"
+  }
+}
+```
+
+这个例子的关键点是：
+
+- RAG 的隐私边界不只在训练数据，也在 `query -> retrieval -> rerank -> answer -> log`
+- 轻量本地 reranker 可以是数据主权方案的一部分，不一定所有语义排序都要调用云端大模型
+- ACL / purpose filter 必须在 retrieval 和 rerank 之间强制执行，否则 reranker 可能看到用户无权访问的候选片段
+- query log 默认也可能敏感，最好只保留元数据或做聚合统计
+
+### 16B.24 Production DP-SDG / 生产级差分隐私合成表格数据的 Mock Data
+
+2026 年 PEPR 的多个议题都在强调同一件事：DP synthetic data 真正落地时，难点不只是“会不会加噪声”，而是能不能把 schema、public/private column split、validity constraints、utility evaluation 和 privacy budget 变成可重复运行的生产流水线。
+
+假设一家金融公司要给欺诈检测团队开放一份可共享的合成交易数据。原始数据不能直接给下游团队：
+
+```json
+{
+  "transaction_id": "txn_91f2",
+  "user_id": "u_248801",
+  "age_band": "35-44",
+  "state": "CA",
+  "merchant_category": "electronics",
+  "amount_usd": 842.17,
+  "device_risk_score": 0.73,
+  "is_fraud": false,
+  "event_time": "2026-05-02T18:23:11Z"
+}
+```
+
+生产系统更适合先把字段分成公开上下文、敏感特征、受限标签和禁止发布字段：
+
+```json
+{
+  "dataset": "card_transactions_2026w18",
+  "privacy_unit": "user_id",
+  "columns": [
+    {"name": "state", "class": "public_context"},
+    {"name": "age_band", "class": "public_context"},
+    {"name": "merchant_category", "class": "private_feature"},
+    {"name": "amount_usd", "class": "private_feature", "constraint": "amount_usd >= 0"},
+    {"name": "device_risk_score", "class": "private_feature", "constraint": "0 <= score <= 1"},
+    {"name": "is_fraud", "class": "restricted_label"},
+    {"name": "transaction_id", "class": "blocked"},
+    {"name": "user_id", "class": "blocked"}
+  ]
+}
+```
+
+DP-SDG 任务本身应该像一个带 release gate 的 job，而不是一次性 notebook：
+
+```json
+{
+  "job_id": "dpsdg_20260503_001",
+  "mechanism": "marginal_based_generator",
+  "budget": {
+    "epsilon": 3.0,
+    "delta": 1e-7,
+    "accounting_scope": "weekly_release"
+  },
+  "conditioning": {
+    "public_columns": ["state", "age_band"],
+    "private_columns": ["merchant_category", "amount_usd", "device_risk_score", "is_fraud"]
+  },
+  "scale_runtime": {
+    "engine": "spark",
+    "partition_key": "state",
+    "max_columns": 220
+  },
+  "release_gate": {
+    "validity_checks_required": true,
+    "membership_inference_max_risk": 0.54,
+    "utility_tasks": ["fraud_model_auc", "segment_distribution_drift"]
+  }
+}
+```
+
+合成输出不应该带真实 ID，而应该带生成批次和约束检查结果：
+
+```json
+{
+  "synthetic_batch_id": "syn_20260503_001",
+  "rows": [
+    {
+      "synthetic_user_key": "syn_u_00091",
+      "age_band": "35-44",
+      "state": "CA",
+      "merchant_category": "electronics",
+      "amount_usd": 799.30,
+      "device_risk_score": 0.69,
+      "is_fraud": false
+    }
+  ],
+  "quality_report": {
+    "fraud_model_auc_delta": -0.021,
+    "invalid_rows_removed": 18,
+    "segment_drift_flags": ["high_amount_TX_18_24"]
+  },
+  "privacy_report": {
+    "epsilon_spent": 3.0,
+    "release_approved": true,
+    "attack_tests": ["membership_inference", "nearest_neighbor", "attribute_inference"]
+  }
+}
+```
+
+这个 mock data 想说明：
+
+- DP-SDG 的生产形态是 `classify columns -> allocate budget -> generate -> validate -> attack test -> release`
+- public/private column split 能把预算花在真正敏感的列上，而不是对所有列一视同仁
+- 合成数据的质量要看下游任务和分布漂移，不只看单行样本是否自然
+- release gate 必须能拒绝一次看起来“像真数据”但隐私或效用不达标的生成结果
+
+### 16B.25 Edge FL with Concept Drift / 带漂移治理的边缘联邦学习 Mock Data
+
+2026 年 5 月的 FedDriftGuard 研究把一个经常被 primer 忽略的问题讲得很清楚：边缘设备上的数据分布会变，用户行为、传感器环境、地区事件都会让模型出现 concept drift。FL 如果只说“原始数据不上传”，仍然可能在真实环境里因为漂移导致偏差、失效或隐私预算浪费。
+
+假设一个智能家居系统用联邦学习训练设备侧异常检测模型，每个客户端上报的不是原始事件，而是本地更新和漂移摘要：
+
+```json
+{
+  "client_id": "device_cluster_7a",
+  "round": 184,
+  "local_examples": 420,
+  "drift_signal": {
+    "type": "gradual",
+    "score": 0.81,
+    "suspected_cause": "seasonal_temperature_pattern"
+  },
+  "model_update": {
+    "format": "sparse_gradient",
+    "top_k": 1200,
+    "compressed": true
+  },
+  "privacy": {
+    "mechanism": "client_level_dp",
+    "clip_norm": 1.0,
+    "epsilon_increment": 0.08
+  }
+}
+```
+
+服务器端聚合器不应该只做普通 FedAvg，而要把漂移、资源成本和隐私预算一起纳入调度：
+
+```json
+{
+  "aggregation_round": 184,
+  "participants_sampled": 5000,
+  "aggregation_policy": "drift_adaptive_secure_aggregation",
+  "drift_buckets": [
+    {"bucket": "stable", "clients": 3820, "noise_multiplier": 0.9},
+    {"bucket": "gradual_drift", "clients": 940, "noise_multiplier": 1.1},
+    {"bucket": "sudden_drift", "clients": 240, "noise_multiplier": 1.4}
+  ],
+  "resource_controls": {
+    "periodic_transmission": true,
+    "update_sparsification": true,
+    "max_upload_kb_per_client": 256
+  }
+}
+```
+
+发布到生产前，评估报告应该把 accuracy 和 privacy 放在同一张表里：
+
+```json
+{
+  "candidate_model": "edge_anomaly_v184",
+  "evaluation": {
+    "stable_f1": 0.91,
+    "drifted_f1": 0.84,
+    "adaptation_latency_rounds": 3,
+    "communication_cost_delta": "-24%"
+  },
+  "privacy_accounting": {
+    "epsilon_total_this_month": 4.7,
+    "budget_limit": 6.0,
+    "release_allowed": true
+  },
+  "deployment": {
+    "rollout": "canary",
+    "rollback_if_drifted_f1_below": 0.78
+  }
+}
+```
+
+这类系统的关键不是把 `FL + DP` 写进架构图，而是明确：
+
+- 漂移检测影响聚合权重、噪声调度和发布节奏
+- DP budget 是长期账户，不是每轮局部参数
+- 压缩、稀疏化和周期上传是隐私工程的一部分，因为它们影响可观测性、成本和攻击面
+- FL 的安全边界还要继续配 secure aggregation、客户端抽样、投毒检测和回滚策略
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -3301,6 +3565,111 @@ AWS Clean Rooms 的合成数据 API 文档把一个研究界常讨论的问题�
 
 如果没有这些控制，它更像测试数据生成工具，而不是 privacy technology。
 
+### 18A.21 Synthetic data 的反向提醒：深度学习生成数据可能只是“重新编码”
+
+2026 年 2 月，`Privacy-Enhancing or Privacy-Elusion Technology?` 给 synthetic data 讨论补了一个很重要的负面边界：如果过参数化深度学习模型从真实个人数据中学到的是某种“隐私欺骗式编码”，那么输出虽然看起来不像原始记录，也可能仍然携带可被解码的个体信息。
+
+这条研究信号对 primer 很重要，因为它提醒我们不要把“样本看起来不同”误当成“已经匿名化”。更稳的工程表达应该是：
+
+- synthetic data 需要证明或评估 `unit-level dissimilarity`
+- 需要 membership inference、attribute inference、nearest-neighbor、record linkage 等攻击评估
+- 如果没有 formal guarantee 或充分攻击测试，pseudo-synthetic data 不应被轻易当成匿名数据
+- 对外共享时，仍要把 legal basis、用途限制、访问控制和审计纳入治理
+
+这也解释了为什么 AWS Clean Rooms 这类产品会把 `epsilon`、`columnClassification`、`maxMembershipInferenceAttackScore` 放进配置面：synthetic data 的可落地形态不是“生成器输出一份文件”，而是“生成、验证、拒绝发布、审计”连成一条流水线。
+
+### 18A.22 企业 RAG 的隐私重点正在从“模型训练”扩展到“检索链路”
+
+2026 年 2 月的 `A lightweight privacy-preserving reranker enables customizable hybrid retrieval for enterprise document search` 提供了一个很实用的信号：在企业检索里，隐私不一定总靠更重的密码学协议或更大的私有模型，有时更现实的路径是：
+
+- 文档和索引留在企业本地或受控环境
+- 使用轻量 reranker 降低部署和推理成本
+- 通过 query-document attention 改善排序质量
+- 避免把私有文档、query log 和候选片段发送给外部 API
+
+它对 AI 应用的启发是：RAG 的隐私面至少包括 `document indexing`、`query embedding`、`candidate reranking`、`answer generation` 和 `logging`。如果只说“模型没有用客户数据训练”，但查询和候选文档都被发到外部服务，隐私风险仍然存在。
+
+所以 enterprise RAG 的落地选型应同时问：
+
+- embedding 和 reranker 在哪里运行
+- retrieval candidate 是否先经过 ACL / purpose filter
+- query log 是否保留原文
+- answer 是否带引用和最小必要片段
+- 是否需要 DP 聚合来发布搜索分析指标
+
+### 18A.23 Clean room 自定义代码让能力变强，也让治理面变宽
+
+Snowflake Data Clean Rooms 在 2026-03-05 的更新中支持在 collaboration 中上传和使用自定义 Python 代码；同年 3 月底又把 Cortex Code 接入 Collaboration Data Clean Rooms 的对象浏览、注册、创建、审批和分析流程。
+
+这条信号很重要，因为 clean room 正在从“受控 SQL 模板”扩展到“受控代码执行与 agentic 操作”。这会带来更强的分析能力，也会带来新的治理要求：
+
+- 自定义代码要有审批、版本、依赖和输出策略
+- 代码能访问哪些 data offering、view、column policy 必须可见
+- natural-language assistant 生成的操作也要进入 audit trail
+- 对 PySpark / Python / freeform SQL 的自由度越高，threshold、DP、result receiver 和 provider visibility 越不能省
+
+换句话说，2026 年的 clean room 不再只是“把 SQL 锁住”。它更像一个 `secure collaboration runtime`：数据、代码、成员、审批、预算、可观测性都要一起治理。
+
+### 18A.24 DP Synthetic Data 正在从“算法可行”走向“工程系统”
+
+PEPR 2026 的 `DPSynth` 和 `Generating High-Quality Tabular Synthetic Data at Scale` 都在补一个很实际的缺口：DP 合成数据如果要在公司内部长期使用，必须解决生产约束，而不是只给出一个漂亮的研究 demo。
+
+这类系统的工程重点包括：
+
+- 支持上百列甚至更高维的 tabular data
+- 对 public/private column split 做预算分配
+- 对真实业务约束做 validity checks，例如金额非负、枚举值合法、标签比例不崩
+- 在 Beam / Spark 这类分布式执行环境里可扩展
+- 给非 DP 专家提供合理默认值和明确 release gate
+
+对 primer 的启发是：DP-SDG 不应该被写成“用 DP 生成一份假数据”。更准确的表达是：
+
+- `privacy accounting` 负责数学边界
+- `schema/constraint layer` 负责业务有效性
+- `utility evaluation` 负责下游可用性
+- `attack evaluation` 负责反向检查
+- `release workflow` 负责把失败结果挡住
+
+### 18A.25 Chatbot analytics 的隐私重点是“洞察发布”，不是“保存完整对话”
+
+PEPR 2026 的 `A DP Framework for Gaining Insights into AI Chatbot Use` 指向一个正在变得很常见的场景：平台想理解用户如何使用 chatbot，但不应该把完整对话日志当作普通产品分析数据长期随意查询。
+
+它的工程路线更接近：
+
+- 对 conversation 做 private clustering
+- 对主题和关键词做 DP extraction
+- 用 partition selection 避免小群体主题泄露
+- 用 histogram summarization 发布聚合洞察
+- 把 benchmark 质量和隐私预算放在同一个评估流程里
+
+这对 AI 产品很重要。很多团队会说“我们不训练用户数据”，但 product analytics 仍然可能把用户问题、疾病、财务、工作内容暴露给内部分析系统。更稳的设计是把 chatbot analytics 当成一个 DP 发布问题，而不是普通日志 SQL 问题。
+
+### 18A.26 FHE 的瓶颈开始转向存储与数据移动
+
+IBM Research 在 DATE 2026 的 FHEIns 研究把 HE 的落地瓶颈说得更工程化：对于面向数据库和大规模数据应用的 FHE，问题不只在密码学算子慢，还在密文膨胀导致的内存和 I/O 压力。FHEIns 的思路是把部分 FHE kernel 推到靠近 SSD 的 in-storage processing，以利用存储内部带宽。
+
+这条研究信号对初学者很有价值，因为它提醒我们：
+
+- FHE 的工程瓶颈可能在 `ciphertext size -> memory pressure -> storage I/O`
+- 加速不一定只靠 GPU / ASIC，也可能靠 near-data processing
+- “能在密文上计算”距离“能在 TB 级数据库上经济地计算”还有系统工程距离
+- 评估 HE 方案时要问数据规模、访问模式、I/O 放大、密钥管理和可观测性
+
+所以 HE 在 primer 里应该被理解为一类很强的计算原语，但落地时必须和数据库、存储、调度和成本模型一起看。
+
+### 18A.27 边缘 FL 的新重点：漂移、隐私预算和资源约束要一起调度
+
+2026 年 5 月发表的 FedDriftGuard 研究把 FL 的一个现实问题放到台面上：边缘环境里的数据不是静态的，用户行为、传感器条件和环境变化会造成 sudden、gradual、recurrent drift。只用 FedAvg 或 DP-FedAvg，可能同时遇到模型性能下降、收敛变慢、通信成本高和隐私预算使用不经济。
+
+它对工程设计的启发是：
+
+- drift detection 应该进入客户端或聚合层
+- 聚合权重、噪声调度和上传频率可以随漂移状态变化
+- DP budget 要按长期训练任务管理，而不是按单轮孤立理解
+- 压缩、稀疏化、周期传输是边缘 FL 的现实约束，不是可选优化
+
+这也补足了“联邦学习天然隐私”这个误区：FL 只是降低原始数据集中化，真实系统仍要处理梯度泄露、投毒、漂移、掉线、预算耗尽和部署回滚。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -3766,6 +4135,65 @@ Comscore 的 AWS case study 是一个更传统但很重要的落地场景：媒�
 
 它的启发不是“这就是多模态隐私的最终答案”，而是：当 AI 应用变成 retrieval、RAG、agent memory、enterprise search 时，隐私边界会跨过训练、索引、查询、返回结果和多用户授权。只讨论训练集 DP 或只讨论传输加密都不够。
 
+### 18B.28 Snowflake custom Python in Data Clean Rooms：受控协作开始支持自定义代码
+
+Snowflake Data Clean Rooms 在 2026-03-05 的更新中支持 collaboration 里上传和使用 custom Python code。这个案例值得单独写进落地部分，因为真实企业协作经常不满足于固定 SQL：
+
+- 广告测量可能需要自定义归因、分桶和异常过滤
+- 生命科学协作可能需要自定义统计或特征工程
+- 金融风控可能需要更复杂的模型评分或校验逻辑
+
+但 custom code 也意味着 clean room 的治理边界要扩大。生产系统需要能回答：
+
+- 谁提交了代码
+- 代码版本和依赖是什么
+- 代码能读取哪些列
+- 输出是否仍然遵守 threshold / DP / result receiver 规则
+- 失败、重跑和性能指标是否可观测
+
+这个案例把 clean room 的定位进一步推向 `受控计算平台`，而不只是 `受控查询界面`。
+
+### 18B.29 Snowflake Collaboration Data Clean Rooms：多方协作从 preview 走向 GA
+
+Snowflake 在 2026-04-09 的 Data Clean Rooms 更新中把 Collaboration API 标为 GA。这个变化值得写进落地案例，因为它把 clean room 从传统的 provider / consumer 双方模型推向更对称的多方协作模型。
+
+Snowflake 文档里的 `Multi-party insights` 模板给了一个很具体的广告测量例子：
+
+- Publisher 提供曝光数据
+- Advertiser 提供购买数据
+- Identity Partner 提供 customer spine
+- 三方通过标准化 join key 做聚合分析
+- collaboration specification 控制谁能运行模板、谁能访问 data offering、谁只是贡献数据
+
+这类产品形态说明 clean room 的落地重点正在从“两个表能不能 join”变成“多个参与方的角色、权限、模板、审批、激活和成本如何被治理”。
+
+### 18B.30 OneTrust + Snowflake：consent signal 开始进入 clean room 执行链路
+
+OneTrust 在 2026-04-28 宣布把 consent signals 嵌入 Snowflake Data Clean Rooms。这个案例很适合放进 primer，因为它把 privacy tech 从“数据能不能被安全计算”推进到“这条数据按用户授权到底能不能被用于这个目的”。
+
+一个落地系统里，consent-aware clean room 至少要能回答：
+
+- 这条用户记录是否允许用于 analytics
+- 是否允许用于 activation
+- 是否允许与某类 partner 协作
+- consent 变更后，下游 clean room 是否能及时反映
+- audit trail 是否能证明查询和激活遵守了用户选择
+
+这说明 clean room 的隐私控制不应只停在 join threshold、blocked columns 和 DP；真实生产环境还需要把 consent、purpose、jurisdiction 和 data use policy 接进执行链路。
+
+### 18B.31 Snowflake Data Clean Rooms UI in Snowsight：业务用户入口也要纳入治理
+
+Snowflake 在 2026-04-30 的更新中把 Data Clean Rooms UI in Snowsight 标为 public preview，并且集成 Cortex Code 的自然语言辅助。这个案例看起来像 UI 更新，但对隐私工程有一个更深的含义：当 clean room 从工程团队的 API 变成业务团队可操作的界面，治理面会扩大。
+
+需要关注的不是“有 UI 了”，而是：
+
+- 自然语言生成的分析是否仍受 template、role、approval 和 output policy 限制
+- 业务用户创建或加入 collaboration 时是否能看清数据用途和权限
+- activation 操作是否有 consent / purpose gate
+- UI 操作、agentic 操作和 API 操作是否进入同一套审计
+
+这条案例补充了一个落地判断：privacy tech 越产品化，越要把人机交互层纳入威胁模型。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -3837,6 +4265,12 @@ Comscore 的 AWS case study 是一个更传统但很重要的落地场景：媒�
 45. AWS for Industries, Fifty5Blue cross-media measurement with AWS Clean Rooms
 46. Decentriq, SPH Media first-party data collaboration case study
 47. AWS, Comscore data collaboration with AWS Clean Rooms
+48. Snowflake Data Clean Rooms, custom Python code in collaborations
+49. Snowflake Data Clean Rooms, Cortex Code support in Collaboration Data Clean Rooms
+50. Snowflake Data Clean Rooms, Collaboration API GA
+51. Snowflake Documentation, Multi-party insights template
+52. OneTrust, consent-aware data clean rooms with Snowflake
+53. Snowflake Data Clean Rooms UI in Snowsight public preview
 
 ### 论文与研究资料
 
@@ -3870,6 +4304,13 @@ Comscore 的 AWS case study 是一个更传统但很重要的落地场景：媒�
 28. NDSS 2026, SNPeek: Side-Channel Analysis for Privacy Applications on Confidential VMs
 29. Machine Learning, PrunePrivyTune: Accelerating Language Models with Pruning and Differentially Private Fine-Tuning
 30. Scientific Reports, A privacy-preserving multi-user retrieval system for multimodal artificial intelligence
+31. Information Polity, Privacy-Enhancing or Privacy-Elusion Technology? A Critical View of (Pseudo)Synthetic Data Based on Deep Learning
+32. Discover Computing, A lightweight privacy-preserving reranker enables customizable hybrid retrieval for enterprise document search
+33. USENIX PEPR 2026, DPSynth: From Research to Production
+34. USENIX PEPR 2026, Generating High-Quality Tabular Synthetic Data at Scale
+35. USENIX PEPR 2026, A DP Framework for Gaining Insights into AI Chatbot Use
+36. Scientific Reports, FedDriftGuard adaptive federated learning with differential privacy
+37. IBM Research, FHEIns: Fully Homomorphic Encryption Acceleration for Large Data Applications
 
 ## 20. 参考链接
 
@@ -3948,5 +4389,18 @@ Comscore 的 AWS case study 是一个更传统但很重要的落地场景：媒�
 - AWS, Comscore Maintains Privacy while Cross-Analyzing Data Using AWS Clean Rooms: https://aws.amazon.com/solutions/case-studies/comscore/
 - Springer Machine Learning, PrunePrivyTune: https://link.springer.com/article/10.1007/s10994-026-07016-y
 - Scientific Reports, A privacy-preserving multi-user retrieval system for multimodal artificial intelligence: https://www.nature.com/articles/s41598-026-40734-w
+- Information Polity, Privacy-Enhancing or Privacy-Elusion Technology? A Critical View of (Pseudo)Synthetic Data Based on Deep Learning: https://journals.sagepub.com/doi/10.1177/0282423X251412328
+- Discover Computing, A lightweight privacy-preserving reranker enables customizable hybrid retrieval for enterprise document search: https://link.springer.com/article/10.1007/s10791-026-09993-z
+- Snowflake Data Clean Rooms updates, Mar 5 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-03-05-dcr
+- Snowflake Data Clean Rooms updates, Mar 26 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-03-26-dcr
+- Snowflake Data Clean Rooms updates, Apr 9 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-04-09-dcr
+- Snowflake Data Clean Rooms, Multi-party insights: https://docs.snowflake.com/en/user-guide/cleanrooms/collab-multi-party-insights
+- Snowflake, Data Clean Rooms Enable Privacy-First Multiparty Collaboration: https://www.snowflake.com/en/blog/data-clean-rooms-multiparty-collaboration/
+- OneTrust, consent-aware data clean rooms with Snowflake: https://www.onetrust.com/news/onetrust-introduces-a-new-approach-to-consent-aware-data-clean-rooms/
+- USENIX PEPR 2026, DPSynth: From Research to Production: https://www.usenix.org/conference/pepr26/presentation/pravilov-dpsynth
+- USENIX PEPR 2026, Generating High-Quality Tabular Synthetic Data at Scale: https://www.usenix.org/conference/pepr26/presentation/gade
+- USENIX PEPR 2026, A DP Framework for Gaining Insights into AI Chatbot Use: https://www.usenix.org/conference/pepr26/presentation/pravilov-chatbot
+- Scientific Reports, FedDriftGuard adaptive federated learning with differential privacy for concept drift in edge environments: https://www.nature.com/articles/s41598-026-51535-6
+- IBM Research, FHEIns: Fully Homomorphic Encryption Acceleration for Large Data Applications: https://research.ibm.com/publications/fheins-fully-homomorphic-encryption-acceleration-for-large-data-applications-with-in-storage-processing
 - NIST, De-Identification of Personal Information: https://www.nist.gov/publications/de-identification-personal-information
 - NIST, Guidelines for Evaluating Differential Privacy Guarantees: https://www.nist.gov/publications/guidelines-evaluating-differential-privacy-guarantees
