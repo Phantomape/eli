@@ -2847,6 +2847,90 @@ DP-SDG 任务本身应该像一个带 release gate 的 job，而不是一次性 
 - 压缩、稀疏化和周期上传是隐私工程的一部分，因为它们影响可观测性、成本和攻击面
 - FL 的安全边界还要继续配 secure aggregation、客户端抽样、投毒检测和回滚策略
 
+### 16B.26 IIoT Secure FL / 隐私、鲁棒性与可解释性一起进入数据流的 Mock Data
+
+2026 年 5 月的 TrustFed-RHIO 研究，以及 2026 年 4 月的 AP-PPFL 研究，都指向同一个更现实的 IIoT / IoT 方向：边缘联邦学习不能只说“原始数据不上传”，还要同时处理攻击检测、恶意客户端、梯度泄漏、模型解释和部署证据。
+
+假设一个工业园区有多个工厂节点共同训练入侵检测模型。每个节点本地保留原始网络流量，只上传经过裁剪、加密或加噪的训练信号：
+
+```json
+{
+  "site_id": "plant_west_03",
+  "round": 42,
+  "local_data_window": "2026-05-04T08:00:00Z/2026-05-04T09:00:00Z",
+  "raw_data_stays_local": true,
+  "feature_summary": {
+    "flow_count": 128044,
+    "selected_features": ["packet_rate", "dst_port_entropy", "tcp_flag_ratio", "failed_auth_count"],
+    "selector": "feature_importance_optimized"
+  },
+  "privacy_update": {
+    "gradient_format": "clipped_vector",
+    "clip_norm": 1.0,
+    "mechanism": "client_level_dp",
+    "epsilon_increment": 0.12
+  },
+  "security_signal": {
+    "local_poisoning_score": 0.08,
+    "suspected_attack_family": "none"
+  }
+}
+```
+
+聚合层需要同时做隐私保护和鲁棒性检查。一个更接近生产的聚合记录应该长这样：
+
+```json
+{
+  "aggregation_job": "iiot_ids_round_42",
+  "participants": 64,
+  "secure_compute": {
+    "mode": "dual_server_or_secure_aggregation",
+    "gradient_visibility": "no_plaintext_gradient_to_single_server",
+    "he_scheme": "additive_homomorphic_encryption"
+  },
+  "robustness": {
+    "similarity_check": "cosine_similarity_on_protected_updates",
+    "filtered_clients": 3,
+    "filter_reason": "gradient_deviation_above_threshold"
+  },
+  "privacy_accounting": {
+    "epsilon_total": 3.9,
+    "monthly_limit": 6.0,
+    "release_allowed": true
+  }
+}
+```
+
+模型发布不应该只给一个 accuracy，还要给安全、解释和隐私维度：
+
+```json
+{
+  "candidate_model": "iiot_intrusion_detector_v42",
+  "evaluation": {
+    "accuracy": 0.982,
+    "f1_score": 0.976,
+    "latency_ms_p95": 18,
+    "poisoning_resilience_test": "passed"
+  },
+  "explainability": {
+    "method": ["SHAP", "LIME"],
+    "top_features_for_alert": ["failed_auth_count", "dst_port_entropy", "packet_rate"]
+  },
+  "deployment_gate": {
+    "privacy_budget_ok": true,
+    "robustness_ok": true,
+    "operator_review_required": true
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- IIoT 里的 FL 不是“隐私训练”单一问题，而是 `privacy + robustness + explainability + latency` 的联合问题
+- 如果要检测 poisoning，系统不能简单依赖明文梯度；否则鲁棒性检查本身会变成隐私泄漏点
+- HE / dual-server / secure aggregation 保护的是更新过程，DP 保护的是个体贡献对模型或统计发布的影响，XAI 保护的是上线后的可解释运营
+- 对工业场景，落地证据应该包括攻击评估、隐私预算、延迟、回滚和人工复核，而不是只给模型指标
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -3174,7 +3258,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-04-30）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-05）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -3354,16 +3438,17 @@ NDSS 2026 的 `SNPeek` 直接把结论讲清楚了：
 - 2025-09-12 的 `VaultGemma` 把 1B 参数开源模型从头用 DP 训练出来，并给出 DP scaling laws，说明隐私预算、数据预算和算力预算必须一起设计
 - 2025-11-12 的 `JAX-Privacy 1.0` 把 DP 训练进一步工具链化，目标是让 JAX / Keras 生态里的 DP-ML 更接近可复现实验和可部署工程
 - 2025 NeurIPS 的 `Sequentially Auditing Differential Privacy` 则提醒：DP 机制不能只靠参数声明，还需要黑盒审计和持续验证
+- 2026-04-29 的 `PrunePrivyTune` 把结构化剪枝、LoRA fine-tuning 和 DP-SGD 放到同一条路线里，说明隐私 LLM 的工程问题也包括模型尺寸、推理延迟和敏感域部署成本
 
 这条线对工程团队的启发是：
 
 - 做 LLM 隐私保护时，先问 `privacy unit` 是 sequence、example、user，还是 account / device
 - 再问预算是用在 pretraining、fine-tuning、inference aggregation，还是发布后的统计洞察
-- 最后问能否被工具链复现、被审计器验证、被产品控制面限制
+- 最后问能否被工具链复现、被审计器验证、被产品控制面限制，并且能否在可接受延迟和成本下部署
 
 换句话说，DP LLM 的成熟路线正在变成：
 
-- `privacy unit definition + DP training/inference mechanism + privacy accounting + auditing + release policy`
+- `privacy unit definition + DP training/inference mechanism + compression or PEFT strategy + privacy accounting + auditing + release policy`
 
 ### 18A.11 Clinical LLM 的 DP 研究开始强调“分层预算 + 实时审计”
 
@@ -3669,6 +3754,168 @@ IBM Research 在 DATE 2026 的 FHEIns 研究把 HE 的落地瓶颈说得更工�
 - 压缩、稀疏化、周期传输是边缘 FL 的现实约束，不是可选优化
 
 这也补足了“联邦学习天然隐私”这个误区：FL 只是降低原始数据集中化，真实系统仍要处理梯度泄露、投毒、漂移、掉线、预算耗尽和部署回滚。
+
+### 18A.28 IIoT / IoT 的最新信号：隐私 FL 必须和投毒防御、可解释性一起设计
+
+2026-04-28 的 AP-PPFL 和 2026-05-04 的 TrustFed-RHIO 都把一个现实问题讲得更明确：联邦学习在 IoT / IIoT 里经常同时面对两类风险。
+
+- 一类是隐私风险：梯度、模型更新和中间统计可能被服务器或攻击者用于推断本地数据
+- 另一类是安全风险：恶意客户端可以上传 manipulated gradients，让全局模型偏移、误报或漏报
+
+这两类风险会互相拉扯。很多 poisoning defense 希望看明文梯度或明文异常信号，但这又可能削弱隐私保护。AP-PPFL 的价值在于把 Paillier 同态加密、dual-server secure computation、参数重要性投票和 cosine-similarity filtering 放到同一个框架里，试图同时保护梯度机密性和过滤恶意更新。
+
+TrustFed-RHIO 则把另一个落地维度补进来：IIoT 攻击检测不只要隐私，还要特征选择、延迟、鲁棒性和可解释性。它把 DP-enhanced FL、特征选择优化，以及 SHAP / LIME 这类解释方法组合起来，用于工业 IoT 攻击检测。
+
+对 primer 来说，这条线的工程启发很直接：
+
+- `FL` 不是完整安全边界，只是“不集中原始数据”的训练拓扑
+- `DP` 保护贡献影响，但不自动抵御恶意客户端
+- `HE / secure aggregation / dual-server` 可以保护更新计算过程，但要明确不串谋假设和计算成本
+- `robust aggregation / poisoning filter` 要避免为了检测攻击而重新暴露明文梯度
+- `XAI` 在工业场景不是装饰，而是帮助安全运营人员判断模型告警能否执行
+
+所以 IIoT privacy tech 的成熟表述应该从：
+
+- `用 FL 保护数据`
+
+升级为：
+
+- `用 protected update + robust filtering + DP accounting + explainability + deployment gate 共同保护训练和上线`
+
+### 18A.29 DAP / VDAF：MPC 正在变成可标准化的 telemetry 基础设施
+
+IETF Privacy Preserving Measurement 工作组的 Distributed Aggregation Protocol（DAP）是 2026 年值得放进 primer 的一个信号：MPC 不再只是在论文里做“两方安全求和”，而是开始被写成浏览器、App、SDK 和独立聚合服务都能实现的互联网协议。
+
+DAP 的核心数据流很适合初学者理解：
+
+1. 客户端本地生成一个 measurement，例如“某功能是否被使用”或“一次延迟值”。
+2. 客户端不把 measurement 明文发给单一服务器，而是把它切成两份 input shares。
+3. 两个 non-colluding aggregators 分别拿到一份 share。
+4. aggregators 通过 VDAF 协议验证和聚合 share。
+5. collector 只拿到聚合结果，而不是单个用户的原始 measurement。
+
+Mock data 可以长这样：
+
+```json
+{
+  "client_measurement": {
+    "client_id": "device_local_only",
+    "metric": "ai_summary_used",
+    "value": 1,
+    "time_bucket": "2026-05-06T10:00:00Z/1h"
+  },
+  "dap_upload": {
+    "task_id": "feature-usage-v1",
+    "report_id": "rpt_7f3a",
+    "leader_input_share": "base64url:share_a...",
+    "helper_input_share": "base64url:share_b...",
+    "public_extensions": {
+      "time_bucket": "2026-05-06T10:00:00Z/1h"
+    }
+  },
+  "collector_output": {
+    "task_id": "feature-usage-v1",
+    "time_bucket": "2026-05-06T10:00:00Z/1h",
+    "aggregate": {
+      "sum_ai_summary_used": 184231,
+      "contributing_reports": 1290044
+    }
+  }
+}
+```
+
+这条线的工程启发是：
+
+- `secure aggregation` 可以作为标准协议和托管服务出现，而不只是某个 FL 系统里的内部组件
+- privacy boundary 来自 `客户端分片 + 两个聚合方不串谋 + VDAF 验证 + 只发布聚合结果`
+- 它适合 telemetry、浏览器测量、产品使用指标、错误率统计这类“只需要总体统计”的场景
+- 它不适合需要按用户回查、低阈值 drill-down、复杂 join 后明细分析的场景
+
+### 18A.30 DP 工具链的新重点：实现 bug 本身就是隐私风险
+
+PEPR 2026 的 “Privacy in Theory, Bugs in Practice” 把一个很实际的问题讲清楚：DP 的数学定义强，不代表工程实现天然正确。DP 库、DP SQL engine、budget accountant、clipping、noise sampler、partition selection、thresholding、seed management 任一环节出错，都可能让理论保证失效。
+
+这对 primer 很重要，因为很多团队会把 DP 理解成：
+
+- 找一个库
+- 配 epsilon
+- 跑查询
+- 输出结果
+
+更成熟的工程流程应该是：
+
+- 明确保护单位、邻接关系、贡献上界和组合规则
+- 对 DP mechanism 做单元测试和统计测试
+- 对边界参数做 fuzz / property testing
+- 对 SQL rewrite、group-by、join、filter、空分区和小分区做灰盒测试
+- 把 privacy budget consumption 写进审计日志
+- 对发布结果做回归测试，防止后续优化绕过 noise / threshold
+
+Mock data 可以把 DP audit log 设计成这样：
+
+```json
+{
+  "query_id": "q_campaign_reach_2026_05_06",
+  "privacy_unit": "user_id",
+  "mechanism": "dp_count",
+  "epsilon_spent": 0.35,
+  "delta_spent": 1e-8,
+  "contribution_bounds": {
+    "max_rows_per_user": 3,
+    "max_groups_per_user": 2
+  },
+  "release_policy": {
+    "min_noisy_count": 100,
+    "blocked_dimensions": ["zip_code", "raw_device_id"]
+  },
+  "tests": {
+    "noise_sampler_statistical_test": "pass",
+    "partition_selection_edge_cases": "pass",
+    "sql_rewrite_regression": "pass"
+  }
+}
+```
+
+一个很实用的判断是：如果一个 DP 系统不能解释“每次发布消耗了多少预算、保护哪个单位、哪些测试证明实现没有被绕过”，它还只是研究 demo，不是生产隐私基础设施。
+
+### 18A.31 LLM 私有微调的主线：威胁模型、审计和工具链比口号更重要
+
+PEPR 2026 的 “Private Tuning of LLMs in Practice” 延续了 VaultGemma / JAX Privacy 这条线：企业把 proprietary data 用于 LLM fine-tuning 时，隐私风险不是抽象的“模型可能泄露”，而是要明确成可测试的 threat model。
+
+一个可落地的 LLM DP fine-tuning 数据流可以是：
+
+```json
+{
+  "training_job": {
+    "base_model": "gemma-family-model",
+    "fine_tuning_dataset": "customer_support_redacted_v3",
+    "privacy_unit": "customer_account_id",
+    "dp_method": "DP-SGD",
+    "clipping_norm": 1.0,
+    "target_epsilon": 8.0,
+    "delta": 1e-7
+  },
+  "risk_checks": {
+    "memorization_probe": "before_and_after_comparison",
+    "canary_extraction_test": "pass",
+    "membership_inference_eval": "pass",
+    "utility_eval": {
+      "support_resolution_score_delta": -0.018
+    }
+  },
+  "release_gate": {
+    "privacy_accountant_attached": true,
+    "model_card_includes_dp_limits": true,
+    "deployment_approved": true
+  }
+}
+```
+
+对初学者最重要的不是记住某个库名，而是记住 LLM privacy 的落地顺序：
+
+1. 先定义要防谁、保护哪个训练集、攻击者能看到什么。
+2. 再决定是否用 DP fine-tuning、TEE inference、RAG redaction、synthetic data 或组合方案。
+3. 最后用 extraction / memorization / utility evaluation 证明方案没有只停留在架构图上。
 
 ## 18B. 已落地场景与可引用案例
 
@@ -4194,6 +4441,116 @@ Snowflake 在 2026-04-30 的更新中把 Data Clean Rooms UI in Snowsight 标为
 
 这条案例补充了一个落地判断：privacy tech 越产品化，越要把人机交互层纳入威胁模型。
 
+### 18B.32 Divvi Up / Firefox：DAP 已经用于生产级隐私 telemetry
+
+Divvi Up 是 ISRG 的 privacy-preserving metrics 服务，基于 DAP / VDAF，并由 Janus 实现 leader / helper 等角色。Divvi Up 官方材料和 PEPR 2026 program 都把 Firefox 作为真实部署信号：这不是“把 MPC 跑在小样本 benchmark 上”，而是把隐私聚合接进大规模软件 telemetry。
+
+一个 Firefox / App telemetry 的简化数据流可以是：
+
+```json
+{
+  "client_event": {
+    "metric": "crash_recovery_succeeded",
+    "value": 1,
+    "local_context": {
+      "app_version": "128.0",
+      "platform": "windows"
+    }
+  },
+  "privacy_transform": {
+    "protocol": "DAP",
+    "vdaf": "Prio3",
+    "shares": ["sent_to_leader", "sent_to_helper"]
+  },
+  "operator_roles": {
+    "leader": "Divvi Up / Janus",
+    "helper": "independent_aggregator",
+    "collector": "product_metrics_team"
+  },
+  "published_metric": {
+    "platform": "windows",
+    "app_version": "128.0",
+    "sum_crash_recovery_succeeded": 504932,
+    "report_count": 877104
+  }
+}
+```
+
+这个案例给 primer 的落地判断是：
+
+- 当业务目标只是 population-level metric，不要默认收集用户级明细再做脱敏
+- DAP 把“不要让任何单方看到用户 measurement 明文”做成可复用协议
+- 生产系统仍然要处理 task configuration、batching、重放保护、聚合阈值、运营监控和独立聚合方治理
+- 如果 collector 后续发布过细分桶，仍可能需要 DP、阈值或发布审查
+
+### 18B.33 Attribution API + DAP：广告测量正在把 DP aggregation 写进协议层
+
+2026-02 的 IETF draft “DAP Extensions for the Attribution API” 说明了另一个落地趋势：浏览器广告测量不只是“在 clean room 里 join 两张表”，也可能把 attribution reporting、DP aggregation 和 DAP 这类隐私测量协议结合起来。
+
+可以把它理解成下面的数据流：
+
+```json
+{
+  "source_event": {
+    "source_site": "publisher.example",
+    "campaign_id": "cmp_42",
+    "coarse_time": "2026-05-06"
+  },
+  "trigger_event": {
+    "advertiser_site": "shop.example",
+    "conversion_value_bucket": "purchase_50_100"
+  },
+  "browser_report": {
+    "api": "Attribution Reporting API",
+    "aggregation": "DAP extension",
+    "dp_mode": "aggregate_report_with_noise"
+  },
+  "advertiser_output": {
+    "campaign_id": "cmp_42",
+    "noisy_conversion_count": 12034,
+    "noisy_value_sum_bucketed": 812000
+  }
+}
+```
+
+这条线对 ad tech 很关键：浏览器侧 PET、clean room、PSI / PJC、server-side attribution 不是互斥路线。它们分别适合不同控制点：
+
+- 浏览器侧协议适合减少跨站用户级跟踪
+- clean room 适合已有一方数据的多方协作分析
+- PSI / PJC 适合私密匹配和交集求和
+- DP 适合最终聚合结果发布
+
+### 18B.34 DP SQL / DP library testing：隐私系统需要把测试结果也产品化
+
+Oblivious 在 PEPR 2026 的 DP library grey-box testing 分享里提到，用新测试框架在 11 个开源 DP 库中发现 13 个 bug。这个案例虽然是研究/工程分享，但非常适合作为“落地场景”引用：DP 一旦进入 SQL engine 或 BI 平台，就必须像数据库一样有测试、兼容性、回归和发布纪律。
+
+落地系统可以把 DP 测试结果作为 release artifact：
+
+```json
+{
+  "dp_engine_release": "dp-sql-2026.05",
+  "supported_mechanisms": ["dp_count", "dp_sum", "dp_histogram"],
+  "test_report": {
+    "mechanism_property_tests": 1840,
+    "sql_rewrite_regressions": 612,
+    "known_edge_cases": [
+      "empty_group",
+      "single_user_dominates_group",
+      "join_expands_contribution",
+      "floating_point_noise_sampler"
+    ],
+    "blocking_failures": 0
+  },
+  "release_gate": {
+    "privacy_review": "approved",
+    "security_review": "approved",
+    "budget_accounting_compatibility": "approved"
+  }
+}
+```
+
+这提醒初学者：隐私技术落地不只是选算法，还包括让算法在升级、迁移、SQL 优化、配置变更和产品操作中持续正确。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -4311,6 +4668,8 @@ Snowflake 在 2026-04-30 的更新中把 Data Clean Rooms UI in Snowsight 标为
 35. USENIX PEPR 2026, A DP Framework for Gaining Insights into AI Chatbot Use
 36. Scientific Reports, FedDriftGuard adaptive federated learning with differential privacy
 37. IBM Research, FHEIns: Fully Homomorphic Encryption Acceleration for Large Data Applications
+38. Scientific Reports, TrustFed-RHIO: optimization-driven DP federated learning for IIoT attack detection
+39. Cybersecurity, AP-PPFL: anti-poisoning privacy-preserving federated learning
 
 ## 20. 参考链接
 
@@ -4402,5 +4761,17 @@ Snowflake 在 2026-04-30 的更新中把 Data Clean Rooms UI in Snowsight 标为
 - USENIX PEPR 2026, A DP Framework for Gaining Insights into AI Chatbot Use: https://www.usenix.org/conference/pepr26/presentation/pravilov-chatbot
 - Scientific Reports, FedDriftGuard adaptive federated learning with differential privacy for concept drift in edge environments: https://www.nature.com/articles/s41598-026-51535-6
 - IBM Research, FHEIns: Fully Homomorphic Encryption Acceleration for Large Data Applications: https://research.ibm.com/publications/fheins-fully-homomorphic-encryption-acceleration-for-large-data-applications-with-in-storage-processing
+- Scientific Reports, TrustFed-RHIO: an optimization-driven differential privacy federated learning framework for secure and explainable IIoT attack detection: https://www.nature.com/articles/s41598-026-45277-8
+- Cybersecurity, AP-PPFL: an anti-poisoning privacy-preserving federated learning method: https://link.springer.com/article/10.1186/s42400-026-00583-6
 - NIST, De-Identification of Personal Information: https://www.nist.gov/publications/de-identification-personal-information
 - NIST, Guidelines for Evaluating Differential Privacy Guarantees: https://www.nist.gov/publications/guidelines-evaluating-differential-privacy-guarantees
+- IETF PPM Working Group, Distributed Aggregation Protocol latest draft: https://ietf-wg-ppm.github.io/draft-ietf-ppm-dap/draft-ietf-ppm-dap.html
+- IETF, Distributed Aggregation Protocol for Privacy Preserving Measurement draft-16: https://www.ietf.org/archive/id/draft-ietf-ppm-dap-16.html
+- IETF, Distributed Aggregation Protocol Extensions for the Attribution API draft: https://www.ietf.org/ietf-ftp/internet-drafts/draft-thomson-ppm-dap-attribution-01.html
+- Divvi Up, Writing DAP standards: https://divviup.org/blog/writing-dap-standards/
+- Divvi Up, Firefox privacy-preserving metrics deployment: https://divviup.org/blog/divvi-up-in-firefox/
+- Divvi Up, About Divvi Up: https://divviup.org/about/
+- USENIX PEPR 2026, Conference Program: https://www.usenix.org/conference/pepr26/program
+- USENIX PEPR 2026, Production Multi-Party Computation via the Distributed Aggregation Protocol: https://www.usenix.org/conference/pepr26/presentation/geoghegan
+- USENIX PEPR 2026, Privacy in Theory, Bugs in Practice: Grey-Box Testing for Differential Privacy Libraries: https://www.usenix.org/conference/pepr26/presentation/simmons-marengo
+- USENIX PEPR 2026, Private Tuning of LLMs in Practice: From VaultGemma to Custom Fine-Tuning: https://www.usenix.org/conference/pepr26/presentation/pravilov-llms
