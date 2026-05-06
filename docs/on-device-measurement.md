@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-03<br>
+最后更新: 2026-05-04<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -224,6 +224,66 @@ MMP SDK Ask
   - 端上生成并透传给 MMP/AAP 的 opaque envelope
   - 是 bridge object
   - 不能被二次用途化为 durable identifier
+
+### 6.3 一个可上线的最小 RFC 蓝图
+
+如果 reviewer 只想先抓住“这套协议里到底有哪些对象、谁持有它们、它们如何串起来”，可以先记下面这 7 个对象：
+
+- `AdRequestContext`
+  - 由 ad network backend 在广告请求时生成
+  - 核心字段建议至少包含 `server_request_id:int64`、`advertiser_id:int64`、`campaign_id:int64`、`ad_group_id:int64`、`creative_id:int64`、`touch_ts_ms:int64`
+  - 作用是把一次广告请求固定成后续 optimization 的 request-scoped anchor
+- `TouchpointRecord`
+  - 由 ad network server 持久化
+  - 核心字段建议至少包含 `server_request_id:int64`、`mmp_touch_token:string`、`touch_time_bucket:int32`、`feature_ptr:string`
+  - 作用是把对外可见 token 和对内 `req_id`/request context 分开
+- `LocalMeasurementObservation`
+  - 只存在于 advertiser app 内的 AdNetwork SDK process
+  - 可包含 `boot_time_ms:int64`、`raw_ip:string`、`network_type:string`、`install_ts_ms:int64`、`local_sequence_no:int32`
+  - 它是原料，不是对外协议对象
+- `MmpAskRequest`
+  - 由 MMP SDK 触发，但不携带 raw device material
+  - 建议最小字段为 `mmp_event_id:string`、`measurement_task_id:string`、`event_type:enum`、`ask_idempotency_key:string`
+  - 若走兼容路径，可额外带 `odm_info:string`
+- `ClaimResponse`
+  - 由 AdNetwork SDK / confidential service 返回
+  - 建议最小字段为 `mmp_touch_token:string`、`claim_token:bytes`、`campaign_id:int64`、`ad_group_id:int64`、`creative_id:int64`
+  - 不得携带 `req_id`、`device_fp_hash`、OPRF 输入输出、row key
+- `MmpConfirmRequest`
+  - 由 MMP 对 winner network 回传
+  - 建议最小字段为 `mmp_touch_token:string`、`claim_token:bytes`、`final_decision:enum`、`confirm_idempotency_key:string`
+  - 作用是把 “candidate claim” 变成 “可物化 label 的最终归因结论”
+- `RequestScopedOptimizationLabel` 与 `AggregateMeasurementContribution`
+  - 两者都由 AdNetwork server 在 Confirm 后物化
+  - 前者面向 request-level 训练与在线优化，后者面向 bounded aggregate release
+  - 两者必须是两个对象，不能让 optimization 和 aggregate 共用同一份原始事件明细
+
+把这 7 个对象串起来，最小可上线链路就是：
+
+```text
+一次 ad request
+  -> 生成一个 server_request_id:int64
+  -> 写入一个 TouchpointRecord
+一次 install / first_open
+  -> 生成一个 mmp_event_id:string
+  -> 对多家 network 发 Ask
+每家 network
+  -> 本地完成 OPRF/PSM 子流程
+  -> 返回一个 ClaimResponse
+MMP 选 winner
+  -> 只对 winner 发 Confirm
+winner network
+  -> 用 mmp_touch_token / claim_token 找回 server_request_id
+  -> 物化 OptimizationLabel 与 AggregateContribution
+```
+
+理解这个蓝图时要刻意区分三种“像 ID 但不是一回事”的字段：
+
+- `server_request_id:int64` 是 ad request 级别的内部优化锚点
+- `mmp_event_id:string` 是 MMP 视角的一次 install / event 闭环对象
+- `odm_info:string` 是兼容路径里的 opaque bridge object
+
+这三者如果被实现混成一个“万能 token”，整个 RFC 的隐私边界和调试边界都会一起失效。
 
 ## 7. 端到端数据流
 
@@ -2251,8 +2311,12 @@ iOS optional SDK 的推荐实现：
 ### 16.2 confidential processing
 
 - 优先评估 [google-parfait/confidential-federated-compute](https://github.com/google-parfait/confidential-federated-compute) 作为 workflow 编排和 confidential processing 基座。
+- OPRF / VOPRF 层应对齐 [RFC 9497](https://www.rfc-editor.org/rfc/rfc9497) 的术语和 mode/ciphersuite 建模，至少把 `mode`、`suite_id`、`key_epoch_id`、`public_key_id` 写进配置和审计记录。
+- 如果服务端主实现是 Go，优先评估 [cloudflare/circl](https://github.com/cloudflare/circl) 这类现成密码学库或同等级 audited 实现；不要自己手写 EC blind/unblind、DLEQ proof 或 group serialization。
+- 如果客户端或工具链需要 TypeScript 参考实现，可参考 [cloudflare/voprf-ts](https://github.com/cloudflare/voprf-ts) 做测试向量和互操作验证，但不要把未经性能和内存审计的脚本实现直接放进热路径。
 - ingress 处立刻做 TTL 和 replay gate。
 - 不要做一个“万能 confidential service”；按 workflow 分类部署。
+- OPRF key rotation 不应只靠人工换密钥；建议显式建模 `key_epoch_id`，并把它与 `measurement_task_id`、`query_template_id`、`prefix_length`、`candidate_store_version` 绑定。
 
 ### 16.3 optimization training
 
@@ -2264,6 +2328,7 @@ iOS optional SDK 的推荐实现：
 ### 16.4 aggregate reporting
 
 - 先完成 bounded release pipeline，再补 DP。
+- 具体聚合原语尽量对齐当前 [VDAF draft-19](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/) 里的成熟 primitive：计数优先 `Prio3Count`，数值优先 `Prio3Sum`，分桶优先 `Prio3Histogram`；不要自造一套名字像 VDAF、语义却不可验证的半协议。
 - privacy budget ledger 要单独版本化和审计。
 
 ### 16.5 审计
@@ -3244,7 +3309,7 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
 
-[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 在 2026 年持续迭代 Working Draft。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
+[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 当前已发布的 Working Draft 日期是 `2026-04-28`。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
 
 - on-device attribution 与 off-device aggregation 可以明确分层；
 - aggregate service `MUST` 处理 anti-replay，而不是只做求和；
@@ -3332,9 +3397,10 @@ Config 下发上下文
 3. [VDAF](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/)
 4. [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/)
 5. [W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/)
-6. [GDPR Article 4 Definitions](https://gdpr-info.eu/art-4-gdpr/)
-7. [EDPB Guidelines 01/2025 on Pseudonymisation](https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf)
-8. [California Consumer Privacy Act statute](https://cppa.ca.gov/regulations/pdf/ccpa_statute.pdf)
+6. [RFC 9497: Oblivious Pseudorandom Functions (OPRFs) Using Prime-Order Groups](https://www.rfc-editor.org/rfc/rfc9497)
+7. [GDPR Article 4 Definitions](https://gdpr-info.eu/art-4-gdpr/)
+8. [EDPB Guidelines 01/2025 on Pseudonymisation](https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf)
+9. [California Consumer Privacy Act statute](https://cppa.ca.gov/regulations/pdf/ccpa_statute.pdf)
 
 ### 21.3 Product / Integration
 
@@ -3362,3 +3428,5 @@ Config 下发上下文
 8. [Private Join and Compute](https://github.com/google/private-join-and-compute)
 9. [sigstore/cosign](https://github.com/sigstore/cosign)
 10. [sigstore/rekor](https://github.com/sigstore/rekor)
+11. [cloudflare/circl](https://github.com/cloudflare/circl)
+12. [cloudflare/voprf-ts](https://github.com/cloudflare/voprf-ts)
