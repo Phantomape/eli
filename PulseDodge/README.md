@@ -8,13 +8,22 @@ Pulse Dodge is a tiny native iOS game built with SwiftUI and SpriteKit. Drag the
 2. Select the `PulseDodge` target.
 3. Set `Signing & Capabilities > Team` to your Apple Developer team.
 4. Change the bundle identifier from `com.example.pulsedodge` to your own reverse-DNS identifier.
-5. Choose an iPhone simulator or device and press Run.
+5. Set MMP credentials in the target build settings:
+   - `APPSFLYER_DEV_KEY`
+   - `APPSFLYER_APP_ID` - Apple app id numbers only, without the `id` prefix
+   - `ADJUST_APP_TOKEN`
+   - `ADJUST_ENVIRONMENT` - `sandbox` or `production`
+6. Choose an iPhone simulator or device and press Run.
 
 ## App Store quick notes
 
-- The app is offline-only and does not include ads, analytics, networking, login, Game Center, or third-party SDKs.
-- `PrivacyInfo.xcprivacy` declares local `UserDefaults` usage for the high score.
-- App Store Connect privacy can be answered as no collected data unless you add networking, analytics, ads, accounts, or other data collection later.
+- AppsFlyer is integrated through Swift Package Manager using the static `AppsFlyerLib` package.
+- Adjust is integrated through Swift Package Manager using the `AdjustSdk` package.
+- AppsFlyer does not start until `APPSFLYER_DEV_KEY` and `APPSFLYER_APP_ID` are set.
+- Adjust does not start until `ADJUST_APP_TOKEN` is set.
+- ATT is enabled. The app asks once on first active launch; AppsFlyer and Adjust each wait up to 60 seconds for the user's ATT choice before sending attribution.
+- `PrivacyInfo.xcprivacy` declares the app's local `UserDefaults` usage for the high score. AppsFlyer 6.14+ includes its own SDK privacy manifest.
+- App Store Connect privacy must include AppsFlyer and Adjust SDK data collection once you enable the SDKs with real credentials.
 - `ITSAppUsesNonExemptEncryption` is set to `false` in `Info.plist`.
 - App icons are generated placeholders. Replace them before submitting if you want a more distinctive store presence.
 - For uploads after April 28, 2026, Apple says iOS/iPadOS apps need to be built with the iOS & iPadOS 26 SDK or later.

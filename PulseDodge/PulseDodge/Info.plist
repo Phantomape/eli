@@ -6,6 +6,16 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Pulse Dodge</string>
+	<key>AppsFlyerAppleAppID</key>
+	<string>$(APPSFLYER_APP_ID)</string>
+	<key>AppsFlyerDevKey</key>
+	<string>$(APPSFLYER_DEV_KEY)</string>
+	<key>AdjustAppToken</key>
+	<string>$(ADJUST_APP_TOKEN)</string>
+	<key>AdjustEnvironment</key>
+	<string>$(ADJUST_ENVIRONMENT)</string>
+	<key>NSUserTrackingUsageDescription</key>
+	<string>This lets us measure which ads bring players to the game and improve our marketing.</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

@@ -13,6 +13,9 @@
 		5D2F6B6C2D5E4A5500010004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010015 /* Assets.xcassets */; };
 		5D2F6B6C2D5E4A5500010005 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010017 /* LaunchScreen.storyboard */; };
 		5D2F6B6C2D5E4A5500010006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010016 /* PrivacyInfo.xcprivacy */; };
+		5D2F6B6C2D5E4A5500010007 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010019 /* AppDelegate.swift */; };
+		5D2F6B6C2D5E4A5500010008 /* AppsFlyerLib in Frameworks */ = {isa = PBXBuildFile; productRef = 5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib */; };
+		5D2F6B6C2D5E4A5500010009 /* AdjustSdk in Frameworks */ = {isa = PBXBuildFile; productRef = 5D2F6B6C2D5E4A5500010084 /* AdjustSdk */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +27,7 @@
 		5D2F6B6C2D5E4A5500010016 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		5D2F6B6C2D5E4A5500010017 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		5D2F6B6C2D5E4A5500010018 /* PulseDodge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PulseDodge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5D2F6B6C2D5E4A5500010019 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -31,6 +35,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5D2F6B6C2D5E4A5500010008 /* AppsFlyerLib in Frameworks */,
+				5D2F6B6C2D5E4A5500010009 /* AdjustSdk in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -49,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				5D2F6B6C2D5E4A5500010011 /* PulseDodgeApp.swift */,
+				5D2F6B6C2D5E4A5500010019 /* AppDelegate.swift */,
 				5D2F6B6C2D5E4A5500010012 /* ContentView.swift */,
 				5D2F6B6C2D5E4A5500010013 /* GameScene.swift */,
 				5D2F6B6C2D5E4A5500010014 /* Info.plist */,
@@ -83,6 +90,10 @@
 			dependencies = (
 			);
 			name = PulseDodge;
+			packageProductDependencies = (
+				5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib */,
+				5D2F6B6C2D5E4A5500010084 /* AdjustSdk */,
+			);
 			productName = PulseDodge;
 			productReference = 5D2F6B6C2D5E4A5500010018 /* PulseDodge.app */;
 			productType = "com.apple.product-type.application";
@@ -111,6 +122,10 @@
 				Base,
 			);
 			mainGroup = 5D2F6B6C2D5E4A5500010031;
+			packageReferences = (
+				5D2F6B6C2D5E4A5500010081 /* XCRemoteSwiftPackageReference "AppsFlyerFramework-Static" */,
+				5D2F6B6C2D5E4A5500010083 /* XCRemoteSwiftPackageReference "ios_sdk" */,
+			);
 			productRefGroup = 5D2F6B6C2D5E4A5500010033 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -139,6 +154,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5D2F6B6C2D5E4A5500010001 /* PulseDodgeApp.swift in Sources */,
+				5D2F6B6C2D5E4A5500010007 /* AppDelegate.swift in Sources */,
 				5D2F6B6C2D5E4A5500010002 /* ContentView.swift in Sources */,
 				5D2F6B6C2D5E4A5500010003 /* GameScene.swift in Sources */,
 			);
@@ -267,6 +283,10 @@
 		5D2F6B6C2D5E4A5500010072 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ADJUST_APP_TOKEN = "";
+				ADJUST_ENVIRONMENT = sandbox;
+				APPSFLYER_APP_ID = "";
+				APPSFLYER_DEV_KEY = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -292,6 +312,10 @@
 		5D2F6B6C2D5E4A5500010073 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ADJUST_APP_TOKEN = "";
+				ADJUST_ENVIRONMENT = production;
+				APPSFLYER_APP_ID = "";
+				APPSFLYER_DEV_KEY = "";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -336,6 +360,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5D2F6B6C2D5E4A5500010081 /* XCRemoteSwiftPackageReference "AppsFlyerFramework-Static" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/AppsFlyerSDK/AppsFlyerFramework-Static";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.17.9;
+			};
+		};
+		5D2F6B6C2D5E4A5500010083 /* XCRemoteSwiftPackageReference "ios_sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/adjust/ios_sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.6.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5D2F6B6C2D5E4A5500010081 /* XCRemoteSwiftPackageReference "AppsFlyerFramework-Static" */;
+			productName = AppsFlyerLib;
+		};
+		5D2F6B6C2D5E4A5500010084 /* AdjustSdk */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5D2F6B6C2D5E4A5500010083 /* XCRemoteSwiftPackageReference "ios_sdk" */;
+			productName = AdjustSdk;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5D2F6B6C2D5E4A5500010051 /* Project object */;
 }
