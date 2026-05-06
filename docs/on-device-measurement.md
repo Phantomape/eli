@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-04<br>
+最后更新: 2026-05-05<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -39,9 +39,9 @@
 
 这份文档比较长，不同读者可以按不同路径读：
 
-- 如果你只想理解方案，先读 `1-4`、`7`、`9.4-9.6`、`17C`。
+- 如果你只想理解方案，先读 `1-4`、`7`、`9.4-9.6`、`17C-17D`。
 - 如果你要评审架构，重点读 `6-8`、`10-14`、`17B`。
-- 如果你关心 legal / privacy risk，重点读 `10`、`11`、`17C`、`19`。
+- 如果你关心 legal / privacy risk，重点读 `10`、`11`、`17C-17D`、`19`。
 - 如果你要实现或调 SDK，重点读 `7.4B`、`7.4C`、`8`、`9`、`17A`、`17B`。
 
 第一次阅读时可以先跳过大段 schema。schema 的作用是把边界写死，不是让人从字段定义开始理解系统。
@@ -1017,6 +1017,9 @@ message AttributionDecisionRecord {
   int32 eligible_impression_count = 15;
   string srn_partner_id = 16;
   string claim_path = 17; // ODM_EVENT_DATA, FIRST_PARTY_DATA, DEVICE_ID, PROBABILISTIC
+  int32 total_candidate_count = 18;
+  string winner_engagement_type = 19; // CLICK, IMPRESSION, ENGAGED_CLICK, ENGAGED_VIEW
+  string raw_candidate_metric_source = 20; // MMP_TOTAL_CANDIDATES, NETWORK_INTERNAL, MIXED
 }
 ```
 
@@ -1608,7 +1611,10 @@ def handle_confirm(req):
   "eligible_click_count": 1,
   "eligible_impression_count": 1,
   "srn_partner_id": "appsflyer",
-  "claim_path": "ODM_EVENT_DATA"
+  "claim_path": "ODM_EVENT_DATA",
+  "total_candidate_count": 11,
+  "winner_engagement_type": "ENGAGED_CLICK",
+  "raw_candidate_metric_source": "MIXED"
 }
 ```
 
@@ -2054,6 +2060,29 @@ Phase 1 推荐：
 - `X-Forwarded-For`
 - 完整 `User-Agent`
 - partner 返回的原始 `ad_event_id`
+
+### 12.4A 2026 产品现实要求保留“候选量”和“engagement 类型”上下文
+
+2026-03-19 的 AppsFlyer Enhanced attribution 文档已经把一个非常实用的信号公开化了：`total candidates for attribution`。它表示“在 enhanced attribution 和 fraud filtering 生效前，本来会进入竞争的 engagement 数量”。这和只看最终 winner 不是一回事。
+
+这意味着 production RFC 不应只保留 `is_attributed=true/false` 或单一 `winner_reason`，而应至少保留：
+
+- `total_candidate_count`
+- `prefilter_candidate_count`
+- `eligible_candidate_count`
+- `eligible_click_count`
+- `eligible_impression_count`
+- `winner_engagement_type`
+- `flooding_suspected`
+
+否则，优化面会丢失两个关键解释变量：
+
+1. 这次请求为什么赢了；
+2. 这次请求所处的竞争环境到底有多“脏”。
+
+同样地，2026-04-19 的 AppsFlyer attribution model 已明确区分 `click-through`、`view-through`、`engaged click`、`engaged view` 等 engagement 形态。对 bidder / pacing / creative ranking 来说，`winner_engagement_type` 往往和后续价值质量直接相关；如果把它压扁成统一的 `click`，训练会把不同意图强度的流量混为一谈。
+
+因此，推荐把 `AttributionDecisionRecord` 视为 optimization plane 的必要输入之一，而不是只把它当作 debug log。
 
 ### 12.5 推荐把训练样本拆成“标签行”和“特征释放行”
 
@@ -2967,11 +2996,178 @@ average decoded row: ~122B
 
 端侧 AEAD 成本可控；系统调优重点应放在 bucket sizing、cache、TLS/session reuse、retry budget 和后台调度。
 
-## 17C. MMP Claim / Confirm 数据披露选项与 Legal Review
+## 17C. Bucket Return 方案分歧
+
+`bucket return` 是 OPRF/PSM-with-payload 设计里最容易产生分歧的点。它讨论的不是 MMP 最后能看到什么，而是 AdNetwork Server 在 `/psm` 或等价接口里到底返回什么给 AdNetwork SDK。
+
+换句话说，`17D` 讨论的是 `SDK -> MMP -> MMP Server -> AdNetwork Server` 的披露边界；本节讨论的是 `AdNetwork Server -> AdNetwork SDK` 的 bucket 返回边界。两者必须分开，否则容易把“不给 MMP 看 bucket tail/tag”误解成“server 也不能向 SDK 返回候选 bucket”。
+
+### 17C.1 术语
+
+- `prefix_bucket`: SDK 从本地 matching material 派生出的桶前缀，例如 HAR 中观察到的约 22-bit prefix。它不应被当成稳定用户 ID。
+- `bucket candidate rows`: server 针对该 prefix 返回的一组候选行。每行通常是加密的 associated payload，而不是明文触点。
+- `quick_tag` / `tail_tag`: 用于端侧快速过滤的短 tag。它只能留在 SDK crypto boundary 内，不应进入 MMP payload。
+- `associated payload`: 命中后可恢复的 touch-scoped payload，例如 `mmp_touch_token`、`campaign_id`、`creative_id`、`touch_time_bucket`、`claim_policy_id`。
+- `validate`: 可选的后续接口，用于把端侧 local filtering 的结果转成可发布的 measurement value、`odm_info` 或 claim receipt。
+
+### 17C.2 选项总览
+
+| 方案 | Server bucket return | Client 工作 | Server 是否知道精确命中 | 带宽 | request-level optimization | 推荐 |
+|---|---|---|---:|---:|---:|---|
+| BR-0: raw exact lookup | 不返回 bucket；server 直接用 raw / hash 查 | 很少 | 是 | 低 | 强 | Reject |
+| BR-1: full candidate rows return | 返回 prefix bucket 下的加密 candidate rows | 本地 unblind、filter、decrypt | 默认不知道 | 中高 | 强 | 推荐默认 |
+| BR-2: compact handles + validate | 返回 row handles / compact encrypted hints，payload 在 validate 后释放 | 本地过滤后请求 validate | 取决于 validate 设计 | 中 | 强 | 强化版 |
+| BR-3: opaque claim only | 不返回 candidate rows，只返回 claim receipt | SDK 只转发 receipt | 取决于 server/TEE | 低 | 中强 | privacy-max 可选 |
+| BR-4: metadata-only | 只返回 bucket policy / epoch / coarse count | SDK 不恢复 touch payload | 否或弱 | 低 | 弱 | fallback |
+| BR-5: aggregation-only | 不做 request-level claim | 只产出 aggregate contribution | 否 | 低 | 弱或无 | fallback |
+
+这里的关键判断是：`bucket return` 不只是性能细节，它决定了谁拥有精确匹配解释权。
+
+- BR-1 把精确匹配放在 SDK 本地，所以 server 不需要知道 SDK 到底命中了 bucket 里的哪一行。
+- BR-2 把 payload 释放推迟到 validate 阶段，适合更强治理，但 validate 必须做 padding、rate limit、anti-replay 和 purpose binding。
+- BR-3 表面最省带宽，但如果没有 TEE / verifiable workflow / blinded validation，它很容易退化成 server-side exact matching。
+- BR-4 / BR-5 隐私面更保守，但会明显削弱 MMP SRN reconciliation、creative-level reporting 和 request-level optimization。
+
+### 17C.3 推荐默认：BR-1 candidate rows return
+
+当前 RFC 的默认实现应写成 BR-1：
+
+```text
+SDK computes prefix_bucket + blinded OPRF query
+  -> Server returns OPRF/VOPRF evaluation context
+  -> Server returns encrypted candidate rows for prefix_bucket
+  -> SDK locally unblinds / derives row key / filters quick_tag
+  -> SDK decrypts matched associated payload
+  -> SDK creates claim_token or validate material
+```
+
+推荐它作为默认，不是因为它最省资源，而是因为它同时满足四个生产目标：
+
+1. 与 2026-04-14 HAR 观察到的 Google-compatible 形态一致；
+2. 精确命中判断留在 SDK 本地；
+3. associated payload 可以承载 `mmp_touch_token` 和 creative metadata；
+4. Confirm 后仍能通过 `mmp_touch_token -> req_id` 物化 request-level optimization label。
+
+BR-1 的最低返回对象可以建模为：
+
+```json
+{
+  "schema_version": "bucket_return.v1",
+  "measurement_task_id": "icm_install_v3",
+  "bucket_epoch_id": "2026-05-06:ios:us:v3",
+  "prefix_length": 22,
+  "prefix_bucket_b64": "A7fQ",
+  "oprf_suite_id": "ristretto255-sha512-rfc9497",
+  "oprf_key_epoch_id": "oprf_key_2026_05_w1",
+  "server_eval_b64": "AwEAAa...compressed-point",
+  "server_proof_b64": "BHL0...proof",
+  "candidate_row_count": 1009,
+  "candidate_rows_ref": "inline",
+  "candidate_rows_compression": "zstd",
+  "candidate_rows_aead": "xchacha20poly1305",
+  "quick_tag_bits": 8,
+  "response_padding_class": "1000_to_1250_rows",
+  "policy_version": "bucket_return_policy_v2",
+  "expires_ts_ms": 1777590900000
+}
+```
+
+其中 `prefix_bucket_b64`、`server_eval_b64`、`server_proof_b64`、`quick_tag_bits` 和 row key 派生材料都不得出 SDK crypto boundary，更不得进入 MMP Ask / Claim / Confirm payload。
+
+### 17C.4 BR-2：compact handles + validate
+
+BR-2 是 BR-1 的治理强化版。server 不直接返回完整 associated payload，而是返回 compact row handles 或更短的 encrypted hints。SDK 本地过滤后，把不可重放的 validate material 发回 AdNetwork controlled endpoint，由 server 在 policy 检查后签发 claim。
+
+示意流程：
+
+```text
+/psm returns compact encrypted handles
+  -> SDK local filtering finds one or more plausible handles
+  -> SDK POST /validate { handle_commitment, match_proof, nonce, attestation }
+  -> Server returns claim_token + allowed reporting metadata
+```
+
+它的好处是 payload 释放更可控，能在 validate 时检查：
+
+- SDK build / attestation；
+- event provenance；
+- retry budget；
+- consent / region eligibility；
+- claim policy version；
+- replay state。
+
+它的风险也很明确：validate 如果设计得太“直”，server 就可能通过 validate request 学到精确匹配。因此 BR-2 必须要求：
+
+- validate response 做固定大小或分档 padding；
+- validate request 绑定 nonce、event_id、measurement_task_id 和 SDK attestation；
+- validate endpoint 不返回 loser diagnostics；
+- validate logs 不保留可反推 bucket row 的 raw handle；
+- 高风险模式下把 validate 放进 confidential service。
+
+### 17C.5 BR-3：opaque claim only
+
+BR-3 的目标是让 SDK 和 MMP 都不接触 candidate bucket。它只返回一个 signed / opaque claim receipt：
+
+```json
+{
+  "schema_version": "opaque_claim_return.v1",
+  "measurement_task_id": "icm_install_v3",
+  "matched": true,
+  "claim_token": "opaque_claim_token_v1",
+  "claim_policy_id": "claim_policy_privacy_max_v3",
+  "expires_ts_ms": 1777590900000
+}
+```
+
+这个方案看起来最干净，但有一个尖锐问题：如果 claim 是 server 直接根据 raw query 或 stable hash 生成的，它就不再是 on-device measurement，而是 server-side matching。要让 BR-3 成立，至少需要满足下列条件之一：
+
+- claim 由 TEE / CVM 中的 audited workflow 生成；
+- query 是 blinded / OPRF-style，server 不能看到 raw matching key；
+- claim 只表达 policy-constrained membership，不携带可用于 MMP 长期 join 的 row identity；
+- 所有 claim issuance 都有 anti-replay、rate limit、purpose binding 和 attestation 记录。
+
+因此 BR-3 更适合作为 privacy-max mode，而不是默认生产路线。
+
+### 17C.6 BR-4 / BR-5：metadata-only 与 aggregation-only
+
+BR-4 只返回 bucket policy、epoch、粗粒度 count 或 compatibility hint，不返回 candidate rows，也不恢复 touch payload。它适合做健康检查、region eligibility、实验开关和 SDK 调度，但不适合承载完整 SRN claim。
+
+BR-5 则更进一步：不做 request-level claim，只产出 aggregate measurement contribution。它的隐私面最保守，但会牺牲：
+
+- MMP Ask -> Claim -> Confirm 的 winner 级协同；
+- creative-level / campaign-level 细粒度诊断；
+- Confirm 后 `req_id` 级 label materialization；
+- personalized bidding / pacing / ranking 的监督信号。
+
+所以 BR-4 / BR-5 应写成 fallback，而不是主路径。
+
+### 17C.7 推荐排序
+
+```text
+Primary:
+  BR-1 full candidate rows return
+
+Hardened production:
+  BR-2 compact handles + validate
+
+Privacy-max:
+  BR-3 opaque claim only, but only with TEE / blinded validation / verifiable workflow
+
+Fallback:
+  BR-4 metadata-only
+  BR-5 aggregation-only
+
+Reject:
+  BR-0 raw exact lookup
+```
+
+一句话版本：如果目标是同时兼容 SRN、保留 request-level optimization、并控制 raw PII 出端风险，默认应选择 BR-1；如果 legal / security 对“SDK 获取 bucket candidate rows”仍然敏感，则升级到 BR-2，而不是直接退回 raw server-side matching。
+
+## 17D. MMP Claim / Confirm 数据披露选项与 Legal Review
 
 本节用于 legal / privacy / security review。它不是法律意见，也不是最终合规结论；目标是把不同技术折中、数据可见性、产品能力、剩余风险和必要控制项写清楚。
 
-### 17C.1 评估前提
+### 17D.1 评估前提
 
 需要区分两类数据：
 
@@ -2994,7 +3190,7 @@ Pseudonymous attribution material:
 4. req_id remains server-side and is recovered by AdNetwork only after Confirm.
 ```
 
-### 17C.2 选项总览
+### 17D.2 选项总览
 
 | 方案 | Claim 返回给 MMP | Confirm 回传给 AdNetwork | raw PII 是否出端 | MMP 是否拿稳定 join key | AdNetwork 是否能恢复 req_id | 推荐 |
 |---|---|---|---:|---:|---:|---|
@@ -3005,7 +3201,7 @@ Pseudonymous attribution material:
 | Option 4: Hybrid tracking-link token + opaque claim | `mmp_touch_token + claim_token + creative metadata` | 两者都回传 | 否 | 是，但 click 侧已存在 | 是 | 推荐折中 |
 | Option 5: Aggregation-only | coarse matched / aggregate claim | aggregate confirm | 否 | 否 | 部分或不能 | fallback |
 
-### 17C.3 推荐排序
+### 17D.3 推荐排序
 
 ```text
 Primary recommendation:
@@ -3044,7 +3240,7 @@ The new information in Claim is the on-device match proof / claim_token.
 - AdNetwork Server validates token + claim_token pair
 - separate internal mapping: `mmp_touch_token -> req_id`
 
-### 17C.4 Privacy-max 与 fallback
+### 17D.4 Privacy-max 与 fallback
 
 Option 3 只返回一次性的 `claim_token`：
 
@@ -3065,7 +3261,7 @@ Option 1 `Encrypted PII Relay` 只能作为 lower-privacy fallback。它只能�
 
 Option 0 明文 `device_fp_hash` / raw identity 直接违背 on-device measurement 主目标，应拒绝。Option 5 aggregation-only 最保守，但会削弱 creative-level reporting、request-level optimization 和 MMP SRN-style reconciliation。
 
-### 17C.5 Legal / Privacy 需要重点判断的问题
+### 17D.5 Legal / Privacy 需要重点判断的问题
 
 建议直接给 legal / privacy review 以下问题：
 
@@ -3080,7 +3276,7 @@ Option 0 明文 `device_fp_hash` / raw identity 直接违背 on-device measureme
 9. Confirm 后 AdNetwork Server 用 token -> `req_id` 做 model optimization，是否需要单独披露和 consent / legitimate interest assessment？
 10. `creative_id / campaign_id / ad_group_id` 返回给 MMP 是否属于 reporting metadata，还是与 token 组合后构成更高风险的 user-level measurement data？
 
-### 17C.6 推荐措辞
+### 17D.6 推荐措辞
 
 不要写：
 
@@ -3371,6 +3567,35 @@ Config 下发上下文
 - Paillier / PIR 仍可作为更强隐私设计方案，但当前 HAR 没有 Paillier selection vector 或 2048-bit ciphertext 的形态；主链路更像 `OPRF + prefix bucket candidate retrieval + client-side local filtering`。
 - `boot_time` 仍然可能参与本地 material 或 `mvs` 构造，但当前 HAR 中没有明文字段证明它进入 ODM PSM 主链路。
 
+### 20.14 截至 2026-05-05 的官方产品资料进一步收紧了生产契约
+
+这次复查里，最值得写进 RFC 的不是“又多了一篇公式论文”，而是几份官方文档已经把一些原本容易停留在推断层的生产约束写得更明确了。
+
+先看 Google 官方产品文档：
+
+- `About on-device conversion measurement for iOS App campaigns` 当前页面明确把 event-data 方案描述为“derived from device signals like IP addresses and timestamps”，并在 `Optional ad relevance improvements` 里进一步写明可使用额外信号 “like IP addresses”，但同时仍强调输出应是 de-identified 的、privacy-preserving 的。
+- 同一页面现在还明确写出实施约束：ODM 目标事件必须来自 Firebase SDK events，而不是 generic S2S Measurement Protocol event。
+- `Integrated Conversion Measurement` 开发文档当前仍要求在 first launch shortly after 获取 `aggregateConversionInfo`，并作为 `odm_info` 透传；页面底部标记的最后更新时间是 `2025-10-22 UTC`。
+- `Request/Response Specifications` 当前摘要和正文继续强调两个生产细节：`ad_event_id` 要保留并在 cross-network follow-up 使用；cross-network request 即使成功也总是 generic `HTTP 200` 且没有 response body，因此“请求被接受”与“归因事实成立”必须分模。
+
+这些资料对本 RFC 的直接含义是：
+
+- 原始 `raw_ip`、`boot_time_ms`、`User-Agent` 可以存在于 device/confidential plane，但 optimization plane 只该看到 policy-bound derived release，而不是原值。
+- 事件来源必须成为正式协议字段，而不是接入备注。推荐至少持久化 `event_source_system`、`sdk_family`、`source_sdk_version`、`is_firebase_native_event`，因为 ODM 是否生效已显式依赖这条边界。
+- `request_accepted`、`response_empty_body`、`ad_event_id_retained` 这类 compat 状态必须与最终 `is_attributed` 分开建模。
+
+再看 2026 年当前的 MMP / SRN 产品现实：
+
+- AppsFlyer attribution model 页面当前更新时间是 `2026-04-19 13:14`。它已明确写出：iOS 上 SRN device-ID matching 依赖 ATT consent；probabilistic modeling 的输出是 aggregate campaign-level report，而不是 individual device identification；并且 engaged click / engaged view 已成为正式 engagement 类型。
+- AppsFlyer Enhanced attribution 页面当前更新时间是 `2026-03-19 12:25`。该页不仅说明 flooding 场景下只保留 eligible clicks / impressions，还明确把 `total candidates for attribution` 暴露为可观测指标。
+- Adjust Assists 当前页面继续明确：对 SAN，Adjust 会把 SDK 报告的每个 app session 发给 SAN；如果 network 识别该活动，则由 network claim。
+
+这些资料把本 RFC 的另外三条设计要求坐实了：
+
+1. `AttributionDecisionRecord` 里应保留候选量级、eligible 过滤和 engagement 类型，而不只是最终 winner。
+2. SRN ask/claim/confirm 的观测粒度应至少覆盖 `session_start` / `first_open` 级 trace，否则生产排障会断链。
+3. optimization plane 可以先不做 user-level DP，但不能把 compat-only 字段、ATT gating 状态和候选竞争质量信息混成一个黑盒标签。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -3389,6 +3614,7 @@ Config 下发上下文
 12. [Vεrity: Verifiable Local Differential Privacy](https://research.google/pubs/v%CE%B5rity-verifiable-local-differential-privacy/)
 13. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
 14. [Hardening Confidential Federated Compute against Side-channel Attacks](https://arxiv.org/abs/2603.21469)
+15. [Google’s Approach to Protecting Privacy in the Age of AI](https://research.google/pubs/googles-approach-to-protecting-privacy-in-the-age-of-ai/)
 
 ### 21.2 Standards
 
