@@ -54,7 +54,7 @@ Web2App 常见断点主要有四段：
 - Apple 的 AdAttributionKit 进一步确认了 iOS 侧的大方向：广告归因会更多依赖隐私阈值、延迟 postback、转化值和已注册广告网络，而不是用户级确定性追踪。Apple Ads 已在 2025 年 4 月 10 日纳入 AdAttributionKit 口径，但这仍是归因层变化，不等同于首开路由能力。
 - Firebase Dynamic Links 已在 `2025-08-25` 关闭。历史链接和历史 SDK 不是“待升级项”，而是需要从主链路中移除的风险项。
 
-### 2.5 截至 2026-05-06 的公开资料校准
+### 2.5 截至 2026-05-07 的公开资料校准
 
 本次补充复核后，可以把行业变化压缩成三个判断：
 
@@ -74,6 +74,18 @@ Web2App 常见断点主要有四段：
 - `Singular Links` 的公开文档更强调 tracking link、Universal Links / App Links、`_dl / _ddl / _p` 等参数承载，以及通过 Conversion APIs 把 Web、PC、Console、CTV 等入口的后续 App 事件回流给媒体。
 
 因此，Web2App 不应只按“落地页 + 下载按钮”设计，而应按“三段承载”设计：广告点击负责捕获媒体上下文，Web 会话负责保存业务意图，App 首开负责恢复路由并上报可优化事件。
+
+### 2.7 平台能力的三层分工
+
+本轮资料复核后，行业方案可以更清楚地拆成三层，而不是笼统归为“Web2App 工具”：
+
+| 层级 | 代表能力 | 主要产出 | 典型误读 |
+| --- | --- | --- | --- |
+| 媒体测量层 | Google `Web to App Acquisition Measurement`、TikTok 非 App 目标 app activity measurement、X App Conversions、Snap App Power Pack | 让 web campaign 后续 app install / in-app event 在媒体或 AAP/MMP 报表里可见 | 误以为媒体能看到 app 结果，就等于能恢复 App 页面 |
+| 链接路由层 | Universal Links、App Links、OneLink、Branch Link、Adjust Link、Singular Link、Smart Banner、QR code | 决定已安装直达、未安装商店 fallback、受限浏览器兜底 | 误以为一个静态商店 URL 就是 Web2App |
+| 首开上下文层 | Deferred deep link、ODDL / LinkMe、Branch Journeys / Deepviews、Web SDK session、服务端 link_id | 安装后把用户送回内容、商品、活动或 onboarding 分支 | 误把归因响应当成首开路由的前置条件 |
+
+一个成熟方案通常三层都要有：媒体层解决“平台能不能学到信号”，路由层解决“用户能不能到正确入口”，首开上下文层解决“安装后意图是否还在”。如果预算或开发资源有限，优先级应是 `路由层 + 首开上下文层`，再补媒体优化信号；否则容易出现报表变好、体验仍断的假闭环。
 
 ## 3. 标准链路与职责拆解
 
@@ -687,6 +699,20 @@ Web2App 上线后，日常监控不宜只看 CPI、CPA 或安装量。至少需�
 
 这些指标要按 `OS`、`媒体`、`浏览器容器`、`落地页版本` 和 `是否已安装` 拆开看。只看总漏斗会掩盖 Web2App 最常见的问题：Android 表现正常、iOS 首开恢复失败；系统浏览器正常、社交 App 内置浏览器丢参；移动 Web 正常、桌面 QR 无法跨设备复盘。
 
+### 8.11 媒体、MMP 与自建系统的交接清单
+
+Web2App 真正上线时，最容易出问题的不是单点能力，而是三方交接。建议把交接文档压缩成以下字段，作为投放、Web、App、数据和供应商共同验收的最小合同：
+
+| 交接点 | 必须明确 | 不明确时的后果 |
+| --- | --- | --- |
+| 广告点击到 Web | click id、UTM、campaign、creative、placement 由谁捕获，是否先经过 MMP / 媒体 tracking link | Web 页有访问，但安装归因可能掉到 organic 或错误来源 |
+| Web CTA 到商店 / App | CTA 是动态 smart link 还是静态 store URL，是否按 OS、浏览器、已安装状态分流 | 页面点击率正常，但商店打开率、首开恢复率低 |
+| Web session 到首开 | `link_id / session_id`、`deep_link_value`、`content_id` 存在哪里，App 首开如何拉取 | 安装后只能落首页，Web 说服内容无法延续 |
+| 首开到媒体回传 | first_open、注册、订阅、购买等事件通过 MMP、SDK、S2S 还是 Conversion API 回传 | 媒体无法用 post-install event 优化，预算学习慢 |
+| 报表去重 | web conversion、install、first_open、first key event 谁是主口径，谁是诊断口径 | 同一用户被多次计入增长贡献，ROI 被高估 |
+
+实操建议是为每次 Web2App campaign 生成一个 `link spec`，至少包含：目标 OS、广告平台、落地页模板、MMP link 模板、fallback URL、App 内目标路由、首个关键事件、媒体回传事件和验收负责人。没有这份交接清单时，团队通常会把问题归咎于“归因不准”，但真实原因往往是第二跳链接、首开载荷或事件回传口径没有被统一设计。
+
 ## 9. 平台对比结论
 
 | 类型 | 代表 | 强项 | 边界 |
@@ -699,6 +725,18 @@ Web2App 上线后，日常监控不宜只看 CPI、CPA 或安装量。至少需�
 | 路由与归因底座稳 | Adjust | fallback、iOS 恢复、Smart Banners 能力强 | 更偏稳定性，不以体验编排见长 |
 | 参数转发与媒体信号强 | Singular | Web SDK + forwarding + conversion APIs | 更偏企业级测量与优化架构 |
 | 历史方案退场 | Firebase Dynamic Links | 历史集成多 | 新项目不应继续采用 |
+
+从选型顺序看，可以按业务主矛盾倒推：
+
+| 主矛盾 | 优先组合 |
+| --- | --- |
+| Google Search / PMax 等 web campaign 贡献 app install 但媒体看不清 | Google Web to App Connect + Web to App Acquisition Measurement + AAP/MMP app event 导入 |
+| TikTok / Meta 内容先教育，安装后要回到具体内容或权益页 | 媒体 tracking link + 自建落地页 + Branch / AppsFlyer / Adjust / Singular deferred deep link |
+| 自有移动站、SEO、CRM 有大量高意图访客 | Smart Banner / Journeys / OneLink Smart Script / Singular Web SDK，优先优化首开恢复率 |
+| 桌面 Web、CTV、线下物料要带来移动安装 | QR code deep link + session/token + MMP 跨设备 attribution + post-install event 回传 |
+| iOS 首开恢复不稳定 | Universal Links 基建复核 + LinkMe / ODDL 或等价 session response 方案 + 独立 iOS 测试矩阵 |
+
+因此，Web2App 选型不应问“哪家深链最好”，而应问“当前最大损耗发生在点击、Web CTA、商店、首开恢复、还是媒体回传”。供应商能力只有和损耗位置匹配，才会产生真实增量。
 
 ## 10. 常见误区
 
