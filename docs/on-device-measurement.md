@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-05<br>
+最后更新: 2026-05-07<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -154,6 +154,9 @@ MMP SDK Ask
 | TEE/CVM 只是执行边界，不是万能隐私证明 | confidential processing 仍要考虑 side-channel、debug、access pattern 与 workload 测试 | 附录 20.7 |
 | 主链路必须兼容 MMP / SRN Ask-Claim-Confirm | 真实商业归因仍然围绕 MMP/SRN 工作流，不应绕开它另造孤岛 | 附录 20.8、20.9 |
 | ODM / ODC 建模为 OPRF/PSM candidate retrieval + local filtering | HAR 证据显示真实实现不是单个本地 token，也不是裸 matched bit | 附录 20.13、17A |
+| MMP SDK / AdNetwork SDK 集成状态需要本地、可审计的 runtime trace | 2026 年 MMP ICM 文档已经把 ODM SDK、MMP SDK 版本、初始化 timeout、deep link callback delay 写成生产接入条件 | 附录 20.15、11.5A |
+| device / SDK debug log 必须在产生点做 PII 最小化，而不是事后清洗 | 2026 年 Proteus 说明移动端日志可以用 keyed pseudonymization + rotating encryption 保留排障关联性，同时避免明文 PII 外流 | 附录 20.15、10.6 |
+| FHE 作为 hardened profile，而不是默认主链路 | FHE 能隐藏被计算的输入，但不能自动解决输出泄露、重放、MMP confirm 和 request-level optimization join；适合私密候选评分、aggregate 加固和小模型加密推理 | 17E、20.16 |
 
 这张表的作用是把“研究/标准/产品资料”转成正文里的实现约束。第一次阅读时可以继续往下读第 6 节；只有在需要追溯依据时再看附录。
 
@@ -1105,6 +1108,126 @@ message AggregateCollectorBudgetState {
 }
 ```
 
+### 8.19 SdkMeasurementRuntimeTrace
+
+这个对象描述 MMP SDK、AdNetwork adapter、ODM SDK 在广告主 App 内的运行态。它不是归因结果，也不是训练特征；它的作用是让 `Ask` 为什么发出、为什么跳过、为什么超时可以被复盘。
+
+```proto
+message SdkMeasurementRuntimeTrace {
+  string trace_id = 1;
+  string mmp_name = 2;
+  string mmp_event_id = 3;
+  string platform = 4; // ios, android
+  string app_bundle = 5;
+  string network_id = 6;
+  string sdk_family = 7; // singular, appsflyer, adjust, custom_mmp
+  string mmp_sdk_version = 8;
+  bool adnetwork_adapter_present = 9;
+  string adnetwork_adapter_version = 10;
+  string adapter_manifest_hash = 11;
+  bool odm_sdk_present = 12;
+  string odm_sdk_version = 13;
+  bool odm_info_present = 14;
+  int32 odm_fetch_timeout_ms = 15;
+  int32 sdk_init_delay_ms = 16;
+  bool deep_link_callback_deferred = 17;
+  string event_source_system = 18; // firebase_sdk, mmp_sdk, s2s_api, measurement_protocol, unknown
+  bool is_firebase_native_event = 19;
+  string region_eligibility_code = 20; // ELIGIBLE, EEA_INACTIVE, UK_INACTIVE, CH_INACTIVE, UNKNOWN
+  string att_authorization_status = 21;
+  string ads_personalization_status = 22;
+  string local_runtime_policy_id = 23;
+  string trace_release_scope = 24; // integration_health_only, confidential_debug_only
+}
+```
+
+关键约束：
+
+- `SdkMeasurementRuntimeTrace` `MUST NOT` 携带 raw `ip`、raw `boot_time_ms`、`device_fp_hash`、OPRF input / output、row key、`claim_token` 或 `server_request_id`。
+- `event_source_system=s2s_api` 或 `measurement_protocol` 时，Google-compatible ODM event-data path 默认 `MUST` 标记为 ineligible，除非特定 partner contract 明确允许。
+- `sdk_init_delay_ms` 与 `deep_link_callback_deferred` 只用于集成健康和用户体验评估，不得进入 bidder / ranking / pacing 训练。
+- `adapter_manifest_hash` 是本地集成证据，不等于 remote config。remote config 不能单独证明某个 network SDK 在设备上可调用。
+
+### 8.20 FheMeasurementTaskConfig
+
+这个对象只在 hardened profile 下启用。它定义某个 measurement task 是否允许 FHE，以及允许哪一种电路、密钥、参数和解密边界。不要把 FHE 参数藏在 SDK remote config 里；FHE 的安全性和性能都高度依赖这些参数。
+
+```proto
+message FheMeasurementTaskConfig {
+  string measurement_task_id = 1;
+  string fhe_profile_id = 2; // disabled, fhe_private_candidate_scoring_v1, fhe_aggregate_sum_v1, fhe_encrypted_inference_v1
+  string scheme = 3; // BFV, BGV, CKKS, TFHE, FHEW
+  int32 security_level_bits = 4; // 128 or higher
+  int32 poly_modulus_degree = 5;
+  repeated int32 coeff_modulus_bits = 6;
+  int64 plaintext_modulus = 7; // BFV/BGV only
+  double ckks_scale = 8; // CKKS only
+  int32 slot_count = 9;
+  string public_key_id = 10;
+  string relin_keys_ref = 11;
+  string galois_keys_ref = 12;
+  string key_epoch_id = 13;
+  string circuit_id = 14;
+  int32 multiplicative_depth = 15;
+  int32 max_ciphertext_bytes = 16;
+  int32 max_response_ciphertext_bytes = 17;
+  string decryptor_role = 18; // device_sdk, threshold_collectors, confidential_service
+  string output_release_policy_id = 19;
+  string fhe_library_hint = 20; // openfhe, seal, lattigo, concrete
+}
+```
+
+关键约束：
+
+- `decryptor_role=device_sdk` 时，server `MUST NOT` 获得 secret key；但 SDK 也不应获得未限界的 candidate database 明细。
+- `decryptor_role=threshold_collectors` 时，至少需要 `threshold_policy_id`、collector identity、share refresh 和 audit log；不要把它伪装成普通 server decrypt。
+- FHE 结果解密后仍然受 `output_release_policy_id` 约束。FHE 保护的是计算过程，不是输出本身。
+- `scheme=CKKS` 的输出是近似值，不得用于需要 exact equality / exact count 的归因判定。
+
+### 8.21 FhePrivateMeasurementQuery
+
+这个对象描述一次 FHE 子流程请求。它不替代 `MmpAskRequest`、`ClaimResponse` 或 `MmpConfirmRequest`；它只是 Ask 内部的一个可选 hardened 子状态。
+
+```proto
+message FhePrivateMeasurementQuery {
+  string fhe_query_id = 1;
+  string mmp_event_id = 2;
+  string measurement_task_id = 3;
+  string fhe_profile_id = 4;
+  string public_key_id = 5;
+  string key_epoch_id = 6;
+  string circuit_id = 7;
+  bytes encrypted_feature_vector = 8;
+  bytes encrypted_selector_or_mask = 9;
+  string encrypted_input_encoding = 10; // packed_bfv_bits, ckks_real_slots, tfhe_bits
+  string prefix_bucket_hint = 11;
+  int32 padded_candidate_count = 12;
+  int64 query_ts_ms = 13;
+  int64 query_expiry_ts_ms = 14;
+  bytes replay_cache_key = 15;
+  string output_release_policy_id = 16;
+}
+
+message FhePrivateMeasurementResponse {
+  string fhe_query_id = 1;
+  string evaluation_status = 2; // EVALUATED, REJECTED, UNSUPPORTED_PROFILE, TOO_EXPENSIVE
+  bytes encrypted_match_scores = 3;
+  bytes encrypted_aggregate_result = 4;
+  bytes encrypted_auxiliary_proof = 5;
+  int32 padded_candidate_count = 6;
+  int32 circuit_eval_ms = 7;
+  string evaluator_build_id = 8;
+  string evaluation_manifest_digest = 9;
+}
+```
+
+关键约束：
+
+- request 里不能带 raw `ip`、raw `boot_time_ms`、`device_fp_hash` 明文；只能带 policy-bound encoded/encrypted feature。
+- `prefix_bucket_hint` 如果会泄露太多，应做粗分桶、padding 或固定批次；FHE 不会自动隐藏 access pattern。
+- response 里只返回 encrypted scores / encrypted aggregate；明文 `req_id`、row key、candidate payload 仍然不得出现。
+- FHE response 解密后的结果必须继续走 `ClaimResponse -> MmpConfirmRequest -> token_to_req_id_join`，不能绕过 MMP SRN 闭环。
+
 ## 9. Mock payload
 
 ### 9.1 广告请求
@@ -1291,6 +1414,152 @@ MMP SDK 在调用某个 ad network Ask 前，应先在本地得到类似下面�
 ```
 
 这类对象属于 compatibility surface，不改变 v3.1 主链路的边界：MMP 仍不提供 `device_fp_hash`，AdNetwork SDK 仍负责本地 material 和 OPRF/PSM。
+
+### 9.4C MMP / ODM runtime trace
+
+下面是一次 MMP SDK 集成 Google-compatible ODM / ICM 时应保存的低敏运行态 trace。它解释“为什么 Ask 可以发出、为什么 `odm_info` 可能缺失、SDK 初始化是否被 ODM fetch timeout 拖慢”，但不参与归因 winner selection。
+
+```json
+{
+  "trace_id": "sdk_trace_01JW0W1T9P82VDV0DR7HG2P6K2",
+  "mmp_name": "Singular",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "platform": "ios",
+  "app_bundle": "com.example.game",
+  "network_id": "google_ads",
+  "sdk_family": "singular",
+  "mmp_sdk_version": "12.8.1",
+  "adnetwork_adapter_present": true,
+  "adnetwork_adapter_version": "google-icm-adapter-1.0.0",
+  "adapter_manifest_hash": "sha256:6f1d9d3c2b7a...",
+  "odm_sdk_present": true,
+  "odm_sdk_version": "GoogleAdsOnDeviceConversion-3.5.0",
+  "odm_info_present": true,
+  "odm_fetch_timeout_ms": 5000,
+  "sdk_init_delay_ms": 814,
+  "deep_link_callback_deferred": true,
+  "event_source_system": "firebase_sdk",
+  "is_firebase_native_event": true,
+  "region_eligibility_code": "ELIGIBLE",
+  "att_authorization_status": "DENIED",
+  "ads_personalization_status": "UNKNOWN",
+  "local_runtime_policy_id": "mmp_odm_runtime_trace_v2",
+  "trace_release_scope": "integration_health_only"
+}
+```
+
+如果事件来自 S2S 或 Measurement Protocol，应显式记录为不满足 event-data ODM path：
+
+```json
+{
+  "trace_id": "sdk_trace_01JW0W2J0DJ4KW3EVVQEV6A1B3",
+  "mmp_name": "ExampleMMP",
+  "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+  "platform": "ios",
+  "app_bundle": "com.example.game",
+  "network_id": "google_ads",
+  "sdk_family": "custom_mmp",
+  "mmp_sdk_version": "8.1.0",
+  "adnetwork_adapter_present": false,
+  "adnetwork_adapter_version": "",
+  "adapter_manifest_hash": "",
+  "odm_sdk_present": false,
+  "odm_sdk_version": "",
+  "odm_info_present": false,
+  "odm_fetch_timeout_ms": 0,
+  "sdk_init_delay_ms": 0,
+  "deep_link_callback_deferred": false,
+  "event_source_system": "s2s_api",
+  "is_firebase_native_event": false,
+  "region_eligibility_code": "UNKNOWN",
+  "att_authorization_status": "UNKNOWN",
+  "ads_personalization_status": "UNKNOWN",
+  "local_runtime_policy_id": "mmp_odm_runtime_trace_v2",
+  "trace_release_scope": "integration_health_only"
+}
+```
+
+第二条 trace 的含义不是 “Google Ads declined”，而是 “本地没有可执行的 ODM event-data path”。这类状态应进入 integration health dashboard，不应进入 `AttributionDecisionRecord` 的 winner/loser 逻辑。
+
+### 9.4D FHE private measurement query
+
+下面是一条 hardened profile 下的 FHE 子流程示例。它发生在 `MMP SDK -> AdNetwork SDK Ask` 之后、`ClaimResponse` 之前；它不直接对 MMP 暴露，也不替代 Confirm。
+
+```json
+{
+  "fhe_task_config": {
+    "measurement_task_id": "icm_install_v3",
+    "fhe_profile_id": "fhe_private_candidate_scoring_v1",
+    "scheme": "BFV",
+    "security_level_bits": 128,
+    "poly_modulus_degree": 8192,
+    "coeff_modulus_bits": [50, 30, 30, 50],
+    "plaintext_modulus": 65537,
+    "slot_count": 4096,
+    "public_key_id": "fhe_pk_2026_05_ios_us_v1",
+    "relin_keys_ref": "kms://fhe/eval/relin/2026_05_ios_us_v1",
+    "galois_keys_ref": "kms://fhe/eval/galois/2026_05_ios_us_v1",
+    "key_epoch_id": "fhe_epoch_2026_05_w01",
+    "circuit_id": "candidate_score_exact_match_bfv_v1",
+    "multiplicative_depth": 2,
+    "max_ciphertext_bytes": 4194304,
+    "max_response_ciphertext_bytes": 8388608,
+    "decryptor_role": "device_sdk",
+    "output_release_policy_id": "fhe_output_claim_candidate_v1",
+    "fhe_library_hint": "openfhe"
+  },
+  "query": {
+    "fhe_query_id": "fheq_01JW0X71N6K09HPACDJY5SBJGR",
+    "mmp_event_id": "mmp_evt_01JTRP7V8W5T7A8Y4A8V2P",
+    "measurement_task_id": "icm_install_v3",
+    "fhe_profile_id": "fhe_private_candidate_scoring_v1",
+    "public_key_id": "fhe_pk_2026_05_ios_us_v1",
+    "key_epoch_id": "fhe_epoch_2026_05_w01",
+    "circuit_id": "candidate_score_exact_match_bfv_v1",
+    "encrypted_feature_vector": "base64:AgAAAAEAAABFHECIPHERTEXT...",
+    "encrypted_selector_or_mask": "base64:AwAAABIAAADENSEMASK...",
+    "encrypted_input_encoding": "packed_bfv_bits",
+    "prefix_bucket_hint": "ios:us:2026-05-06:p22:8f4",
+    "padded_candidate_count": 1024,
+    "query_ts_ms": 1777587905123,
+    "query_expiry_ts_ms": 1777588205123,
+    "replay_cache_key": "base64:c2hhMjU2LWZoZS1yZXBsYXk...",
+    "output_release_policy_id": "fhe_output_claim_candidate_v1"
+  },
+  "response": {
+    "fhe_query_id": "fheq_01JW0X71N6K09HPACDJY5SBJGR",
+    "evaluation_status": "EVALUATED",
+    "encrypted_match_scores": "base64:BAAAABQAAABFVkFMUkVTVUxU...",
+    "encrypted_aggregate_result": "",
+    "encrypted_auxiliary_proof": "base64:ZXZhbF9tYW5pZmVzdF9wcm9vZg...",
+    "padded_candidate_count": 1024,
+    "circuit_eval_ms": 187,
+    "evaluator_build_id": "fhe-evaluator-openfhe-1.5.1-20260507",
+    "evaluation_manifest_digest": "sha256:3ce4a7f0c9d2..."
+  }
+}
+```
+
+SDK 解密 `encrypted_match_scores` 后只能得到 policy-bound candidate decision，例如：
+
+```json
+{
+  "fhe_query_id": "fheq_01JW0X71N6K09HPACDJY5SBJGR",
+  "decrypted_candidate_count": 1024,
+  "matched_candidate_count": 1,
+  "selected_candidate_slot": 317,
+  "local_decision": "FHE_MATCHED_ONE_CANDIDATE",
+  "release_to_mmp": {
+    "claim_status": "CLAIMED",
+    "mmp_touch_token": "AMT_v1_7ec3b6bd1c4a1f29999ae73f8c6c0d12",
+    "claim_token": "base64:Wk1Qd1p4Y2xhaW0...",
+    "campaign_id": 74012091,
+    "creative_id": 74019912
+  }
+}
+```
+
+注意这里仍然没有把 `server_request_id`、row key、raw device signal 或完整 candidate payload 给 MMP。FHE 子流程只改变 “SDK 和 AdNetwork Server 怎么完成候选评分”，不改变 SRN 的 `Claim -> Confirm` 闭环。
 
 ### 9.5 Claim Response
 
@@ -1791,6 +2060,41 @@ def handle_confirm(req):
   - 不得成为 ODM core protocol 的必填字段
   - 不得替代 `server_request_id`
 
+### 10.6 SDK debug log 不能成为 PII 旁路
+
+on-device measurement 的生产事故通常不是协议对象本身泄漏，而是 debug log、SDK trace、crash breadcrumb、MMP integration health 上报把原始字段又带了出去。尤其是 `boot_time_ms`、`raw_ip`、完整 `User-Agent`、install referrer、deep link URL、`odm_info` 和 adapter discovery 结果，很容易被“为了排障”写进通用日志。
+
+推荐把端上日志分成三类：
+
+- `public diagnostic`
+  - 只包含状态码、耗时桶、SDK 版本、adapter 是否存在；
+  - 可进入 MMP / ad network 的普通集成健康面板。
+- `pseudonymized confidential diagnostic`
+  - 包含可关联但不可还原的 token，例如 keyed-HMAC 后的 install referrer token、deep link token、IP prefix churn token；
+  - 只能进入 confidential debug plane。
+- `raw local only`
+  - 原始 `ip`、原始 `boot_time_ms`、完整 deep link URL、完整 `User-Agent`、OPRF material；
+  - 默认只在设备进程内短期存在，不能上报。
+
+如果确实需要排障关联性，优先采用类似 Proteus 的“生成点保护”思路，而不是上报后再清洗：
+
+1. 日志字段一产生就按 field policy 分类。
+2. PII 字段先用设备本地 `K_hash` 做 keyed pseudonymization，`K_hash` 不出设备。
+3. pseudonym token 再用时间轮转的 AEAD key 加密，防止跨多次日志快照长期关联。
+4. 服务端只在 break-glass / support grant 下拿到某个时间窗的 ratchet state，窗口外不可解。
+5. grant 后必须旋转 root / ratchet state，避免 support access 变成持续后门。
+
+这不是要求 Phase 1 必须实现 Proteus 本身，而是要求 RFC 级别把以下字段预留出来：
+
+- `pii_transform_policy_id`
+- `log_key_epoch_id`
+- `debug_trace_window_id`
+- `support_grant_id`
+- `post_grant_rotation_required`
+- `device_attestation_ref`
+
+落地判断很简单：如果某条 debug trace 离开设备后还能看见原始 IP、完整 deep link、完整 User-Agent、raw boot time 或 `odm_info`，它就不是 “on-device measurement debug”，而是另一个未治理的数据出口。
+
 ## 11. 与 MMP / SRN 的协同规范
 
 ### 11.1 标准流程
@@ -1880,6 +2184,42 @@ Google 的 [request/response spec](https://developers.google.com/app-conversion-
 4. `aggregate outputs`
 
 不要把第 1 层直接合并进第 3 层。
+
+### 11.5A MMP / AAP-style ICM 接入约束
+
+2026 年的 MMP 产品文档已经说明，ICM / ODM 不是“Google SDK 自己跑完就结束”，而是需要 MMP SDK、Google ODM SDK、广告主 App 初始化顺序和 S2S fallback 一起满足条件。RFC 因此应把 MMP runtime 也建模成协议面的一部分。
+
+以 Singular 当前公开文档为例，生产接入至少暴露出这些约束：
+
+- ICM 在 MMP 侧已是开放 beta / 普遍可接入形态，而不是只存在于 Google Ads UI 内部；
+- iOS ICM 要求集成 Google ODM SDK，并升级 MMP SDK 或 S2S API；
+- Singular iOS 原生 SDK 要求 `12.8.1+`，并需要启用 `enableOdmWithTimeoutInterval`；
+- 推荐 timeout 示例是 `5s`，这会延迟 SDK initialization，并可能推迟 deep link callback；
+- ICM 报告侧可能只覆盖 click-through installs，且某些维度如 sub network type 不可用；
+- Android 与 iOS 的区域、allowlist / open-beta 状态、ads personalization 状态不同，不能共用一个 `icm_enabled=true` 布尔字段。
+
+因此 MMP / AAP integration contract `MUST` 显式记录：
+
+- `mmp_sdk_version`
+- `odm_sdk_present`
+- `odm_sdk_version`
+- `odm_fetch_timeout_ms`
+- `sdk_init_delay_ms`
+- `deep_link_callback_deferred`
+- `event_source_system`
+- `is_firebase_native_event`
+- `region_eligibility_code`
+- `icm_reporting_scope`
+
+这些字段的消费边界也要写死：
+
+- 可用于 integration health、support ticket、partner QA；
+- 可用于解释为什么 `odm_info` 缺失、为什么 Ask skipped、为什么 downstream conversion 没有 ICM path；
+- 不得直接进入 bidder / ranking / pacing / ROAS trainer；
+- 不得被 MMP 当成 negative attribution evidence；
+- 不得替代 `ClaimResponse` 或 `MmpConfirmRequest`。
+
+换句话说，MMP SRN + ODM 的生产形态不是三行公式，而是一个有 timeout、有 SDK 版本、有地区 gating、有 callback 副作用的端到端系统。协议如果不把这些状态字段写出来，排障时就会被迫回到通用日志和人工截图，反而扩大 PII 暴露。
 
 ### 11.6 “partner 接受了请求” 不等于 “归因已成立”
 
@@ -2326,12 +2666,15 @@ confidential plane `SHOULD` 保留：
 - 本地仅保留短期加密缓存，不保留长期稳定 token。
 - 如果自研 Google-compatible ODM 子流程，默认按 `OPRF/VOPRF-style PSM + prefix bucket candidate retrieval + local filtering` 建模；不要把 Paillier/PIR 当成当前 HAR 已证实的主路径。
 - SDK 状态机需要显式记录 `config_loaded`、`psm_candidate_set_received`、`local_match_evaluated`、`mvs_validated`，而不是只记录一个布尔 `odm_info_generated`。
+- MMP SDK / ODM SDK 集成还应显式记录 `odm_fetch_timeout_ms`、`sdk_init_delay_ms`、`deep_link_callback_deferred`、`event_source_system` 和 `is_firebase_native_event`；这些字段只进入 integration health plane。
+- SDK debug trace 的 PII 字段应在生成点做 field policy、keyed pseudonymization 和短窗口加密；不要依赖服务端事后清洗。
 
 iOS optional SDK 的推荐实现：
 
 - MMP SDK 定义一个小而稳定的 Objective-C-compatible protocol，例如 `MmpMeasurementAdapter`，避免 Swift ABI / module 名称变化影响 discovery。
 - ad network 提供 `AdNetworkMmpAdapter` 这类轻量 package；广告主只有在已经接入该 ad network SDK 时才需要链接它。
 - adapter 可以在初始化时显式调用 `MmpAdapterRegistry.register(networkId:adapter:)`；自动注册可用，但应允许开发者关闭。
+- adapter package 应带本地可验证的 manifest / signature hash；remote config 只能启停 policy，不能伪造本地 SDK 存在性。
 - MMP SDK 启动后缓存 capability，缓存 TTL 建议 30-60 分钟；app foreground、consent 改变、remote config 改变时重新评估。
 - 没有 adapter 时，MMP SDK 只产生 `ASK_SKIPPED_SDK_NOT_PRESENT` 或 `ASK_SKIPPED_ADAPTER_NOT_PRESENT`，不抛异常、不弹日志噪音、不阻断 app 启动。
 - 对开发者暴露一个集成诊断 API，例如 `getMeasurementIntegrations()`，返回哪些 network eligible、哪些被 skip，以及 skip reason。
@@ -2402,6 +2745,34 @@ iOS optional SDK 的推荐实现：
 - PJC/PSI reconciliation
 - stronger verifiable workflow
 - DAP/VDAF-aligned aggregate service
+
+### 17.4 Profile D: FHE-Hardened Optional
+
+Profile D 不是比 Profile C “更高级所以默认更好”。它只适合少数高敏 task：你愿意付出明显的延迟、带宽、工程复杂度，用来让服务端在看不见某些输入明文的情况下完成固定计算。
+
+Profile D 至少包含：
+
+- `FheMeasurementTaskConfig`
+- `FhePrivateMeasurementQuery`
+- FHE evaluator service
+- FHE parameter review
+- ciphertext size / latency budget
+- key epoch rotation
+- decryptor role governance
+- output release policy
+
+Profile D 仍然必须保留 Profile A 的主闭环：
+
+```text
+MMP SDK Ask
+  -> AdNetwork SDK optional FHE subflow
+  -> ClaimResponse
+  -> MMP Confirm
+  -> token_to_req_id_join
+  -> optimization / aggregate release
+```
+
+如果某个设计声称“用了 FHE，所以不需要 Claim/Confirm、anti-replay、purpose binding、DP 或 output policy”，它不是 hardened profile，而是把计算隐私误解成了系统隐私。
 
 ## 17A. ODM / ODC HAR 逆向附录
 
@@ -3301,6 +3672,207 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 本方案控制的是 raw device PII / raw fingerprinting material 的出端风险，而不是宣称所有 measurement data 都不出端。MMP 不接触设备指纹、OPRF 输入输出、bucket/tag/tail、row key 或 req_id。根据 legal 选择的集成模式，MMP 可以只接收一次性的 opaque claim_token，或者接收一个已在 tracking link 阶段提供过的、广告主 scoped、touch-scoped 的 mmp_touch_token 加 claim_token。req_id 始终留在 AdNetwork Server 内部，并只在 MMP Confirm 后通过 token 映射找回。
 ```
 
+## 17E. FHE / 全同态加密落地方案
+
+先把结论说死：FHE 不应该替代本文主链路里的 `OPRF/PSM + associated payload + Claim/Confirm`。更合适的位置是一个 optional hardened subflow，用来在少数高敏任务里减少服务端看到的明文输入。它解决的是“服务端能不能在不解密输入的情况下做固定计算”，不是“输出是否会泄露”“MMP 是否可信”“optimization label 是否合规”这些系统问题。
+
+### 17E.1 FHE 到底保护什么
+
+FHE 的心智模型很简单：
+
+```text
+SDK 持有 secret key
+  -> SDK 把本地派生特征加密成 ciphertext
+  -> Server 在 ciphertext 上跑固定 circuit
+  -> Server 返回 ciphertext result
+  -> SDK 或 threshold decryptor 解密 result
+```
+
+服务端看不到被加密的输入，也看不到中间结果。但这有三个容易误解的点：
+
+- FHE 通常不隐藏 access pattern。比如请求了哪个 prefix bucket、返回多少 ciphertext、耗时多少，仍然可能泄露信息。
+- FHE 不自动保护输出。输出解密后如果是 request-level match / score / label，仍然需要 release policy、TTL、anti-replay 和 purpose binding。
+- FHE 不自动让复杂算法可行。比较、排序、top-k、字符串处理、正则、动态分支在 FHE 下都很贵，必须改写成固定电路或小模型。
+
+因此，在本文里 FHE 是 `compute privacy` 组件，不是完整 measurement protocol。
+
+### 17E.2 应该塞进哪三类位置
+
+| 位置 | FHE 做什么 | 推荐 scheme | 适合度 | 备注 |
+|---|---|---|---|---|
+| 私密候选评分 | SDK 加密本地派生特征，server 对 prefix bucket 下的 candidate rows 计算 encrypted match score | BFV / BGV | 中 | 适合 exact integer / bit feature；要 padding，避免 candidate_count 泄露 |
+| aggregate 加固 | SDK 或 confidential plane 加密 contribution，collector 只做 encrypted sum / histogram，threshold decrypt 后 release | BFV / BGV / CKKS | 中高 | 如果已有 DAP/VDAF，多数场景优先 DAP；FHE 更适合单 collector 不想看明细值 |
+| 小模型加密推理 | SDK 加密低维特征，server 评估小型 logistic / linear / shallow tree / quantized model | CKKS / TFHE / Concrete-style integer FHE | 中 | 可用于 fraud/risk/eligibility bucket；不建议第一版用于主 bidder hot path |
+
+不建议的落点：
+
+- 不建议用 FHE 替代 `MMP Confirm`。FHE 不知道 MMP winner selection。
+- 不建议用 FHE 直接返回 `server_request_id`。这样会破坏 partner-facing boundary。
+- 不建议用 FHE 做完整 ad ranking / auction。排序、探索、频控、budget pacing 的电路和状态太复杂。
+- 不建议把 raw `ip` / raw `boot_time` 明文编码后直接加密上发，然后宣称“PII 不出端”。严格说，raw PII 仍以可解密密文形式离开设备；这应被建模为 encrypted confidential processing，而不是 raw-local-only。
+
+### 17E.3 推荐默认：FHE-assisted private candidate scoring
+
+如果要把 FHE 塞进 ODM / SRN 主链路，最自然的落点是 Step E 的替代实现：
+
+```text
+MMP SDK Ask
+  -> AdNetwork SDK 本地派生低维 feature
+  -> AdNetwork SDK 用 FHE public key 加密 feature vector
+  -> AdNetwork Server 对 prefix bucket candidate rows 评估固定 scoring circuit
+  -> Server 返回 encrypted score vector
+  -> SDK 解密并本地选择 bounded candidate
+  -> SDK 返回 ClaimResponse 给 MMP
+  -> MMP Confirm
+  -> AdNetwork Server token_to_req_id_join
+```
+
+这个流程里，FHE 只替换 “server 如何参与候选评分”。它不改变以下不变量：
+
+- MMP 仍然不看 `device_fp_hash`、OPRF output、row key、`req_id`。
+- `ClaimResponse` 仍然只返回 `mmp_touch_token + claim_token + allowed metadata`。
+- AdNetwork Server 仍然只在 Confirm 后恢复 `req_id`。
+- optimization plane 仍然只消费 policy-bound label / feature release。
+
+一版可上线的 circuit 不应贪心。建议从 exact bit / integer feature 开始：
+
+```text
+score(candidate, encrypted_features) =
+  w1 * eq(country_bucket)
+  + w2 * eq(install_day_bucket)
+  + w3 * eq(app_bundle_bucket)
+  + w4 * eq(touch_time_bucket)
+  + w5 * eq(coarse_network_bucket)
+```
+
+然后 server 返回固定长度、padding 后的 encrypted score vector。SDK 解密后只允许释放：
+
+- `matched_candidate_count`
+- `selected_candidate_slot`
+- `match_quality_bucket`
+- `claim_token`
+- `mmp_touch_token`
+
+不允许释放完整 score vector、raw feature、row key、candidate payload 或 `server_request_id`。
+
+### 17E.4 Aggregate FHE：什么时候比 DAP 更合适
+
+对于 aggregate reporting，FHE 可以做：
+
+```text
+encrypted_count = Enc(1)
+encrypted_value = Enc(revenue_bucket_value)
+collector_sum = EvalAdd(encrypted_count/value over batch)
+threshold decrypt only if crowd threshold and budget pass
+```
+
+它的优点是 collector 在聚合前看不到单条 contribution 明文。它的缺点是：
+
+- 去重、contribution bounding、minimum crowd threshold 仍然要在密文外或 confidential sidecar 中治理；
+- repeated collection 仍然有 privacy cost；
+- threshold decrypt 和 key share governance 很重；
+- 如果需要多 helper / anti-replay / standardized collection，DAP/VDAF 的协议面更完整。
+
+所以本文推荐：
+
+- partner-facing aggregate 默认优先 `DAP/VDAF + DP budget ledger`；
+- 单方 collector 但不想看明细 value 时，可以用 FHE encrypted sum 作为加固；
+- high-value revenue / ROAS aggregate 可以用 FHE 先做 encrypted bounded sum，再在 release 前走 threshold / DP / audit。
+
+### 17E.5 小模型加密推理：适合做派生桶，不适合直接做大规模优化
+
+FHE inference 在本文里最适合做 `ServerFeatureDerivationRecord` 的 hardened 版本。例如 SDK 把几个低维敏感派生特征加密，server 评估一个小模型，输出 encrypted risk score；SDK 或 threshold decryptor 解密后只释放 bucket：
+
+```text
+encrypted_features -> encrypted_model_score -> risk_bucket
+```
+
+推荐用途：
+
+- fraud risk bucket
+- reinstall likelihood bucket
+- measurement eligibility bucket
+- coarse conversion-quality bucket
+
+不推荐用途：
+
+- 直接训练 FHE GBDT / deep model 作为主 bidder；
+- 在 FHE 中做完整 feature engineering；
+- 在 FHE 中做 online auction ranking；
+- 把 encrypted inference score 明文回传给 MMP。
+
+工程上可以评估两类路线：
+
+- CKKS / BFV / BGV 库路线：OpenFHE、Microsoft SEAL、Lattigo，适合团队有密码工程能力并能控制参数。
+- 编译器 / ML 框架路线：Zama Concrete / Concrete ML，适合先验证小型量化模型的 encrypted inference。
+
+无论哪条路线，生产 RFC 都必须记录：
+
+- model / circuit version
+- quantization policy
+- precision / approximation error
+- latency p50/p95/p99
+- ciphertext size
+- key epoch
+- output bucket policy
+- fallback path
+
+### 17E.6 参数和库的生产建议
+
+推荐按算法语义选 scheme，而不是先选库：
+
+- BFV / BGV：exact integer arithmetic，适合 equality、计数、bitset、bucket score。
+- CKKS：approximate real arithmetic，适合线性模型、近似分数、向量点积；不适合 exact attribution truth。
+- TFHE / FHEW / CGGI：bit / lookup-table / comparison 类 circuit 更自然，但吞吐和工程复杂度要单独压测。
+- Threshold FHE：当不希望单一服务或单一 SDK 拥有解密能力时使用；治理成本明显更高。
+
+库选择建议：
+
+- C++ server evaluator：优先评估 OpenFHE 或 Microsoft SEAL。
+- Go microservice：可评估 Lattigo。
+- encrypted ML prototype：可评估 Concrete / Concrete ML。
+- 移动端 SDK：谨慎。不要默认把完整 FHE runtime 塞进主 app；优先让 SDK 只做 key management、encoding、encryption/decryption 和小规模测试，重计算放服务端。
+
+生产上线前必须做四类 benchmark：
+
+- ciphertext size：单次 Ask 上下行能否接受；
+- latency：是否会影响 install / first_open / deep link callback；
+- battery / CPU：移动端加解密是否可控；
+- correctness drift：CKKS / quantized inference 是否改变 attribution 或 risk bucket。
+
+### 17E.7 与 OPRF/PSM 的取舍
+
+| 方案 | 服务端是否看明文 query material | 客户端是否可能看到 candidate 结构 | 性能 | 默认建议 |
+|---|---:|---:|---:|---|
+| OPRF/PSM + payload | 低，取决于协议实现和 bucket | 中，需要 payload/padding 控制 | 好 | 默认主链路 |
+| FHE private scoring | 更低，输入可加密 | 中高，解密 score 后需限制输出 | 中到差 | hardened profile |
+| PIR / HE retrieval | 更低，可隐藏查询 | 低到中，取决于返回设计 | 中到差 | 特殊高敏场景 |
+| MPC / PJC | 多方信任更强 | 低 | 中到差 | 跨方 reconciliation |
+
+换句话说，FHE 不是“比 OPRF/PSM 更现代，所以替换它”。它是另一个 trade-off：用更高计算和工程成本，换取服务端对某些输入的更低可见性。对大部分广告 attribution hot path，OPRF/PSM 更像产品默认；FHE 更像少数高敏 partner、强监管 region 或高价值 aggregate 的加固层。
+
+### 17E.8 最小 POC 范围
+
+如果要真实推进，建议不要从完整 ODM 开始。先做一个 4 周 POC：
+
+1. 只选一个 task：`install_candidate_scoring_fhe_poc`。
+2. 只选一个 region / app / campaign allowlist。
+3. candidate bucket 固定 padding 到 `1024`。
+4. feature 只用 5-8 个低维 bucket，不使用 raw IP / raw boot time。
+5. 用 BFV/BGV 实现 exact score，先不做 CKKS。
+6. server 只返回 encrypted score vector。
+7. SDK 解密后只输出 `matched_candidate_count` 和 `selected_candidate_slot`。
+8. 最终仍走 `ClaimResponse -> MmpConfirmRequest`。
+
+POC 成功标准不应该是“FHE 能跑起来”，而是：
+
+- p95 latency 在可接受范围；
+- ciphertext size 不破坏移动网络体验；
+- match rate 与 OPRF/PSM baseline 差异可解释；
+- MMP 不新增任何 raw / internal field；
+- optimization label 仍能在 Confirm 后找回 `req_id`；
+- fallback path 明确，FHE 失败不等于 attribution negative。
+
 ## 18. Open Questions
 
 以下问题应由具体产品 RFC 继续收敛：
@@ -3315,6 +3887,9 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 - 多归因场景里 winner-only 与 fractional-credit 的默认策略是什么？
 - 各 region 是否允许 event-level partner-facing reporting？
 - aggregate reporting 的 DP budget 如何按 metric 和时间窗分配？
+- FHE hardened profile 的默认 POC 是否选择 BFV/BGV exact scoring，还是 CKKS / Concrete ML encrypted inference？
+- 如果 FHE response 由 SDK 解密，如何限制 SDK 从 score vector 中学习过多 candidate store 结构？
+- 如果 FHE response 改成 threshold decrypt，collector / helper 的 trust model 与 MMP legal role 如何定义？
 
 ## 19. 最终建议
 
@@ -3323,7 +3898,7 @@ In all cases, req_id remains server-side and is recovered by the AdNetwork only 
 1. 先把边界做对：raw device material 不出 AdNetwork SDK crypto boundary，`req_id` 不给 MMP，`odm_info` 不复用。
 2. 再把可用性做稳：采用 `MMP Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`，默认 Option 4：tracking-link `mmp_touch_token + opaque claim_token`。
 3. 再把优化闭环做稳：Confirm 后用 `mmp_touch_token -> req_id` 恢复 request-level label，支撑 creative_id x req_id 级别训练。
-4. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐。
+4. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
 
 一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，以及谁能在 Confirm 后恢复 req_id”定义成严格协议。
 
@@ -3596,6 +4171,59 @@ Config 下发上下文
 2. SRN ask/claim/confirm 的观测粒度应至少覆盖 `session_start` / `first_open` 级 trace，否则生产排障会断链。
 3. optimization plane 可以先不做 user-level DP，但不能把 compat-only 字段、ATT gating 状态和候选竞争质量信息混成一个黑盒标签。
 
+### 20.15 截至 2026-05-07 的最新 delta：runtime trace 和 debug privacy 也要进 RFC
+
+这次补充调研后的核心变化是：RFC 不能只写 measurement object 和归因公式，还要把 SDK 运行态、日志隐私、MMP 接入副作用一起写进生产契约。否则系统上线后会在“为什么没有归因”“为什么 deep link 延迟”“为什么 `odm_info` 缺失”这些问题上退回通用日志，而通用日志恰恰最容易泄漏 PII。
+
+标准侧的最新状态没有推翻本文的 aggregate 设计，反而强化了它：
+
+- [DAP draft-ietf-ppm-dap-17](https://www.ietf.org/archive/id/draft-ietf-ppm-dap-17.html) 发布于 2026-01-30，仍把多方 aggregate measurement、report lifecycle、batch、collection、anti-replay 和 VDAF 绑定放在协议核心。
+- [DAP Extensions for the Attribution API -01](https://www.ietf.org/ietf-ftp/internet-drafts/draft-thomson-ppm-dap-attribution-01.html) 发布于 2026-02-18，目标就是把 Attribution API 依赖的 DP aggregation 和 operating modes 对齐到 DAP。
+
+这说明本 RFC 里的 `AggregateCollectorBudgetState` 不应简化成 BI 表参数；它应该继续保留 `collector_surface_id`、`budget_scope_id`、`privacy_budget_epoch_id`、`lifecycle_state`、`replay_rejected` 这类协议状态。Phase 1 可以不部署完整 DAP，但对象模型不要背离 DAP。
+
+产品侧的最新状态进一步说明 MMP / AAP integration 已经是正式工程面：
+
+- Google Ads 的 [on-device conversion measurement for iOS App campaigns](https://support.google.com/google-ads/answer/12119136?hl=en) 明确 event-data 方案来自 device signals such as IP addresses and timestamps，并要求目标事件来自 Firebase SDK events，而不是 generic S2S Measurement Protocol events。
+- Google 开发者 [request/response spec](https://developers.google.com/app-conversion-tracking/api/request-response-specs) 当前最后更新时间是 `2026-03-10 UTC`，继续把 `odm_info`、`ad_event_id`、`fot`、`ctry_c`、`eea`、`ad_user_data`、`ad_personalization` 写成正式接口字段，并说明有效 cross-network attribution request 是空 body 的 generic `HTTP 200`。
+- Singular 的 [Google Ads attribution integration](https://support.singular.net/hc/en-us/articles/115003252786-Google-Ads-AdWords-Mobile-App-Campaigns-Attribution-Integration) 当前文档把 ICM 写成 open beta：Android 自 2026-03-30 起对所有广告主开放，iOS 自 2025-11-12 起对所有广告主开放；同时说明 ICM attribution 在 Singular 中可表现为 click-through install、probabilistic attribution，且 sub network type 不可用。
+- Singular 的 [iOS SDK Advanced Options](https://support.singular.net/hc/en-us/articles/36198405689243-iOS-SDK-Advanced-Options?navigation_side_bar=true) 还把 Google ODM SDK、Singular iOS SDK `12.8.1+`、`enableOdmWithTimeoutInterval`、deep link callback delay 写成接入要求。
+
+这些资料直接要求新增 `SdkMeasurementRuntimeTrace`：生产系统需要知道 `odm_sdk_present`、`mmp_sdk_version`、`odm_fetch_timeout_ms`、`sdk_init_delay_ms`、`deep_link_callback_deferred`、`event_source_system`、`is_firebase_native_event`，但这些状态只属于 integration health / confidential debug plane，不属于 attribution truth，也不属于 optimization trainer。
+
+研究侧的最新补充则把 debug privacy 和 trust boundary 拉回主协议：
+
+- [Proteus: A Practical Framework for Privacy-Preserving Device Logs](https://arxiv.org/abs/2603.06540)（2026-03-06）说明移动端日志可以在生成点先做 keyed pseudonymization，再用时间轮转密钥加密；服务端只获得特定时间窗的 controlled sharing，而不是长期明文 PII。它对本 RFC 的启发是：SDK debug trace 也要有 `pii_transform_policy_id`、`log_key_epoch_id`、`debug_trace_window_id` 和 `support_grant_id`。
+- [Who am I Talking to?](https://research.google/pubs/who-am-i-talking-to-a-large-scale-measurement-of-surface-attribution-across-real-world-security-and-privacy-interfaces/)（CHI 2026）说明用户对 UI / permission / surface 来源的识别能力并不可靠。对 ODM / MMP 接入的含义是：不要把隐私边界建立在“用户能看懂哪个 SDK 在收集什么”的假设上，而要依赖协议级 purpose binding、本地 capability registry、字段级 release policy 和可审计 runtime trace。
+
+因此，本文截至 2026-05-07 的推荐收紧如下：
+
+1. `MMP Ask -> Ad Network Claim -> MMP Confirm` 仍是主链路，但 Ask 之前的本地 capability 和 runtime trace 必须被建模。
+2. `odm_info` 仍是 compatibility bridge object，但它的生成条件、缺失原因、timeout 和 source event type 必须可审计。
+3. SDK debug log 必须默认按 field policy 最小化，不能成为 raw IP / boot time / deep link / User-Agent 的旁路出口。
+4. optimization plane 可以继续不先上 DP，但必须把 runtime trace、compat status、attribution truth、training label 分成不同对象。
+5. aggregate plane 继续对齐 DAP / VDAF / Attribution extension，对外 release 不应退化为没有 lifecycle / budget / replay 语义的普通聚合表。
+
+### 20.16 FHE 工程库已经可用，但仍要按“固定小电路”落地
+
+截至 2026-05-07，FHE 的工程生态已经足够成熟到可以做 POC，但还没有成熟到应该无脑塞进广告 attribution hot path。
+
+可用组件大致分四类：
+
+- [OpenFHE](https://openfhe-development.readthedocs.io/en/latest/) 当前文档显示支持 BFV、BGV、CKKS、FHEW/TFHE/CGGI 等常见方案，并包含 threshold FHE、proxy re-encryption 等扩展。它适合作为 C++ server evaluator / research-to-production POC 基座。
+- [Microsoft SEAL](https://github.com/microsoft/SEAL) 是成熟 C++ HE 库，支持 BFV / BGV / CKKS，并明确提醒 FHE 不是 generic technology：比较、排序、正则、动态分支等通常不适合直接搬进 HE。
+- [Lattigo](https://github.com/tuneinsight/lattigo) 是 Go 生态里的 RLWE-based HE / multiparty HE 库，适合 Go microservice 和分布式系统原型。
+- [Concrete / Concrete ML](https://docs.zama.org/concrete-ml/1.4/) 把 FHE 编译和 encrypted ML inference 做得更接近 ML 工程师工作流，适合验证量化小模型、logistic / tree / shallow neural inference 的 feasibility。
+
+这些资料对本文的设计含义是：
+
+- FHE 适合固定、低深度、可量化、可 padding 的小计算；不适合把整条 SRN attribution workflow 加密后“自动运行”。
+- exact attribution / equality / count 应优先考虑 BFV / BGV；approximate score / vector dot product 可考虑 CKKS；bit / comparison / lookup-heavy circuit 才考虑 TFHE/FHEW/CGGI 类路线。
+- FHE 参数必须是协议对象的一部分：`scheme`、`poly_modulus_degree`、`coeff_modulus_bits`、`plaintext_modulus`、`scale`、`multiplicative_depth`、`key_epoch_id`、`circuit_id` 都会影响安全性、正确性和性能。
+- 对移动广告来说，真正的瓶颈通常不是“能不能算”，而是 ciphertext size、SDK CPU/battery、first_open latency、deep link callback 延迟和 fallback 语义。
+
+因此本文把 FHE 放在 Profile D，而不是 Profile A/B/C。推荐先从 `FHE-assisted private candidate scoring` 或 `encrypted aggregate sum` 做 POC；不要从 “FHE 版完整归因系统” 开始。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -3615,6 +4243,8 @@ Config 下发上下文
 13. [About the Enhanced attribution model](https://support.appsflyer.com/hc/en-us/articles/41442782045073-About-the-Enhanced-attribution-model)
 14. [Hardening Confidential Federated Compute against Side-channel Attacks](https://arxiv.org/abs/2603.21469)
 15. [Google’s Approach to Protecting Privacy in the Age of AI](https://research.google/pubs/googles-approach-to-protecting-privacy-in-the-age-of-ai/)
+16. [Proteus: A Practical Framework for Privacy-Preserving Device Logs](https://arxiv.org/abs/2603.06540)
+17. [Who am I Talking to? A Large-Scale Measurement of Surface Attribution Across Real-World Security and Privacy Interfaces](https://research.google/pubs/who-am-i-talking-to-a-large-scale-measurement-of-surface-attribution-across-real-world-security-and-privacy-interfaces/)
 
 ### 21.2 Standards
 
@@ -3641,6 +4271,8 @@ Config 下发上下文
 9. [Adjust self-attributing callbacks](https://help.adjust.com/en/article/self-attributing-network-callbacks)
 10. [Understanding iOS App campaign measurement and reporting](https://support.google.com/google-ads/answer/16771743)
 11. Google ODC / ODM On-Device Measurement 技术逆向与实现模型，2026-04-30，基于 2026-04-14 HAR 样本。
+12. [Singular Google Ads Mobile App Campaigns Attribution Integration](https://support.singular.net/hc/en-us/articles/115003252786-Google-Ads-AdWords-Mobile-App-Campaigns-Attribution-Integration)
+13. [Singular iOS SDK Advanced Options](https://support.singular.net/hc/en-us/articles/36198405689243-iOS-SDK-Advanced-Options?navigation_side_bar=true)
 
 ### 21.4 Engineering Components
 
@@ -3656,3 +4288,7 @@ Config 下发上下文
 10. [sigstore/rekor](https://github.com/sigstore/rekor)
 11. [cloudflare/circl](https://github.com/cloudflare/circl)
 12. [cloudflare/voprf-ts](https://github.com/cloudflare/voprf-ts)
+13. [OpenFHE](https://openfhe-development.readthedocs.io/en/latest/)
+14. [Microsoft SEAL](https://github.com/microsoft/SEAL)
+15. [Lattigo](https://github.com/tuneinsight/lattigo)
+16. [Concrete ML](https://docs.zama.org/concrete-ml/1.4/)
