@@ -2931,6 +2931,81 @@ DP-SDG 任务本身应该像一个带 release gate 的 job，而不是一次性 
 - HE / dual-server / secure aggregation 保护的是更新过程，DP 保护的是个体贡献对模型或统计发布的影响，XAI 保护的是上线后的可解释运营
 - 对工业场景，落地证据应该包括攻击评估、隐私预算、延迟、回滚和人工复核，而不是只给模型指标
 
+### 16B.27 Clean Room External Data / 外部湖仓数据接入的 Mock Data
+
+Snowflake Data Clean Rooms 的外部 S3 connector 文档给了一个很现实的落地信号：clean room 不一定要求所有数据先搬进同一个平台，企业也会希望把 S3 / Iceberg / lakehouse 里的数据以受控方式接进协作环境。
+
+一个简化的 external data registration 可以长这样：
+
+```json
+{
+  "clean_room": "retail_media_measurement_q2",
+  "provider": "publisher_a",
+  "external_dataset": {
+    "storage": "s3",
+    "bucket_uri": "s3://publisher-a-cleanroom/exposures/2026/05/",
+    "file_format": "parquet",
+    "table_type": "external_table"
+  },
+  "access_boundary": {
+    "iam_role_arn": "arn:aws:iam::123456789012:role/snowflake_cleanroom_connector",
+    "allowed_prefix": "exposures/2026/05/*",
+    "explicit_provider_approval_required": true
+  },
+  "governance": {
+    "raw_export_allowed": false,
+    "templates_allowed": ["campaign_lift_v3", "reach_frequency_v2"],
+    "external_table_risk_notice_acknowledged": true,
+    "consent_management_source": "external_policy_engine"
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- clean room 的工程边界正在靠近企业已有 lakehouse，而不是只处理平台内原生表
+- 外部数据接入会引入 IAM、service account、prefix scope、文件格式和 provider approval 等新的安全面
+- 文档也明确提醒：clean room 本身不自动替客户管理 data subject consent；consent / purpose / jurisdiction 需要额外接入执行链路
+- 对初学者来说，`数据不复制` 不等于 `没有风险`，外部表权限、connector 责任边界和下游用途控制都要显式设计
+
+### 16B.28 Clean Room Observability / 协作查询监控的 Mock Data
+
+AWS Clean Rooms 2026-01 的 detailed monitoring 更新说明，clean room 进入生产之后，性能、成本和查询运行状态本身也要成为治理对象。广告主监控 lift analysis query，不只是为了省钱，也是在确认协作没有变成不可解释的黑盒。
+
+一个协作查询监控事件可以长这样：
+
+```json
+{
+  "collaboration_id": "collab_campaign_lift_2026_q2",
+  "query_id": "query_lift_2026_05_07_001",
+  "runner": "advertiser_measurement_role",
+  "template": "campaign_lift_v3",
+  "metrics": {
+    "duration_ms": 48210,
+    "scanned_rows": 982340112,
+    "output_rows": 18,
+    "compute_cost_usd_estimate": 12.44
+  },
+  "privacy_controls": {
+    "aggregation_threshold_checked": true,
+    "raw_result_export_allowed": false,
+    "data_access_budget_spent": 1,
+    "remaining_daily_budget": 11
+  },
+  "alerts": {
+    "performance_anomaly": false,
+    "unexpected_dimension_drilldown": false,
+    "budget_near_limit": false
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- privacy tech 的生产化不只看算法，还看 observability、budget、alert 和审计
+- clean room 查询如果运行成本异常、输出过细、访问预算消耗过快，都应该被监控
+- 对业务团队，监控指标要能解释“这次协作是否按模板、预算和输出策略执行”，而不只是“SQL 成功了”
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -3258,7 +3333,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-05）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-07）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -3917,6 +3992,35 @@ PEPR 2026 的 “Private Tuning of LLMs in Practice” 延续了 VaultGemma / JA
 2. 再决定是否用 DP fine-tuning、TEE inference、RAG redaction、synthetic data 或组合方案。
 3. 最后用 extraction / memorization / utility evaluation 证明方案没有只停留在架构图上。
 
+### 18A.32 Clean room 的下一步不是“更多连接器”，而是把连接器纳入责任边界
+
+截至 2026-05-07，clean room 产品化已经明显进入 connector / external table / lakehouse federation 阶段。Snowflake 文档显示，Data Clean Room 可以通过 connector 访问 Amazon S3 中的外部 parquet 数据；AWS Clean Rooms 也在 2026-02 支持 remote Apache Iceberg REST catalogs。
+
+这对 primer 的增量启发是：clean room 的安全边界不再只是平台内表、模板和输出阈值，还包括：
+
+- 外部存储 bucket / prefix 的最小权限
+- connector service account 的身份与轮换
+- 外部表是否被 provider 显式允许
+- consumer 是否知道自己正在分析 external table
+- 第三方 connector 的责任边界和附加条款
+- consent / data use rights 是否随数据进入协作执行层
+
+更直白地说，`clean room can access external data` 是落地能力，但不是隐私保证。它让数据工程更顺，但也要求把 IAM、catalog、connector、consent、purpose 和 audit 放进同一张架构图。
+
+### 18A.33 Clean room 可观测性正在成为隐私工程的一部分
+
+AWS Clean Rooms 2026-01 的 detailed monitoring 更新很适合补进导论：它把 collaboration SQL query 的运行指标发布到 CloudWatch，用于性能、资源和成本监控。表面看这是运维功能，但对隐私工程也重要。
+
+原因是生产 clean room 不是一次性演示，而是长期协作系统。它需要持续回答：
+
+- 哪些成员在跑哪些模板
+- 查询运行是否突然变慢或扫描异常增大
+- 访问预算是否被快速消耗
+- 输出是否出现过细维度或异常小桶
+- payer / runner / creator 的操作是否能追溯
+
+所以 clean room 的成熟度可以这样判断：如果它只有访问控制和模板，没有 monitoring、audit、budget、alert 和 release review，就还没有真正进入生产运营形态。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -4551,6 +4655,31 @@ Oblivious 在 PEPR 2026 的 DP library grey-box testing 分享里提到，用新
 
 这提醒初学者：隐私技术落地不只是选算法，还包括让算法在升级、迁移、SQL 优化、配置变更和产品操作中持续正确。
 
+### 18B.35 Snowflake external S3 connector：clean room 开始直接贴近外部数据湖
+
+Snowflake Data Clean Room 的 Amazon S3 external data connector 已经 GA。它允许协作者从 clean room 中访问云存储里的 parquet 数据，并要求 provider 显式允许使用 external table；文档同时提示外部表会带来额外安全风险，且 data subject consent management 仍由客户负责。
+
+这个案例值得作为落地引用，因为它把 clean room 从“平台内受控协作”推进到“跨存储边界的受控协作”。真实企业不会为了每次协作都复制一份完整明细表，更多时候会希望把已有 lakehouse、catalog、IAM 和 clean room 连起来。
+
+落地判断：
+
+- connector 减少 ETL 和数据复制，但扩大了 IAM / external table / third-party connector 的治理面
+- provider approval、consumer warning、最小权限和 bucket prefix scope 是隐私协作的一部分
+- consent 不会因为数据进入 clean room 就自动成立，需要接入 OneTrust 这类 consent / data use governance 层或自建 policy engine
+
+### 18B.36 AWS Clean Rooms detailed monitoring：协作查询进入可观测运营
+
+AWS Clean Rooms 在 2026-01-02 支持 collaboration SQL query 的 detailed monitoring，并把 query performance 与 resource utilization 发布到 CloudWatch。AWS 给的例子是广告主监控 campaign lift analysis query 的性能和成本。
+
+这个案例说明 clean room 已经不只是“能安全 join”，而是要进入日常运营：
+
+- 数据提供方关心访问预算、查询频率和输出策略
+- 分析方关心任务耗时、扫描量和成本
+- 平台团队关心异常查询、重试、失败和容量
+- 隐私团队关心是否出现过细分析、异常反复查询或预算绕过
+
+所以 clean room 的落地证据不应只包括架构图，还应包括 monitoring dashboard、alert rule、query audit log 和 budget consumption record。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -4628,6 +4757,8 @@ Oblivious 在 PEPR 2026 的 DP library grey-box testing 分享里提到，用新
 51. Snowflake Documentation, Multi-party insights template
 52. OneTrust, consent-aware data clean rooms with Snowflake
 53. Snowflake Data Clean Rooms UI in Snowsight public preview
+54. Snowflake Data Clean Rooms, external data from Amazon S3
+55. AWS Clean Rooms, detailed monitoring for collaboration queries
 
 ### 论文与研究资料
 
@@ -4775,3 +4906,5 @@ Oblivious 在 PEPR 2026 的 DP library grey-box testing 分享里提到，用新
 - USENIX PEPR 2026, Production Multi-Party Computation via the Distributed Aggregation Protocol: https://www.usenix.org/conference/pepr26/presentation/geoghegan
 - USENIX PEPR 2026, Privacy in Theory, Bugs in Practice: Grey-Box Testing for Differential Privacy Libraries: https://www.usenix.org/conference/pepr26/presentation/simmons-marengo
 - USENIX PEPR 2026, Private Tuning of LLMs in Practice: From VaultGemma to Custom Fine-Tuning: https://www.usenix.org/conference/pepr26/presentation/pravilov-llms
+- Snowflake Data Clean Room, external data from an Amazon S3 bucket: https://docs.snowflake.com/en/user-guide/cleanrooms/external-data-aws
+- AWS Clean Rooms, detailed monitoring for collaboration queries: https://aws.amazon.com/about-aws/whats-new/2026/01/clean-rooms-detailed-monitoring-collaboration-queries/
