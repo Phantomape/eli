@@ -3006,6 +3006,93 @@ AWS Clean Rooms 2026-01 的 detailed monitoring 更新说明，clean room 进入
 - clean room 查询如果运行成本异常、输出过细、访问预算消耗过快，都应该被监控
 - 对业务团队，监控指标要能解释“这次协作是否按模板、预算和输出策略执行”，而不只是“SQL 成功了”
 
+### 16B.29 Distributed DP Synthetic Data / 跨机构表格合成数据的 Mock Data
+
+USENIX Security 2026 的 `Distributed Synthesis of Differentially Private Tabular Datasets` 很适合补进 primer，因为它把两个常被分开讲的方向连起来了：
+
+- DP synthetic data：输出可共享的合成表格，而不是原始明细
+- MPC / secure computation：在多方数据纵向分布时，不把完整属性集中到一个地方
+
+假设医院、保险公司和药房想生成一个研究用合成数据集。三方的数据不是按用户行分散，而是按属性分散：
+
+```json
+{
+  "patient_join_key": "sha256(patient_id || consortium_salt)",
+  "hospital_columns": {
+    "diagnosis_group": "cardio",
+    "admission_count_12m": 2,
+    "lab_risk_bucket": "high"
+  },
+  "insurer_columns": {
+    "claims_cost_bucket": "10k_25k",
+    "plan_type": "ppo",
+    "prior_authorization_count": 3
+  },
+  "pharmacy_columns": {
+    "med_adherence_bucket": "medium",
+    "prescription_count_12m": 8
+  }
+}
+```
+
+一个更贴近论文思路的执行计划可以长这样：
+
+```json
+{
+  "synthesis_job": "dp_synthetic_cohort_2026_q2",
+  "privacy_unit": "patient",
+  "dp_budget": {
+    "epsilon_total": 2.0,
+    "delta": 1e-8,
+    "budget_split": {
+      "marginal_selection": 0.6,
+      "marginal_measurement": 1.2,
+      "validation_release": 0.2
+    }
+  },
+  "secure_computation": {
+    "goal": "estimate_two_way_marginals_without_centralizing_attributes",
+    "primitive_examples": [
+      "distributed_point_functions",
+      "secure_noise_sampling"
+    ],
+    "cleartext_visible_to_any_single_party": false
+  },
+  "synthetic_output": {
+    "rows": 50000,
+    "schema": [
+      "diagnosis_group",
+      "claims_cost_bucket",
+      "plan_type",
+      "med_adherence_bucket",
+      "admission_count_bucket"
+    ],
+    "release_format": "parquet",
+    "allowed_use": "research_feature_prototyping"
+  }
+}
+```
+
+最终输出不是“真实患者表”，而是一张可用来做探索分析、建模原型或教学演示的合成表：
+
+```json
+{
+  "synthetic_patient_id": "syn_00010492",
+  "diagnosis_group": "cardio",
+  "claims_cost_bucket": "10k_25k",
+  "plan_type": "ppo",
+  "med_adherence_bucket": "medium",
+  "admission_count_bucket": "2_3",
+  "lab_risk_bucket": "high"
+}
+```
+
+这条 mock data 想说明：
+
+- 合成数据不是简单“让 LLM 编几行假数据”，核心是保留哪些统计相关性、消耗多少 DP budget、输出给谁用
+- 多机构场景下，难点不是只给结果加噪声，而是如何在不集中完整属性表的情况下估计跨属性相关性
+- 这类方案适合“共享可用统计结构”，不适合替代所有原始数据访问；高风险决策仍需要额外验证、治理和法律基础
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -4021,6 +4108,58 @@ AWS Clean Rooms 2026-01 的 detailed monitoring 更新很适合补进导论：�
 
 所以 clean room 的成熟度可以这样判断：如果它只有访问控制和模板，没有 monitoring、audit、budget、alert 和 release review，就还没有真正进入生产运营形态。
 
+### 18A.34 分布式 DP 合成数据：从“单方脱敏发布”走向“多方共同生成”
+
+USENIX Security 2026 的 `Distributed Synthesis of Differentially Private Tabular Datasets` 给了一个很有价值的新信号：DP synthetic data 不只适用于一个组织内部把表格数据合成后发布，也可以和 MPC 结合，处理“属性纵向分布在多个机构”的场景。
+
+这对医疗、金融、政务和广告生态都重要。很多真实协作不是 A 有一批用户、B 有另一批用户，而是多方围绕同一批人或同一批事件各自持有不同属性：
+
+- 医院有诊疗与检验字段
+- 保险公司有赔付与计划字段
+- 药房有处方与依从性字段
+- 广告平台有曝光字段
+- 商家有购买字段
+
+如果要生成一张可共享的合成表，系统不仅要保护个体，还要避免把完整属性表集中到一个单点。论文路线的关键启发是：先用 secure computation 估计关键二维边际分布，再在 DP budget 下合成表格。这样 primer 里的心智模型可以升级为：
+
+- `DP` 控制最终统计结构泄漏
+- `MPC` 控制中间统计估计过程中的明文暴露
+- `synthetic data` 提供便于共享和下游试验的数据形态
+
+工程判断：这类方案不是为了替代所有 clean room 查询，而是适合“多方想共享一个可复用数据资产，但又不能交出原始明细”的场景。它的落地难点会集中在 schema 对齐、join key 治理、边际选择、预算拆分、utility validation 和合成数据误用边界。
+
+### 18A.35 Private AI 的另一个方向：用 TEE 做可验证评测，而不只是保护推理
+
+TikTok 开源的 ManaTEE 把 TEE 用到了一个很实际的 AI 信任问题：模型提供方想证明模型评测结果可信，但不想泄露模型权重；评测方想确认脚本、模型和结果没有被篡改，但也不一定应该拿到模型明文。
+
+这和常见的“TEE 保护用户请求”不完全一样。它保护的是 AI 供应链里的评测过程：
+
+- 模型权重进入 TEE
+- 双方约定 evaluation harness 或自定义评测脚本
+- attestation 证明运行环境和代码版本
+- 评测结果带有可验证证据
+
+这个方向值得加入 primer，因为 AI 时代的 privacy tech 不只保护训练数据和用户输入，也会保护模型资产、评测数据、审计脚本和第三方验证流程。更一般地说，TEE 的落地场景正在从 `confidential analytics` 扩展到 `verifiable computation for AI governance`。
+
+需要保持冷静的是：TEE 评测只能证明“某个受 attestation 约束的环境运行了某个代码和数据组合”，不能自动证明 benchmark 设计公平、评测集无污染、模型没有针对测试集优化，也不能消除侧信道和运维配置风险。
+
+### 18A.36 MPC 工具化的重点：让数据科学家用熟悉接口表达安全计算
+
+SecureNumpy / PETAce 这类项目释放了另一个信号：MPC 要进入真实团队，不能只停留在协议论文或专用 DSL。数据科学家习惯的是 NumPy、DataFrame、SQL、Python UDF 和 notebook；如果 PET 平台不能承接这些工作流，就很难进入日常分析。
+
+这条路线的价值不在于“NumPy API 本身带来隐私保证”，而在于把安全计算包装成更接近现有分析栈的开发体验：
+
+- 数据科学家写矩阵、统计、join、group-by 或模型特征逻辑
+- 底层用 secret sharing、OT、HE、PSI 等协议执行
+- 平台层补充输入 schema、参与方权限、输出阈值、审计和性能限制
+
+对 primer 的启发是：落地 PET 平台通常要同时设计两层 API：
+
+- `cryptographic API`：给协议工程师，强调正确性、威胁模型和性能
+- `analyst API`：给业务分析和建模团队，强调 familiar interface、受控能力和可审计输出
+
+如果只做前者，系统很强但没人会用；如果只做后者，系统易用但容易把复杂隐私边界藏起来。生产级方案必须把两者接上。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -4680,6 +4819,44 @@ AWS Clean Rooms 在 2026-01-02 支持 collaboration SQL query 的 detailed monit
 
 所以 clean room 的落地证据不应只包括架构图，还应包括 monitoring dashboard、alert rule、query audit log 和 budget consumption record。
 
+### 18B.37 USENIX Security 2026：Distributed DP tabular synthesis 把 MPC + DP 合成数据连起来
+
+`Distributed Synthesis of Differentially Private Tabular Datasets` 是一个值得引用的研究落地信号：它不是只证明“DP 合成数据可行”，而是把问题推进到多机构、纵向分布属性、不能集中完整表格的场景。
+
+论文页面给出的关键工程结果很具体：在真实 WAN 设置下合成 `Adult` 数据集约 24 分钟，而既有协议估计需要 57 天。这个数量级变化说明，分布式 DP synthetic data 正在从“概念上可以做”靠近“工程上可讨论”。
+
+适合引用的场景：
+
+- 医疗机构和保险公司想共享研究用合成 cohort
+- 金融机构想联合生成风控建模样本，但不共享各自完整属性
+- 广告、零售和媒体想产出可复用 benchmark 数据，而不是反复开放 clean room 查询
+
+落地时要强调限制：合成数据仍需要 utility validation、membership / attribute inference 测试、用途限制、schema 文档和误用提醒。DP 合成数据降低了共享风险，但不会把所有合规和业务风险清零。
+
+### 18B.38 TikTok ManaTEE：TEE 用于可验证 AI 模型评测
+
+TikTok 的 ManaTEE 是一个可以引用的 private AI 工程案例：它用 Intel TDX 或 AMD SEV 这类 TEE，把模型和评测脚本放进受保护环境中运行，并通过 attestation 让外部协作者验证评测过程。
+
+这个案例的价值在于它把 privacy tech 放进 AI 治理工作流，而不是只放进数据分析工作流：
+
+- 模型提供方保护模型权重和知识产权
+- 评测方确认使用了约定脚本和运行环境
+- 结果接近“可验证计算记录”，而不是普通自报 benchmark
+
+它适合放在 primer 的 `TEE / Confidential Computing` 落地案例里，作为 Apple PCC、Google confidential federated analytics 之外的另一个方向：`verifiable AI evaluation`。
+
+### 18B.39 SecureNumpy / PETAce：MPC 正在向数据科学工作流靠近
+
+TikTok 的 PETAce / SecureNumpy 是另一个落地信号：MPC 工程正在尝试把 cryptographic protocol 变成数据科学家更熟悉的分析接口。PETAce 提供 MPC、PSI、OT、HE 等基础能力；SecureNumpy 则把安全多方计算连接到 NumPy 风格的数据分析体验。
+
+这很适合作为 primer 的“工程化”引用，因为真实组织通常不是缺少协议名词，而是缺少可用的开发面：
+
+- 协议工程师需要可组合、可审计的底层原语
+- 数据科学家需要 familiar API
+- 平台团队需要权限、schema、日志、性能和输出控制
+
+因此，MPC 的落地成熟度不能只看协议是否安全，也要看它能否进入 Python / SQL / notebook / pipeline 这些日常工作流，同时不把隐私边界隐藏到调用者看不见。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -4906,5 +5083,10 @@ AWS Clean Rooms 在 2026-01-02 支持 collaboration SQL query 的 detailed monit
 - USENIX PEPR 2026, Production Multi-Party Computation via the Distributed Aggregation Protocol: https://www.usenix.org/conference/pepr26/presentation/geoghegan
 - USENIX PEPR 2026, Privacy in Theory, Bugs in Practice: Grey-Box Testing for Differential Privacy Libraries: https://www.usenix.org/conference/pepr26/presentation/simmons-marengo
 - USENIX PEPR 2026, Private Tuning of LLMs in Practice: From VaultGemma to Custom Fine-Tuning: https://www.usenix.org/conference/pepr26/presentation/pravilov-llms
+- USENIX Security 2026, Distributed Synthesis of Differentially Private Tabular Datasets: https://www.usenix.org/conference/usenixsecurity26/presentation/fu
+- Zenodo, Distributed Synthesis of Differentially Private Tabular Datasets artifact: https://zenodo.org/records/18753134
+- TikTok Developers, ManaTEE: Enabling Verifiable AI Transparency via Confidential Computing: https://developers.tiktok.com/blog/ManaTEE-Enabling-Verifiable-AI-Transparency
+- TikTok Developers, SecureNumpy: Empowering Data Scientists with Secure Multi-Party Computation: https://developers.tiktok.com/blog/securenumpy-empowering-data-scientists-with-secure-mulitparty-computation
+- TikTok Developers, PETAce: Using Applied Cryptography to Enhance Privacy: https://developers.tiktok.com/blog/enhance-privacy-using-PETAce
 - Snowflake Data Clean Room, external data from an Amazon S3 bucket: https://docs.snowflake.com/en/user-guide/cleanrooms/external-data-aws
 - AWS Clean Rooms, detailed monitoring for collaboration queries: https://aws.amazon.com/about-aws/whats-new/2026/01/clean-rooms-detailed-monitoring-collaboration-queries/
