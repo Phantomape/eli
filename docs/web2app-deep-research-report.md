@@ -54,7 +54,7 @@ Web2App 常见断点主要有四段：
 - Apple 的 AdAttributionKit 进一步确认了 iOS 侧的大方向：广告归因会更多依赖隐私阈值、延迟 postback、转化值和已注册广告网络，而不是用户级确定性追踪。Apple Ads 已在 2025 年 4 月 10 日纳入 AdAttributionKit 口径，但这仍是归因层变化，不等同于首开路由能力。
 - Firebase Dynamic Links 已在 `2025-08-25` 关闭。历史链接和历史 SDK 不是“待升级项”，而是需要从主链路中移除的风险项。
 
-### 2.5 截至 2026-05-07 的公开资料校准
+### 2.5 截至 2026-05-08 的公开资料校准
 
 本次补充复核后，可以把行业变化压缩成三个判断：
 
@@ -211,12 +211,14 @@ Google Ads 已将 Web2App 明确产品化为 `Web to App Connect`，并配套 `W
 - 可单列 `Web to app first conv.`
 - 官方明确支持通过 Firebase、第三方 AAP/MMP、Google Play 导入 app 首开和 app 内事件
 - `indirect installs` 至少要求把 Android / iOS 的 `first_open` 导入承载 web campaign 的 Google Ads 账号；`Web to app first conv.` 还要求导入 app 内动作，并至少将一个 app 内事件设为 primary action 参与出价
+- Google 的公开口径强调“web campaign 先进入网页，再产生 app 安装 / 首个 app 内转化”这一间接路径；若广告直接跳 App Store / Google Play，则不属于该测量能力覆盖范围
 
 同时，Google 也给出了很明确的边界：
 
 - 该测量能力适用于“广告先到 web，再带来 app 安装”的路径
 - 如果 web campaign 直接把人送到 App Store / Google Play，则不在这套测量范围内
 - iOS 侧可见性仍受 ATT 同意和隐私框架约束，Google 公开口径也仅覆盖 ATT consented iOS 流量
+- Google 表示同一次转化不会同时归给 App campaign 和 web campaign；但这只解决 Google / AAP 侧的重复上报，不替代企业内部对 web conversion、install、first_open、首个关键事件的去重规则
 - 这套能力解决的是 web campaign 对 app install / first in-app conversion 的可见性，不替代 Universal Links、App Links 或 MMP deferred deep link 的路由职责
 
 结论上，Google Ads 最适合高意图搜索、商品/服务决策需要先读信息的行业，以及已经完成 App 事件埋点与 deep link 基建的团队。
@@ -256,6 +258,7 @@ TikTok 还明确给出实操限制：
 - 一个广告仅能选择一个 app，即 Android 或 iOS 二选一
 - 如混投双系统，部分数据可能丢失
 - 建议拆分 iOS / Android ad group
+- 公开帮助文档在 2025 年底仍沿用这一口径，说明 TikTok 的 Web2App 测量重点是“非 App 目标广告也可挂接 app event tracking”，而不是自动接管 Web CTA、商店 fallback 或安装后页面恢复
 
 这意味着 TikTok 很适合“先种草、再转安装”的链路，但也要求更严格的 OS 拆分和测量配置。
 
@@ -363,6 +366,8 @@ AppsFlyer 在 Web2App 上的产品定义非常标准：
 - Smart Banner Web SDK v1 已废弃，现网应使用 `v2`
 - Smart Banners 由 OneLink 驱动，可在已安装时 deep link，未安装时送对应商店
 - OneLink Smart Script 面向广告或自然流量先到移动 Web、再从 Web 到商店的场景，核心作用是用首跳 URL 参数动态生成第二跳 OneLink，避免 app install 被错误归因或归为 organic
+- AppsFlyer 2026 年的链接结构文档进一步明确：需要跨平台、deep link、Android App Links 或 iOS Universal Links 时应使用 OneLink；单平台场景可用 single-platform link。无论哪种，incoming engagement traffic 都应使用 HTTPS，并至少明确 media source、campaign、site ID / sub site ID 等归因字段
+- 因此，Web2App 的第二跳不要写成静态商店 URL。更稳妥的做法是从首跳 URL 中抽取 `pid`、`c`、`af_siteid`、UTM 或点击 ID，再动态生成 OneLink / attribution link，把媒体上下文带到安装和首开
 
 它最适合拥有大量自有站、SEO、内容页、CRM 回流流量的团队，把 owned media 也纳入 App 增长漏斗。
 
@@ -409,6 +414,8 @@ Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下
 
 - `Web SDK` 识别 UTM / Web campaign 参数
 - 点击网页 CTA 后，自动把参数追加到 Singular Link，典型做法是把 web 参数打包进 `_web_params`
+- Singular Web-to-App Forwarding 要求移动 App 已集成 Singular SDK、移动网站接入 Web SDK，且使用 Web-to-App baselink；公开文档要求 Web SDK 版本至少为 `1.0.8`
+- 参数捕获优先级上，Singular 会优先使用 `wp_` 前缀的 Singular WP 参数，其次使用标准 UTM；常见映射包括 `utm_source -> Source`、`utm_campaign -> Campaign Name`、`utm_content -> Creative Name`
 - Singular Links 支持标准 deep link、deferred deep link 和 passthrough 参数，常见字段包括 `_dl`、`_ddl`、`_p`，用于区分 App 内目标页、安装后目标页和业务上下文
 - Web SDK 可通过 `openApp()` 直接跳转，也可用 `buildWebToAppLink()` 先生成链接再绑定到按钮或 QR code
 - 通过 `Conversion APIs` 把安装和 post-install 事件继续回传给广告平台
@@ -428,6 +435,7 @@ Firebase 现在的定位很清楚：
 
 - `Firebase Dynamic Links` 已废弃并已结束服务
 - 2025 年 8 月 25 日之后，既有 Dynamic Links 不再可作为稳定跳转入口
+- 官方 FAQ 明确，custom domain 和 `page.link` 子域名承载的 Dynamic Links 都会停止工作，自动分配的 `page.link` 域名也不能保留或转移
 - 官方迁移方向是 `App Links + Universal Links`
 - iOS Web 入口可考虑 `Smart App Banners`
 
@@ -881,3 +889,5 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
     https://docs.x.com/x-ads-api/measurement/web-conversions
 55. Singular, Conversion Postbacks for Web, PC, and Console FAQ
     https://support.singular.net/hc/en-us/articles/19017155637403-Conversion-Postbacks-for-Web-PC-and-Console-FAQ
+56. AppsFlyer, About link structure and parameters
+    https://support.appsflyer.com/hc/en-us/articles/207447163-About-link-structure-and-parameters
