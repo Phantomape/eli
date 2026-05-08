@@ -61,7 +61,7 @@ private enum AppsFlyerIntegration {
         appsFlyer.disableAdvertisingIdentifier = 0
 
         if #available(iOS 14, *) {
-            appsFlyer.waitForATTUserAuthorization(timeoutInterval: 60)
+            appsFlyer.waitForATTUserAuthorization(withTimeoutInterval: 60)
         }
 
         #if DEBUG
@@ -155,17 +155,17 @@ private enum TrackingAuthorization {
 
             if preferAdjustWrapper {
                 Adjust.requestAppTrackingAuthorization { status in
-                    log(statusCode: UInt(status))
+                    log(statusCode: status)
                 }
             } else {
                 ATTrackingManager.requestTrackingAuthorization { status in
-                    log(statusCode: UInt(status.rawValue))
+                    log(statusCode: status.rawValue)
                 }
             }
         }
     }
 
-    private static func log(statusCode: UInt) {
+    private static func log(statusCode: Any) {
         #if DEBUG
         print("ATT authorization status: \(statusCode)")
         #endif
