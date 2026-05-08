@@ -14,7 +14,7 @@
 		5D2F6B6C2D5E4A5500010005 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010017 /* LaunchScreen.storyboard */; };
 		5D2F6B6C2D5E4A5500010006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010016 /* PrivacyInfo.xcprivacy */; };
 		5D2F6B6C2D5E4A5500010007 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D2F6B6C2D5E4A5500010019 /* AppDelegate.swift */; };
-		5D2F6B6C2D5E4A5500010008 /* AppsFlyerLib in Frameworks */ = {isa = PBXBuildFile; productRef = 5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib */; };
+		5D2F6B6C2D5E4A5500010008 /* AppsFlyerLib-Static in Frameworks */ = {isa = PBXBuildFile; productRef = 5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib-Static */; };
 		5D2F6B6C2D5E4A5500010009 /* AdjustSdk in Frameworks */ = {isa = PBXBuildFile; productRef = 5D2F6B6C2D5E4A5500010084 /* AdjustSdk */; };
 /* End PBXBuildFile section */
 
@@ -35,7 +35,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				5D2F6B6C2D5E4A5500010008 /* AppsFlyerLib in Frameworks */,
+				5D2F6B6C2D5E4A5500010008 /* AppsFlyerLib-Static in Frameworks */,
 				5D2F6B6C2D5E4A5500010009 /* AdjustSdk in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -91,7 +91,7 @@
 			);
 			name = PulseDodge;
 			packageProductDependencies = (
-				5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib */,
+				5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib-Static */,
 				5D2F6B6C2D5E4A5500010084 /* AdjustSdk */,
 			);
 			productName = PulseDodge;
@@ -381,10 +381,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib */ = {
+		5D2F6B6C2D5E4A5500010082 /* AppsFlyerLib-Static */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5D2F6B6C2D5E4A5500010081 /* XCRemoteSwiftPackageReference "AppsFlyerFramework-Static" */;
-			productName = AppsFlyerLib;
+			productName = "AppsFlyerLib-Static";
 		};
 		5D2F6B6C2D5E4A5500010084 /* AdjustSdk */ = {
 			isa = XCSwiftPackageProductDependency;

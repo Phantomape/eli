@@ -17,7 +17,7 @@ Pulse Dodge is a tiny native iOS game built with SwiftUI and SpriteKit. Drag the
 
 ## App Store quick notes
 
-- AppsFlyer is integrated through Swift Package Manager using the static `AppsFlyerLib` package.
+- AppsFlyer is integrated through Swift Package Manager using the `AppsFlyerLib-Static` product from `AppsFlyerFramework-Static`. The Swift module import remains `AppsFlyerLib`.
 - Adjust is integrated through Swift Package Manager using the `AdjustSdk` package.
 - AppsFlyer does not start until `APPSFLYER_DEV_KEY` and `APPSFLYER_APP_ID` are set.
 - Adjust does not start until `ADJUST_APP_TOKEN` is set.
