@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-07<br>
+最后更新: 2026-05-09<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -27,6 +27,8 @@
 5. 推荐折中是 `mmp_touch_token + opaque claim_token`：MMP 可以做 click-conversion join 和 creative-level reporting；Ad Network 在 Confirm 后通过 token 找回内部 `req_id`；MMP 不接触 `device_fp_hash`、OPRF 输入输出、bucket tail/tag 或 `req_id`。
 
 2026-04-30 追加的 ODM / ODC HAR 逆向把第 4 点具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。2026-05-01 的 legal review 进一步修正了披露边界：文档不应写成 “no PII leaves device”，而应写成 “raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process; MMP may receive scoped pseudonymous attribution material depending on the selected option”。
+2026-05-08 的补充调研再加了一条生产现实：touchpoint 质量本身也需要可验证。IAB Tech Lab 已把基于 Privacy Pass 语义的 device attestation 放进 OM SDK，说明广告 measurement 不只要保护 conversion 侧 PII，也要防止伪造设备、伪造 supply path 把低质量触点灌进归因与优化闭环。本文因此把 device / supply-path attestation 建模为 request-scoped quality receipt，而不是 user identifier 或新的归因 token。
+2026-05-09 的补充调研把“优化”从 attribution label 又向前推进了一步：最新 W3C Attribution Level 1 工作草案继续确认 aggregate + DP + anti-replay 是公开 reporting 的主边界；IAB ADMaP / GPP / DDRF 则说明 clean-room matching、consent/deletion signal 传播已经进入行业标准化；2026-04 修订的 PIE incrementality 研究进一步提醒：last-click 或 on-device claim 只回答“谁应拿到 credit”，不等于回答“这次广告带来多少因果增量”。因此本 RFC 新增 `IncrementalityCalibrationRecord` 与 `PrivacyControlPropagationRecord`，把 request-level optimization label、因果校准、隐私控制传播拆成三个对象，避免把归因事实、增量价值和合规状态混成一张黑盒训练表。
 
 本文刻意兼顾生产实用性：
 
@@ -156,7 +158,11 @@ MMP SDK Ask
 | ODM / ODC 建模为 OPRF/PSM candidate retrieval + local filtering | HAR 证据显示真实实现不是单个本地 token，也不是裸 matched bit | 附录 20.13、17A |
 | MMP SDK / AdNetwork SDK 集成状态需要本地、可审计的 runtime trace | 2026 年 MMP ICM 文档已经把 ODM SDK、MMP SDK 版本、初始化 timeout、deep link callback delay 写成生产接入条件 | 附录 20.15、11.5A |
 | device / SDK debug log 必须在产生点做 PII 最小化，而不是事后清洗 | 2026 年 Proteus 说明移动端日志可以用 keyed pseudonymization + rotating encryption 保留排障关联性，同时避免明文 PII 外流 | 附录 20.15、10.6 |
+| touchpoint 质量需要 request-scoped device / supply-path attestation，但不能变成 user join key | OM SDK device attestation 把 Privacy Pass 风格证明带入广告 measurement；它适合反伪造和样本质量治理，不适合替代 attribution token | 附录 20.17、14.6 |
 | FHE 作为 hardened profile，而不是默认主链路 | FHE 能隐藏被计算的输入，但不能自动解决输出泄露、重放、MMP confirm 和 request-level optimization join；适合私密候选评分、aggregate 加固和小模型加密推理 | 17E、20.16 |
+| attribution label 必须与 incrementality calibration 分开 | 2026-04 修订的 PIE 研究说明 attribution / last-click / exposure rate 等 post-determined aggregate features 可以预测因果增量，但它们本身不是因果真值；优化面应把 claim label、calibration weight、experiment provenance 拆开 | 9.15、12.8、20.18 |
+| clean-room / PET matching 可以做后端对账和跨方测量，但不替代 SRN Ask-Claim-Confirm | ADMaP v1.0 已把 DCR 内两方 matching、attribution computation、report generation 标准化；本 RFC 用它加固 settlement / aggregate verification，而不是让 MMP 前台 claim API 暴露更多字段 | 13、17B、20.18 |
+| consent / deletion / jurisdiction signal 是协议状态，不是 legal 备注 | GPP 与 DDRF V2 说明隐私选择、删除请求、传播状态、签名和错误码需要机器可读；on-device measurement 必须能把这些信号映射到 artifact、token、feature release 和 retention policy | 8.22、9.15、10、20.18 |
 
 这张表的作用是把“研究/标准/产品资料”转成正文里的实现约束。第一次阅读时可以继续往下读第 6 节；只有在需要追溯依据时再看附录。
 
@@ -366,6 +372,25 @@ Reporting payload 可以包含：
 - raw device signal
 - row key
 - OPRF input / output
+
+### 7.2A Optional Touchpoint Device / Supply-Path Attestation
+
+如果 touchpoint 来自移动媒体 App、CTV App 或可集成 OM SDK 的广告渲染环境，AdNetwork 可以在 touchpoint ingestion 附近额外记录一次 request-scoped attestation receipt：
+
+```text
+ad render / OM SDK session
+  -> Privacy Pass-style token challenge / redemption
+  -> verifier returns attestation result
+  -> AdNetwork stores receipt against server_request_id
+```
+
+这条支路解决的是“这个 impression / click 是否来自可信设备和 supply path”，不是“这个用户是谁”。因此它有三条硬边界：
+
+- `DeviceSupplyPathAttestationReceipt` 可以绑定 `server_request_id`，用于反作弊、样本质量、pacing 风控和训练样本降权。
+- 原始 Privacy Pass token、platform attestation blob、device ID、seller SDK 私有字段不进入 MMP / SRN payload，也不进入 trainer row。
+- MMP 最多看到 coarse claim path / quality reason，例如 `LOW_CONFIDENCE_TOUCHPOINT`，不应看到可链接的 attestation token 或 verifier challenge。
+
+这条支路对 optimization 很重要：没有它，伪造设备产生的大量低质量触点会和真实“未转化触点”混在一起，模型会把 fraud / inventory quality 问题错学成用户兴趣问题。
 
 ### 7.3 Step C: Conversion Event and MMP SDK Ask
 
@@ -994,6 +1019,9 @@ message ServerFeatureDerivationRecord {
   string boot_time_freshness_bucket = 10;
   bool suspicious_replay_pattern = 11;
   string release_scope = 12; // optimization_only, fraud_only
+  string device_authenticity_bucket = 13; // attested, weak_attestation, missing, failed
+  string supply_path_quality_bucket = 14; // verified_seller, known_app, unknown_app, spoof_risk
+  string device_attestation_policy_id = 15;
 }
 ```
 
@@ -1148,6 +1176,42 @@ message SdkMeasurementRuntimeTrace {
 - `sdk_init_delay_ms` 与 `deep_link_callback_deferred` 只用于集成健康和用户体验评估，不得进入 bidder / ranking / pacing 训练。
 - `adapter_manifest_hash` 是本地集成证据，不等于 remote config。remote config 不能单独证明某个 network SDK 在设备上可调用。
 
+### 8.19A DeviceSupplyPathAttestationReceipt
+
+这个对象描述广告渲染侧或媒体 SDK 侧对 touchpoint 的设备真实性 / supply-path 证明。它是 request-scoped quality evidence，不是 attribution token，也不是用户标识。
+
+```proto
+message DeviceSupplyPathAttestationReceipt {
+  string attestation_receipt_id = 1;
+  int64 server_request_id = 2;
+  int64 publisher_app_numeric_id = 3;
+  string publisher_app_bundle = 4;
+  string om_sdk_version = 5;
+  string attestation_protocol = 6; // privacy_pass_private_token, platform_attestation, vendor_receipt
+  string attester_id = 7; // apple, amazon_fire_tv, platform_vendor, unknown
+  string issuer_id = 8;
+  string verifier_id = 9;
+  string token_challenge_digest = 10;
+  string token_redemption_digest = 11;
+  string attestation_result = 12; // VERIFIED, MISSING, EXPIRED, FAILED, UNSUPPORTED
+  int64 challenge_ts_ms = 13;
+  int64 redemption_ts_ms = 14;
+  int64 receipt_expiry_ts_ms = 15;
+  int32 max_age_sec = 16;
+  string supply_path_id = 17;
+  string seller_id = 18;
+  string fraud_policy_id = 19;
+  string release_scope = 20; // fraud_quality_only, optimization_quality_only, aggregate_only
+}
+```
+
+关键约束：
+
+- `token_challenge_digest` 和 `token_redemption_digest` 只用于 replay / audit / debugging；原始 token 默认不落普通日志。
+- `server_request_id` 只留在 AdNetwork 内部或 confidential plane，不能随 attestation receipt 给 MMP。
+- `attestation_result=VERIFIED` 只能说明 touchpoint 环境质量更可信，不能单独证明 conversion 应归因给该 network。
+- optimization plane 只能消费 `device_authenticity_bucket`、`supply_path_quality_bucket` 这类派生桶，不能消费 token digest 或 platform attestation blob。
+
 ### 8.20 FheMeasurementTaskConfig
 
 这个对象只在 hardened profile 下启用。它定义某个 measurement task 是否允许 FHE，以及允许哪一种电路、密钥、参数和解密边界。不要把 FHE 参数藏在 SDK remote config 里；FHE 的安全性和性能都高度依赖这些参数。
@@ -1228,6 +1292,77 @@ message FhePrivateMeasurementResponse {
 - response 里只返回 encrypted scores / encrypted aggregate；明文 `req_id`、row key、candidate payload 仍然不得出现。
 - FHE response 解密后的结果必须继续走 `ClaimResponse -> MmpConfirmRequest -> token_to_req_id_join`，不能绕过 MMP SRN 闭环。
 
+### 8.22 IncrementalityCalibrationRecord
+
+这个对象回答 optimization plane 的另一个问题：这条 request-level label 对 bidder / pacing 到底应当产生多大权重。`RequestScopedOptimizationLabel` 是归因事实，`IncrementalityCalibrationRecord` 是增量价值校准；两者不能合并。
+
+```proto
+message IncrementalityCalibrationRecord {
+  string calibration_id = 1;
+  string measurement_task_id = 2;
+  int64 advertiser_id = 3;
+  int64 campaign_id = 4;
+  int64 creative_family_id = 5;
+  string calibration_level = 6; // campaign_day, campaign_week, creative_family_week
+  string experiment_provenance = 7; // RCT, GEO_HOLDOUT, SYNTHETIC_CONTROL, PIE_MODEL
+  string experiment_id = 8;
+  string holdout_policy_id = 9;
+  string post_determined_feature_snapshot_id = 10;
+  int64 attributed_conversion_count = 11;
+  int64 test_group_outcome_count = 12;
+  int64 exposure_count = 13;
+  int32 exposure_rate_micros = 14;
+  int32 last_click_share_micros = 15;
+  int32 predicted_incrementality_micros = 16;
+  int32 incrementality_weight_micros = 17;
+  string calibration_model_id = 18;
+  string calibration_library_hint = 19; // lightgbm, xgboost, econml, dowhy
+  int64 valid_from_ts_ms = 20;
+  int64 expires_ts_ms = 21;
+  string release_scope = 22; // optimization_calibration_only, aggregate_reporting_only
+}
+```
+
+关键约束：
+
+- `calibration_id` 可以进入 `OptimizationTrainingRow`，但 RCT raw exposure / control-group user rows 不进入普通训练面。
+- `post_determined_feature_snapshot_id` 只能指向 aggregate feature snapshot，不能指向 user-level 明细。
+- `incrementality_weight_micros` 是 sample weighting / budget prior，不得反向改写 `is_attributed`。
+- 如果 `experiment_provenance=PIE_MODEL`，必须保留训练该 calibration model 的 RCT / holdout provenance；否则它会退化成“看起来像因果”的普通预测模型。
+
+### 8.23 PrivacyControlPropagationRecord
+
+这个对象把 consent、jurisdiction、deletion 和 partner privacy signal 变成正式协议状态。它不判断归因是否成立，只约束哪些 artifact、token、feature release、debug trace 可以继续存在或继续被消费。
+
+```proto
+message PrivacyControlPropagationRecord {
+  string control_signal_id = 1;
+  string source_system = 2; // mmp, cmp, advertiser_server, gpp, ddrf
+  string request_type = 3; // CONSENT_UPDATE, CONSENT_WITHDRAWAL, DELETE, SUPPRESS_PROCESSING
+  string jurisdiction_scope = 4; // US-CA, US-MD, EEA, UK, CH
+  bytes gpp_string_digest = 5;
+  repeated string gpp_section_ids = 6;
+  string ddrf_request_id = 7;
+  int64 subject_user_id_int64 = 8; // optional advertiser first-party user id when lawfully available
+  bytes subject_match_key_digest = 9;
+  repeated string affected_token_types = 10; // mmp_touch_token, claim_token, odm_info, debug_trace_window
+  repeated string affected_plane_ids = 11; // device_raw, confidential, optimization, aggregate
+  string action = 12; // DELETE, FREEZE, SUPPRESS_RELEASE, ROTATE_KEYS, RETAIN_AGGREGATE_ONLY
+  int64 effective_ts_ms = 13;
+  int64 received_ts_ms = 14;
+  int64 propagation_deadline_ts_ms = 15;
+  string propagation_status = 16; // RECEIVED, IN_PROGRESS, APPLIED, PARTIAL, FAILED
+  bytes request_signature = 17;
+  string audit_log_ref = 18;
+}
+```
+
+关键约束：
+
+- `subject_user_id_int64` 只在 advertiser first-party 合法可用时出现；它不是 ad network 的跨 app 用户 ID。
+- deletion / suppression 不应简单删除 aggregate history；更常见的动作是停止未来 release、冻结 request-level feature consumption、轮转 debug key，并记录 audit trail。
+- `PrivacyControlPropagationRecord` 必须能追到 `retention_policy_id`、`feature_policy_id`、`debug_trace_window_id`，否则无法证明 PII 派生物被按范围处理。
+
 ## 9. Mock payload
 
 ### 9.1 广告请求
@@ -1252,6 +1387,35 @@ message FhePrivateMeasurementResponse {
   "retention_policy_id": "retain_30d_confidential_180d_label"
 }
 ```
+
+### 9.1A touchpoint device / supply-path attestation receipt
+
+```json
+{
+  "attestation_receipt_id": "att_01JTXD1P7ZK69KJZB8A7K9P0M3",
+  "server_request_id": 91833720368540001,
+  "publisher_app_numeric_id": 88990011,
+  "publisher_app_bundle": "com.example.game",
+  "om_sdk_version": "1.6.0",
+  "attestation_protocol": "privacy_pass_private_token",
+  "attester_id": "apple",
+  "issuer_id": "iab_om_device_attestation_issuer_us",
+  "verifier_id": "adnetwork_quality_verifier_v2",
+  "token_challenge_digest": "sha256:7fbe0a9e4b1d...",
+  "token_redemption_digest": "sha256:ac451b71d2b4...",
+  "attestation_result": "VERIFIED",
+  "challenge_ts_ms": 1777500005180,
+  "redemption_ts_ms": 1777500005411,
+  "receipt_expiry_ts_ms": 1777500305411,
+  "max_age_sec": 300,
+  "supply_path_id": "seller:pub-7788/app:com.example.game/exchange:adx",
+  "seller_id": "pub-7788",
+  "fraud_policy_id": "touch_quality_attestation_v1",
+  "release_scope": "fraud_quality_only"
+}
+```
+
+这个 receipt 可以让内部训练面知道 `server_request_id=91833720368540001` 的 touchpoint 质量更可信，但 trainer 只应看到派生后的 `device_authenticity_bucket=attested` / `supply_path_quality_bucket=verified_seller`，不应看到 token digest。
 
 ### 9.2 compatibility 端上 artifact
 
@@ -1856,6 +2020,9 @@ def handle_confirm(req):
   "ip_churn_bucket": "same_prefix_24h",
   "boot_time_freshness_bucket": "2_to_7_days",
   "suspicious_replay_pattern": false,
+  "device_authenticity_bucket": "attested",
+  "supply_path_quality_bucket": "verified_seller",
+  "device_attestation_policy_id": "touch_quality_attestation_v1",
   "release_scope": "optimization_only"
 }
 ```
@@ -1935,6 +2102,8 @@ def handle_confirm(req):
     "network_stability_bucket",
     "timezone_consistency_bucket",
     "reinstall_hint_bucket",
+    "device_authenticity_bucket",
+    "supply_path_quality_bucket",
     "request_hour_bucket",
     "geo_cluster_id"
   ],
@@ -1946,6 +2115,90 @@ def handle_confirm(req):
   "feedback_snapshot_ts_ms": "1761795105123"
 }
 ```
+
+### 9.15 incrementality calibration 与 privacy-control propagation
+
+归因 mock payload 只能说明“这次 request 被确认为 winner”。要让 bidder 真正做长期优化，还需要把这个 winner label 映射到“预期增量价值”。下面的对象是 campaign / creative-family 粒度的校准记录，不是 user-level 明细。
+
+```json
+{
+  "schema_version": "incrementality_calibration_record.v1",
+  "calibration_id": "cal_20260509_cmp_74012091_d7",
+  "measurement_task_id": "icm_purchase_7d_v3",
+  "advertiser_id": 120045,
+  "campaign_id": 74012091,
+  "creative_family_id": 920044,
+  "calibration_level": "campaign_week",
+  "experiment_provenance": "PIE_MODEL",
+  "experiment_id": "rct_pool_meta_2026q1_2226",
+  "holdout_policy_id": "geo_holdout_policy_v2",
+  "post_determined_feature_snapshot_id": "pief://campaign-week/2026-05-03/74012091",
+  "post_determined_features": {
+    "attributed_conversion_count": 1280,
+    "test_group_outcome_count": 1840,
+    "exposure_count": 420000,
+    "exposure_rate_micros": 420000,
+    "last_click_share_micros": 681000,
+    "aggregate_quality_bucket": "Q3"
+  },
+  "predicted_incrementality_micros": 730000,
+  "incrementality_weight_micros": 760000,
+  "calibration_model_id": "pie_lightgbm_v1_202604",
+  "calibration_library_hint": "lightgbm",
+  "valid_from_ts_ms": 1777824000000,
+  "expires_ts_ms": 1778428800000,
+  "release_scope": "optimization_calibration_only"
+}
+```
+
+训练样本消费时推荐只取下面这种低敏引用：
+
+```json
+{
+  "server_request_id": 91833720368540001,
+  "label_policy_id": "label_policy.purchase_7d_v2",
+  "is_attributed": true,
+  "credit_fraction_micros": 1000000,
+  "calibration_id": "cal_20260509_cmp_74012091_d7",
+  "incrementality_weight_micros": 760000,
+  "calibration_snapshot_ts_ms": 1777824000000
+}
+```
+
+下面是隐私控制传播的 mock。它展示的是“用户或法规信号如何影响 artifact / token / feature release”，不是归因查询。
+
+```json
+{
+  "schema_version": "privacy_control_propagation_record.v1",
+  "control_signal_id": "pcs_01JTZ2K8CEW8AJ9P3N7RA0QZ6X",
+  "source_system": "gpp_ddrf_gateway",
+  "request_type": "DELETE",
+  "jurisdiction_scope": "US-CA",
+  "gpp_string_digest": "sha256:7fd8c4b1c2e7...",
+  "gpp_section_ids": ["usca"],
+  "ddrf_request_id": "ddrf_20260509_000145",
+  "subject_user_id_int64": 922337203600012345,
+  "subject_match_key_digest": "sha256:2c01b1e8f5aa...",
+  "affected_token_types": [
+    "mmp_touch_token",
+    "claim_token",
+    "odm_info",
+    "debug_trace_window"
+  ],
+  "affected_plane_ids": [
+    "confidential",
+    "optimization"
+  ],
+  "action": "SUPPRESS_RELEASE",
+  "effective_ts_ms": 1778342400000,
+  "received_ts_ms": 1778342408123,
+  "propagation_deadline_ts_ms": 1778428800000,
+  "propagation_status": "IN_PROGRESS",
+  "audit_log_ref": "audit://privacy-controls/2026-05-09/pcs_01JTZ2K8CEW8AJ9P3N7RA0QZ6X"
+}
+```
+
+这个例子里 `subject_user_id_int64` 是广告主一方的 first-party user id，不是 ad network 用于跨 app 追踪的用户 ID。Ad network 侧应只通过 policy-bound digest / token map 找到受影响的 request、feature release 和 debug trace window。
 
 ## 10. 敏感 PII 如何流动
 
@@ -2001,12 +2254,15 @@ def handle_confirm(req):
   - `X-Forwarded-For`
   - `ad_event_id`
   - `odm_info`
+  - raw device attestation token / platform attestation blob
   - 允许短期缓存用于 partner API，但 `MUST NOT` 进入训练特征表
 - `optimization-safe derived`
   - `network_stability_bucket`
   - `ip_churn_bucket`
   - `reinstall_hint_bucket`
   - `boot_time_freshness_bucket`
+  - `device_authenticity_bucket`
+  - `supply_path_quality_bucket`
   - 允许进入 optimization plane，但必须有 `feature_policy_id`
 - `aggregate-only`
   - `metric_name`
@@ -2051,6 +2307,11 @@ def handle_confirm(req):
 - `ad_event_id`
   - 允许存在于 external response mapping
   - 不得直接进入 bid / ranking / pacing 训练
+- `DeviceSupplyPathAttestationReceipt`
+  - 允许绑定 `server_request_id` 留在 AdNetwork 内部 quality / fraud plane
+  - 原始 token、platform attestation blob、challenge nonce 不得进入 MMP / SRN payload
+  - token digest 只用于 replay / audit，不得作为长期设备标识或跨 app join key
+  - optimization plane 只可消费 `device_authenticity_bucket`、`supply_path_quality_bucket` 这类派生桶
 - `server_request_id`
   - 允许出现在 confidential join 和 optimization label
   - 不得进入 partner-facing payload
@@ -2391,6 +2652,8 @@ Phase 1 推荐：
   - `reinstall_hint_bucket`
   - `coarse_ip_geo_bucket`
   - `ip_prefix_churn_bucket`
+  - `device_authenticity_bucket`
+  - `supply_path_quality_bucket`
 
 反过来说，下列字段通常不该进入 optimization plane：
 
@@ -2400,6 +2663,7 @@ Phase 1 推荐：
 - `X-Forwarded-For`
 - 完整 `User-Agent`
 - partner 返回的原始 `ad_event_id`
+- raw device attestation token / token digest / platform attestation blob
 
 ### 12.4A 2026 产品现实要求保留“候选量”和“engagement 类型”上下文
 
@@ -2423,6 +2687,21 @@ Phase 1 推荐：
 同样地，2026-04-19 的 AppsFlyer attribution model 已明确区分 `click-through`、`view-through`、`engaged click`、`engaged view` 等 engagement 形态。对 bidder / pacing / creative ranking 来说，`winner_engagement_type` 往往和后续价值质量直接相关；如果把它压扁成统一的 `click`，训练会把不同意图强度的流量混为一谈。
 
 因此，推荐把 `AttributionDecisionRecord` 视为 optimization plane 的必要输入之一，而不是只把它当作 debug log。
+
+### 12.4B touchpoint quality 不是用户特征
+
+device / supply-path attestation 给 optimization 的价值，是把“伪造设备、伪造 seller、异常 supply path”从真实用户兴趣信号里剥离出来。推荐只以三种方式进入优化面：
+
+- 样本过滤：`attestation_result=FAILED` 且 fraud policy 命中时，样本不进入 conversion quality trainer。
+- 样本降权：`attestation_result=MISSING` 或 `UNSUPPORTED` 时，用 `sample_weight_policy_id` 降低权重，但不直接改写 `is_attributed`。
+- 分层诊断：按 `device_authenticity_bucket`、`supply_path_quality_bucket` 查看 CPA / CVR / retention 差异，用于 supply 质量治理。
+
+不推荐做法：
+
+- 把 token digest 当作 device key；
+- 把 attestation success rate 当作用户画像；
+- 把 attestation failure 直接当作 negative conversion label；
+- 把 MMP Confirm 之前的 attestation 状态暴露给 MMP 作为 attribution 决策输入。
 
 ### 12.5 推荐把训练样本拆成“标签行”和“特征释放行”
 
@@ -2475,6 +2754,51 @@ Phase 1 推荐：
 10. 线上 bidding / ranking 系统拿到的是训练安全的 request row，而不是 `device_fp_hash`、`raw_ip`、完整 `User-Agent`、`odm_info` 或 partner `ad_event_id`。
 
 这个 walkthrough 的关键点是：个性化优化依赖的是 request-level 对齐能力，不依赖把原始 PII 长期放进训练面。
+
+### 12.8 attribution label 不是 incrementality truth
+
+`MMP Confirm` 后拿到的 `RequestScopedOptimizationLabel` 适合做监督信号，但它不是因果增量真值。它回答的是：
+
+- 这次 conversion 在 SRN / MMP 规则下归因给谁；
+- 哪个 `server_request_id` 应该得到 credit；
+- 这条样本是否可以进入 bidder / ranking / creative trainer。
+
+它没有直接回答：
+
+- 如果不展示这次广告，用户是否也会转化；
+- campaign 的真实 incremental conversions per dollar 是多少；
+- bidder 应该把 last-click label 放大还是降权。
+
+2026-04 修订的 PIE（Predicted Incrementality by Experimentation）研究给了一个更适合生产的折中：用有限 RCT / holdout 的因果真值训练 campaign-level incrementality predictor，再用 non-RCT campaign 的 post-determined aggregate features 去预测增量。这里的关键点是“post-determined features 可以用于预测因果效果，但不能被伪装成因果控制变量”。
+
+因此，optimization plane 推荐拆成三层：
+
+1. `RequestScopedOptimizationLabel`
+   - request-level attribution / credit / feedback lifecycle；
+   - 用于告诉 trainer 哪次请求赢了、何时赢、赢的置信度和价值。
+2. `IncrementalityCalibrationRecord`
+   - campaign / creative-family / source-level 的 causal calibration；
+   - 用于提供 `incrementality_weight_micros`、`calibration_id`、`experiment_provenance`。
+3. `OptimizationTrainingRow`
+   - 内部 join 后的训练行；
+   - 消费 `is_attributed` 与 `incrementality_weight_micros`，但不消费 raw RCT user rows、raw IP、raw boot time、`odm_info`。
+
+推荐落地方式：
+
+- RCT / geo holdout / conversion lift 实验先进入 causal measurement store。
+- 使用 `LightGBM` / `XGBoost` 做 PIE-style calibration baseline；如果需要显式估计异质处理效应或做敏感性分析，再用 `EconML` / `DoWhy` 做离线 causal review。
+- calibration feature 只允许 aggregate 或低敏派生字段，例如 `exposure_rate_micros`、`last_click_share_micros`、`aggregate_quality_bucket`、`eligible_candidate_count_p50`。
+- request-level trainer 只消费 `calibration_id` 和 `incrementality_weight_micros`，不要把 RCT/control user-level 明细接回 request table。
+- bidder / pacing 初期把 calibration 当作 sample weight 或 campaign prior，而不是直接覆盖原始 attribution label。
+
+不推荐做法：
+
+- 把 `is_attributed=true` 当成 `incremental=true`；
+- 用 on-device PSM 命中概率直接替代 incrementality；
+- 把 holdout/control 组 user-level 明细接入普通 optimization feature store；
+- 在没有实验 provenance 的情况下，把一个普通 CVR 模型命名为 causal lift model。
+
+这条拆分会让系统复杂一点，但它避免了一个更大的生产问题：把“归因准确”误当成“预算最优”。on-device measurement 负责把 privacy-safe request label 拿回来；incrementality calibration 负责告诉优化系统这个 label 应该被多重地相信。
 
 ## 13. Aggregate reporting 规范
 
@@ -2622,6 +2946,23 @@ confidential plane `SHOULD` 保留：
 - 对 `token_to_req_id_join` 和 `feature_derivation` 优先做 constant-shape memory access review，而不是只做功能正确性 review
 - 对 side-channel test 结果建立基线版本；workflow、编译器、内核、CVM 固件升级后必须回归
 
+### 14.6 Device / supply-path attestation
+
+device attestation 的目标是证明 touchpoint 环境更可信，而不是建立新的用户身份层。基于 Privacy Pass / PrivateToken 类协议时，推荐按四个角色建模：
+
+- `Client`: 渲染广告的 App、video player、OM SDK 或媒体 SDK。
+- `Verifier`: 需要验证 touchpoint 质量的 measurement / ad network 服务。
+- `Attester`: 能观察平台真实性的设备或平台组件。
+- `Issuer`: 签发不可链接 token 的角色。
+
+生产约束：
+
+- `MUST` 把 attestation token 的原始值和 `server_request_id` 分库存储；普通日志只保留 digest 和状态码。
+- `MUST NOT` 把 device attestation receipt 暴露为 MMP 可见归因字段；MMP 只需要知道 claim 是否成立，不需要看到设备真实性证明细节。
+- `SHOULD` 把 `attestation_result` 转成 coarse quality bucket，再进入 optimization plane；失败或缺失可以降权，但不能自动改写归因事实。
+- `SHOULD` 对 `issuer_id`、`attester_id`、`max_age_sec`、`challenge_ts_ms` 和 `receipt_expiry_ts_ms` 做 replay / freshness audit。
+- `MUST NOT` 把 attestation 的 success rate 当成用户画像特征；它是 supply quality / fraud quality 信号。
+
 ## 15. Trade-off 设计
 
 ### 15.1 可以放松的地方
@@ -2630,6 +2971,10 @@ confidential plane `SHOULD` 保留：
 - confidential plane 初期可以先用单方 TEE/CVM，而不是直接上 MPC。
 - MMP bridge 初期可以先做 opaque pass-through，而不是完整通用标准。
 - baseline model 先用 GBDT，而不是直接上大型 DP 深度模型。
+- device / supply-path attestation 初期可以作为 fraud-quality side signal，不强制所有 publisher surface 阻塞式接入。
+- incrementality 初期可以先做 campaign / creative-family 粒度校准，不必把每条 request 都宣称为因果样本。
+- ADMaP / PJC / PSI 初期可以用于后端对账和 aggregate verification，不必替代前台 SRN yes/no claim。
+- GPP / DDRF 初期可以先覆盖 suppression / retention / debug-trace key rotation，不必一次性重算所有历史 aggregate release。
 
 ### 15.2 不能放松的地方
 
@@ -2638,6 +2983,9 @@ confidential plane `SHOULD` 保留：
 - 不能把 `odm_info` 变成 durable identifier。
 - 不能取消 anti-replay。
 - 不能把 contribution bounding 视为可选项。
+- 不能把 device attestation token 或 token digest 当成 durable user identifier。
+- 不能把 `is_attributed=true` 当成 `incremental=true`。
+- 不能让 consent withdrawal / deletion signal 只停留在 legal ticket；它必须落到 token、artifact、feature release 和 retention state。
 
 ### 15.3 为什么本文允许“不先上 DP”
 
@@ -2668,6 +3016,8 @@ confidential plane `SHOULD` 保留：
 - SDK 状态机需要显式记录 `config_loaded`、`psm_candidate_set_received`、`local_match_evaluated`、`mvs_validated`，而不是只记录一个布尔 `odm_info_generated`。
 - MMP SDK / ODM SDK 集成还应显式记录 `odm_fetch_timeout_ms`、`sdk_init_delay_ms`、`deep_link_callback_deferred`、`event_source_system` 和 `is_firebase_native_event`；这些字段只进入 integration health plane。
 - SDK debug trace 的 PII 字段应在生成点做 field policy、keyed pseudonymization 和短窗口加密；不要依赖服务端事后清洗。
+- 对广告渲染侧 touchpoint，如果 surface 已接入 OM SDK / OMID，优先复用 OM SDK device attestation 能力作为 touchpoint quality evidence；不要用自研设备指纹去替代平台 attestation。
+- device attestation 失败或缺失时，默认只影响 fraud quality / sample weighting，不应让 SDK 阻塞 `first_open`、deep link callback 或 MMP Ask 主链路。
 
 iOS optional SDK 的推荐实现：
 
@@ -3890,6 +4240,8 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 - FHE hardened profile 的默认 POC 是否选择 BFV/BGV exact scoring，还是 CKKS / Concrete ML encrypted inference？
 - 如果 FHE response 由 SDK 解密，如何限制 SDK 从 score vector 中学习过多 candidate store 结构？
 - 如果 FHE response 改成 threshold decrypt，collector / helper 的 trust model 与 MMP legal role 如何定义？
+- incrementality calibration 的最小实验池应按 campaign、advertiser vertical、geo，还是 creative family 建模？
+- deletion / consent withdrawal 对历史 aggregate release 的处理是否采用 freeze、correction，还是只影响 future release？
 
 ## 19. 最终建议
 
@@ -3898,7 +4250,8 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 1. 先把边界做对：raw device material 不出 AdNetwork SDK crypto boundary，`req_id` 不给 MMP，`odm_info` 不复用。
 2. 再把可用性做稳：采用 `MMP Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`，默认 Option 4：tracking-link `mmp_touch_token + opaque claim_token`。
 3. 再把优化闭环做稳：Confirm 后用 `mmp_touch_token -> req_id` 恢复 request-level label，支撑 creative_id x req_id 级别训练。
-4. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
+4. 再把因果校准做稳：用 RCT / holdout / PIE-style calibration 给 attribution label 加 `incrementality_weight_micros`，不要把 `is_attributed=true` 当成 `incremental=true`。
+5. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
 
 一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，以及谁能在 Confirm 后恢复 req_id”定义成严格协议。
 
@@ -4080,7 +4433,7 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
 
-[W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/) 当前已发布的 Working Draft 日期是 `2026-04-28`。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
+[W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 当前已发布的 Working Draft 日期是 `2026-05-03`。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
 
 - on-device attribution 与 off-device aggregation 可以明确分层；
 - aggregate service `MUST` 处理 anti-replay，而不是只做求和；
@@ -4224,6 +4577,49 @@ Config 下发上下文
 
 因此本文把 FHE 放在 Profile D，而不是 Profile A/B/C。推荐先从 `FHE-assisted private candidate scoring` 或 `encrypted aggregate sum` 做 POC；不要从 “FHE 版完整归因系统” 开始。
 
+### 20.17 截至 2026-05-08 的最新 delta：touchpoint 真实性也要进 RFC
+
+这次复查新增的关键外部信号是 IAB Tech Lab 的 OM SDK device attestation。它不直接解决 conversion 侧归因，但会影响 on-device measurement 的输入质量：如果 impression / click 本身来自伪造设备或伪造 supply path，后面的 OPRF、Ask、Claim、Confirm 都可能“正确地处理了错误触点”。
+
+公开资料给了三点可落地结论：
+
+- [IAB Tech Lab device attestation release](https://iabtechlab.com/press-releases/device-attestation-support-in-open-measurement-sdk/) 把该能力定位为 OM SDK 中用于 CTV / mobile device spoofing 的质量信号，并说明它采用 IETF Privacy Pass Protocol 适配广告验证场景。
+- [Open Measurement Device Attestation Implementation Guidance](https://iabtechlab.com/wp-content/uploads/2025/10/Open-Measurement-Device-Attestation-Implementation-Guidance.pdf) 明确采用 Privacy Pass 的 `Client / Verifier / Attester / Issuer` 角色模型，并提醒 attestation request 不应携带 device-level 或 user-level 信息。
+- [RFC 9576](https://www.ietf.org/rfc/rfc9576.html) / [RFC 9577](https://www.ietf.org/rfc/rfc9577.html) 的核心语义是 unlinkable authorization token，而不是可追踪身份凭证；这与本文“不把 attestation token 变成 user join key”的边界一致。
+
+对本 RFC 的直接改动是：
+
+1. 新增 `DeviceSupplyPathAttestationReceipt`，把 attestation 作为 request-scoped quality evidence 记录。
+2. `ServerFeatureDerivationRecord` 只释放 coarse quality bucket，例如 `device_authenticity_bucket`、`supply_path_quality_bucket`。
+3. optimization plane 可以用这些桶做 fraud quality filtering / sample weighting，但不能把 token digest 当成设备标识。
+4. MMP / SRN payload 不应接收原始 attestation token、challenge、platform blob 或 verifier 私有字段。
+
+这条增量的本质是：on-device measurement 的隐私设计不能只看 conversion side。完整闭环还要保证 touchpoint side 没有被伪造流量污染，否则 request-level optimization 会把供应链真实性问题错学成用户偏好问题。
+
+### 20.18 截至 2026-05-09 的最新 delta：把 attribution、incrementality、privacy controls 拆开
+
+这次复查新增的关键信号不是单个更强的加密原语，而是三个系统边界变得更清楚：
+
+1. 公开 attribution 标准继续向 aggregate / DP / anti-replay 收敛。
+2. 行业 DCR / PET 标准开始把 matching、attribution computation、report generation 写成可互操作流程。
+3. 广告优化研究重新强调 attribution 与 incrementality 不是同一个量。
+
+具体依据如下。
+
+- [W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 在 `2026-05-03` 工作草案中继续把广告效果测量定义为 aggregate statistics，并把 aggregation service、strict limits、noise / DP、anti-replay、privacy budget 等作为核心设计对象。这支持本文继续把 partner-facing reporting 放在 aggregate plane，而不是让 request-level label 对外裸奔。
+- [IAB Tech Lab ADMaP v1.0](https://iabtechlab.com/admap/) 已在 `2025-02-25` finalized。它把 DCR 中的两方 matching、attribution measurement、output use 和 collusion/threat vectors 写成互操作标准，并明确依赖 PETs。对本 RFC 的含义是：ADMaP / PJC / PSI 更适合做后端 settlement、aggregate verification 和跨方对账；前台 SRN claim 仍应保持 minimal yes/no + opaque token。
+- [Global Privacy Protocol](https://iabtechlab.com/gpp/) 在 `2025-12-17` 页面显示 H2 2025 新州 section 已 finalized；[DDRF V2 public comment](https://iabtechlab.com/press-releases/iab-tech-lab-expands-global-privacy-frameworks-with-gpp-updates-and-ddrf-v2-release/) 说明删除请求框架正在增强 object formats、encoding 和 safeguards。对本 RFC 的含义是：consent、deletion、jurisdiction 不应只是 legal annex，而应进入 `PrivacyControlPropagationRecord`，并影响 artifact retention、debug trace key、feature release 和 future aggregate collection。
+- [Predicted Incrementality by Experimentation](https://arxiv.org/abs/2304.06828) 在 `2026-04-01` 修订版中把 ad measurement 重新表述为 campaign-level prediction problem：用有限 RCT 学到 causal effect mapping，再把 post-determined aggregate features 用于非实验 campaign 的增量预测。它对本文的直接要求是：`RequestScopedOptimizationLabel` 不能独自承担“因果真值”职责，必须增加 `IncrementalityCalibrationRecord`。
+- [IAB Project Eidos](https://www.iab.com/news/iab-announces-project-eidos/) 在 `2026-02-02` 把 attribution、incrementality、MMM 和 standardized privacy-ready inputs 放在同一 measurement modernization 议题里。这不是工程规范，但它说明客户和生态会同时要求 event-level 归因解释、incrementality、预算建议和跨渠道可比性。
+
+因此，本 RFC 的 2026-05-09 收紧结论是：
+
+1. `is_attributed` 是 attribution label，不是 incrementality label。
+2. `incrementality_weight_micros` 应来自实验池或 PIE-style calibration，并带 `experiment_provenance`。
+3. ADMaP / PJC / PSI 可以加固后端 aggregate verification，但不应让 MMP 前台 claim API 暴露更多 touch metadata。
+4. GPP / DDRF / deletion signal 必须影响 token、artifact、feature release 和 debug trace lifecycle。
+5. Optimization Phase 1 可以不上 DP，但不能没有 causal calibration provenance 和 privacy-control propagation record。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -4245,6 +4641,7 @@ Config 下发上下文
 15. [Google’s Approach to Protecting Privacy in the Age of AI](https://research.google/pubs/googles-approach-to-protecting-privacy-in-the-age-of-ai/)
 16. [Proteus: A Practical Framework for Privacy-Preserving Device Logs](https://arxiv.org/abs/2603.06540)
 17. [Who am I Talking to? A Large-Scale Measurement of Surface Attribution Across Real-World Security and Privacy Interfaces](https://research.google/pubs/who-am-i-talking-to-a-large-scale-measurement-of-surface-attribution-across-real-world-security-and-privacy-interfaces/)
+18. [Predicted Incrementality by Experimentation (PIE) for Ad Measurement](https://arxiv.org/abs/2304.06828)
 
 ### 21.2 Standards
 
@@ -4254,9 +4651,14 @@ Config 下发上下文
 4. [DAP Extensions for the Attribution API](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/)
 5. [W3C Attribution Level 1](https://www.w3.org/TR/privacy-preserving-attribution/)
 6. [RFC 9497: Oblivious Pseudorandom Functions (OPRFs) Using Prime-Order Groups](https://www.rfc-editor.org/rfc/rfc9497)
-7. [GDPR Article 4 Definitions](https://gdpr-info.eu/art-4-gdpr/)
-8. [EDPB Guidelines 01/2025 on Pseudonymisation](https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf)
-9. [California Consumer Privacy Act statute](https://cppa.ca.gov/regulations/pdf/ccpa_statute.pdf)
+7. [RFC 9576: The Privacy Pass Architecture](https://www.ietf.org/rfc/rfc9576.html)
+8. [RFC 9577: The Privacy Pass HTTP Authentication Scheme](https://www.ietf.org/rfc/rfc9577.html)
+9. [GDPR Article 4 Definitions](https://gdpr-info.eu/art-4-gdpr/)
+10. [EDPB Guidelines 01/2025 on Pseudonymisation](https://www.edpb.europa.eu/system/files/2025-01/edpb_guidelines_202501_pseudonymisation_en.pdf)
+11. [California Consumer Privacy Act statute](https://cppa.ca.gov/regulations/pdf/ccpa_statute.pdf)
+12. [IAB Tech Lab Attribution Data Matching Protocol (ADMaP)](https://iabtechlab.com/admap/)
+13. [IAB Tech Lab Global Privacy Protocol](https://iabtechlab.com/gpp/)
+14. [IAB Tech Lab Data Deletion Request Framework](https://iabtechlab.com/standards/data-deletion-request-framework/)
 
 ### 21.3 Product / Integration
 
@@ -4273,6 +4675,9 @@ Config 下发上下文
 11. Google ODC / ODM On-Device Measurement 技术逆向与实现模型，2026-04-30，基于 2026-04-14 HAR 样本。
 12. [Singular Google Ads Mobile App Campaigns Attribution Integration](https://support.singular.net/hc/en-us/articles/115003252786-Google-Ads-AdWords-Mobile-App-Campaigns-Attribution-Integration)
 13. [Singular iOS SDK Advanced Options](https://support.singular.net/hc/en-us/articles/36198405689243-iOS-SDK-Advanced-Options?navigation_side_bar=true)
+14. [IAB Tech Lab Device Attestation Support in OM SDK](https://iabtechlab.com/press-releases/device-attestation-support-in-open-measurement-sdk/)
+15. [Open Measurement Device Attestation Implementation Guidance](https://iabtechlab.com/wp-content/uploads/2025/10/Open-Measurement-Device-Attestation-Implementation-Guidance.pdf)
+16. [IAB Project Eidos](https://www.iab.com/news/iab-announces-project-eidos/)
 
 ### 21.4 Engineering Components
 
@@ -4292,3 +4697,5 @@ Config 下发上下文
 14. [Microsoft SEAL](https://github.com/microsoft/SEAL)
 15. [Lattigo](https://github.com/tuneinsight/lattigo)
 16. [Concrete ML](https://docs.zama.org/concrete-ml/1.4/)
+17. [EconML](https://www.microsoft.com/en-us/research/project/econml/)
+18. [DoWhy](https://github.com/py-why/dowhy)
