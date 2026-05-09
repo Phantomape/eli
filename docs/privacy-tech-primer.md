@@ -3093,6 +3093,88 @@ USENIX Security 2026 的 `Distributed Synthesis of Differentially Private Tabula
 - 多机构场景下，难点不是只给结果加噪声，而是如何在不集中完整属性表的情况下估计跨属性相关性
 - 这类方案适合“共享可用统计结构”，不适合替代所有原始数据访问；高风险决策仍需要额外验证、治理和法律基础
 
+### 16B.30 DAP / VDAF / 隐私 telemetry 的 Mock Data
+
+DAP（Distributed Aggregation Protocol）适合用一个很小的数据流来理解：客户端不把单个 measurement 明文交给一个中心服务器，而是把 measurement 分成 shares，交给两个不串谋的 aggregator。最终 collector 只拿聚合结果。
+
+客户端本地原始事件可以长这样：
+
+```json
+{
+  "local_event": {
+    "device_local_id": "local-only-7b3a",
+    "metric": "ai_summary_button_clicked",
+    "value": 1,
+    "app_version": "5.8.1",
+    "time_bucket": "2026-05-09T10:00:00Z/1h"
+  }
+}
+```
+
+客户端上传的不是这条明文事件，而是两份 input share：
+
+```json
+{
+  "dap_report": {
+    "task_id": "ai-summary-clicks-v1",
+    "report_id": "rpt_20260509_0007",
+    "public_share": {
+      "time_bucket": "2026-05-09T10:00:00Z/1h",
+      "app_version_major": "5"
+    },
+    "leader_input_share": "base64url:encrypted-share-for-leader",
+    "helper_input_share": "base64url:encrypted-share-for-helper"
+  }
+}
+```
+
+两个 aggregator 看到的是各自的一份 share 和公共分桶信息，不应该看到完整用户事件：
+
+```json
+{
+  "aggregator_view": {
+    "role": "helper",
+    "task_id": "ai-summary-clicks-v1",
+    "report_id": "rpt_20260509_0007",
+    "visible": [
+      "public_share",
+      "helper_input_share"
+    ],
+    "not_visible": [
+      "raw_device_id",
+      "full_measurement",
+      "user_profile"
+    ]
+  }
+}
+```
+
+collector 最终拿到的是聚合输出：
+
+```json
+{
+  "collector_output": {
+    "task_id": "ai-summary-clicks-v1",
+    "time_bucket": "2026-05-09T10:00:00Z/1h",
+    "aggregate": {
+      "sum_ai_summary_button_clicked": 184231,
+      "contributing_reports": 1290044
+    },
+    "release_controls": {
+      "minimum_batch_size": 1000,
+      "dp_noise": "optional-at-release-layer",
+      "no_user_level_drilldown": true
+    }
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- DAP 的价值不是“隐藏所有事实”，而是让 telemetry 只以聚合形式被看到
+- privacy boundary 来自 client-side sharing、non-colluding aggregators、VDAF 验证、batch threshold 和聚合发布
+- 如果产品需要按用户回查、低阈值分群、任意 join 或 request-level 优化，DAP 通常不是单独答案，需要 clean room、PSI/PJC、TEE 或内部受控日志配合
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -3420,7 +3502,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-07）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-09）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
