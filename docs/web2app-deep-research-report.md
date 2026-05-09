@@ -87,6 +87,16 @@ Web2App 常见断点主要有四段：
 
 一个成熟方案通常三层都要有：媒体层解决“平台能不能学到信号”，路由层解决“用户能不能到正确入口”，首开上下文层解决“安装后意图是否还在”。如果预算或开发资源有限，优先级应是 `路由层 + 首开上下文层`，再补媒体优化信号；否则容易出现报表变好、体验仍断的假闭环。
 
+### 2.8 2026-05-09 补充校准
+
+本轮复核没有改变主结论，但让三个边界更清晰：
+
+1. `Web2App` 的原生产品化仍主要集中在 Google 与 TikTok。Google 明确把 web campaign 的间接安装和首个 app 内转化产品化；TikTok 明确支持非 App 推广广告在 Web 落地后继续绑定 app event measurement。二者解决的是媒体可见性，不是自动完成首开页面恢复。
+2. 长尾广告网络更多是 `App Install` 与 `Web Conversion` 两套能力并存。Reddit 公开强调 App Install objective、MMP 与 SKAN 报表；Quora 要求接入 Adjust、AppsFlyer、Branch、Kochava 或 Singular，并建议 iOS / Android 拆 ad set。它们能做 App 增长，但 Web2App 闭环仍要靠 MMP / deep link / 自建 Web session 串联。
+3. MMP / deep link 平台的竞争点正在从“能否跳商店”转向“第二跳参数是否可控”。AppsFlyer Smart Script V2、Singular Web-to-App Forwarding、Branch Journeys / QR、Adjust ODDL 都在处理同一件事：把首跳媒体上下文和 Web 业务意图带到商店交接与 App 首开，而不是只记录一次网页点击。
+
+因此，后续评估新增平台或供应商时，可以先问四个问题：是否支持 App 事件回传，是否支持 iOS / Android 独立配置，Web CTA 是否能动态生成带参 deep link，首开恢复是否独立于归因响应。四项缺一项，就不能把它当完整 Web2App 方案。
+
 ## 3. 标准链路与职责拆解
 
 ```mermaid
@@ -345,6 +355,8 @@ X Business 公开资料仍以 `App installs campaign` 为主，强调：
 3. CTA 使用 OneLink、Branch Link、Adjust Link、Singular Link 或自建 smart link，负责 OS 分流、已安装唤起、未安装商店 fallback；如果是广告到 Web 再到商店的两跳链路，第二跳链接必须从首跳参数动态生成，不能只放一个静态商店 URL。
 4. first_open 和首个关键事件通过 MMP 或 Conversion API 回传给对应媒体，而不是只看 Web conversion。
 
+近期公开资料里，`Reddit` 的 App Install objective 明确依赖 MMP 与 SKAN 来归因 install / in-app actions，并在报表里区分 MMP reporting 与 SKAN reporting。`Quora` 的 App Install campaign 则要求先接入 MMP，并在 iOS 链路中区分 App Store URL 与第三方点击 tracker；同时建议 Android / iOS 分 ad set。这类规则说明，长尾网络的关键不是“是否能买 app install”，而是投放结构、MMP 链接、SKAN 限制和 post-install 事件映射是否提前设计。
+
 对这类网络的评估口径不应是“能不能投 App”，而是“是否有稳定 MMP 集成、是否支持 iOS / Android 拆分、是否能把 post-install 事件回传为优化信号”。如果这些条件不成立，Web2App 更适合作为自有数据复盘链路，而不适合作为平台自动优化主链路。
 
 ## 6. 深链 / MMP / 归因平台能力梳理
@@ -367,6 +379,8 @@ AppsFlyer 在 Web2App 上的产品定义非常标准：
 - Smart Banners 由 OneLink 驱动，可在已安装时 deep link，未安装时送对应商店
 - OneLink Smart Script 面向广告或自然流量先到移动 Web、再从 Web 到商店的场景，核心作用是用首跳 URL 参数动态生成第二跳 OneLink，避免 app install 被错误归因或归为 organic
 - AppsFlyer 2026 年的链接结构文档进一步明确：需要跨平台、deep link、Android App Links 或 iOS Universal Links 时应使用 OneLink；单平台场景可用 single-platform link。无论哪种，incoming engagement traffic 都应使用 HTTPS，并至少明确 media source、campaign、site ID / sub site ID 等归因字段
+- Smart Script V2 的落地重点不是“页面上有脚本”，而是参数映射是否完整：`mediaSource`、`campaign` 等字段要有 incoming key、default value 与 override 规则；多页落地时要确认参数能跨页面保留；需要内容恢复时，应把商品、活动或内容 ID 写入 `deep_link_value` 或等价字段
+- 如果要分析网页来源，Smart Script V2 可把 `document.referrer` 映射到 `af_channel` 或 `af_sub1-5` 等字段；如果要把 Web 页面状态带到首开，可从 local storage 读取值并写入 outgoing OneLink 参数
 - 因此，Web2App 的第二跳不要写成静态商店 URL。更稳妥的做法是从首跳 URL 中抽取 `pid`、`c`、`af_siteid`、UTM 或点击 ID，再动态生成 OneLink / attribution link，把媒体上下文带到安装和首开
 
 它最适合拥有大量自有站、SEO、内容页、CRM 回流流量的团队，把 owned media 也纳入 App 增长漏斗。
@@ -891,3 +905,7 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
     https://support.singular.net/hc/en-us/articles/19017155637403-Conversion-Postbacks-for-Web-PC-and-Console-FAQ
 56. AppsFlyer, About link structure and parameters
     https://support.appsflyer.com/hc/en-us/articles/207447163-About-link-structure-and-parameters
+57. AppsFlyer Developer Hub, OneLink Smart Script V2
+    https://dev.appsflyer.com/hc/docs/dl_smart_script_v2
+58. AppsFlyer, Set up Smart Script to convert web visitors
+    https://support.appsflyer.com/hc/en-us/articles/4413588932241-Set-up-Smart-Script-to-convert-web-visitors
