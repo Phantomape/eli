@@ -3502,7 +3502,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-09）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-11）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -4242,6 +4242,195 @@ SecureNumpy / PETAce 这类项目释放了另一个信号：MPC 要进入真实�
 
 如果只做前者，系统很强但没人会用；如果只做后者，系统易用但容易把复杂隐私边界藏起来。生产级方案必须把两者接上。
 
+### 18A.37 DP 合成表格数据的新重点：从“手工调参”转向“可审计优化工作流”
+
+2026-04-21，Scientific Reports 发表 `Automating differentially private tabular data synthesis via Bayesian optimization`。它的价值不在于又提出一个新的合成数据模型，而在于把 DP synthetic data 的生产难点说得更工程化：DP-GAN / DP-CTGAN 一类方案经常不是“算法不会”，而是 `epsilon`、裁剪、网络结构、训练轮数、utility metric 和隐私攻击评估之间互相牵制，最后变成不可复现的手工调参。
+
+这篇文章把调参建模成 privacy-aware black-box optimization，并同时评估：
+
+- statistical fidelity
+- structural integrity
+- downstream ML utility
+- privacy risk / attack resistance
+
+对 primer 的启发是：如果一个团队要把 DP synthetic table 放进生产，不应该只交付一个生成脚本，而应该交付一条可复现的 `tuning + evaluation + budget + attack audit` 工作流。否则 synthetic data 很容易在 demo 里看起来不错，在真实 schema、长尾类别和攻击评估里失真。
+
+一个最小 mock flow 可以这样写：
+
+```json
+{
+  "synthetic_job": {
+    "job_id": "syn_customer_churn_2026_05_10",
+    "privacy_unit": "customer_id",
+    "epsilon": 1.0,
+    "delta": 1e-7,
+    "candidate_generator": "DP-CTGAN",
+    "optimizer": "bayesian_optimization",
+    "trial_budget": 20
+  },
+  "evaluation_objective": {
+    "statistical_fidelity": 0.86,
+    "structural_integrity": 0.81,
+    "downstream_auc_delta": -0.024,
+    "attribute_inference_success_rate": 0.53,
+    "reject_reason": null
+  },
+  "release_decision": {
+    "approved": true,
+    "approved_dataset_version": "synthetic_v7",
+    "blocked_columns": ["raw_email", "raw_phone"],
+    "audit_log_id": "dp_syn_audit_9341"
+  }
+}
+```
+
+这条数据流想说明：DP synthetic data 的产品化对象不是“生成后的 CSV”，而是 `privacy parameters + tuning trace + evaluation metric + release decision`。
+
+### 18A.38 TEE + FL 的研究开始把 side-channel 风险写进优化目标
+
+2026-03-20，Scientific Reports 的 `Optimization of cross-institutional medical federated learning framework driven by confidential computing` 把一个重要问题显式化：在医疗、金融这类跨机构 FL 里，TEE 可以降低中心化与明文暴露风险，但 side-channel、enclave 限制和通信开销不能只当作安全团队的附录。
+
+它把目标拆成三个同时优化的量：
+
+- model utility
+- TEE side-channel leakage risk
+- communication overhead
+
+这对落地团队很实用。很多方案会写“数据不出院 / 不出机构”，但真正上线时，还要解释梯度、模型更新、enclave 内存、调度频率和通信拓扑怎样影响泄漏面。更成熟的方案应该在训练计划里就有 `leakage_risk_score`、`tee_patch_level`、`attestation_policy_id` 和 `communication_budget`，而不是等安全评审时再补。
+
+### 18A.39 LLM 个性化隐私的新方向：把用户记忆从共享权重里拆出来
+
+2026-04，Microsoft Research 发布 `Separable Expert Architecture`。它关注一个 AI 产品里越来越实际的问题：如果用户个性化信息被写进共享模型权重，后续删除、撤回同意、隔离用户影响都会变得非常困难。
+
+这类架构把 LLM 个性化拆成三层：
+
+- static base model
+- domain / behavior expert adapters
+- per-user proxy artifacts
+
+关键思想是：用户特定信息不进入共享权重，而是进入可删除、可验证回退的 proxy。这样 deletion / unlearning 不再依赖昂贵且难证明的权重编辑，而可以转化为确定性删除用户代理对象。
+
+这不等于自动满足所有隐私法规，但它给 AI 产品一个很重要的设计原则：`personalization state` 应该尽量从 `shared model state` 中分离。以后做 private AI / user memory / enterprise assistant 时，真正要审计的不只是训练集，还有 adapter、memory、proxy、retrieval cache、feedback log 的生命周期。
+
+一个 mock data 可以这样表达：
+
+```json
+{
+  "llm_personalization_state": {
+    "tenant_id": "acme_health",
+    "base_model": "llama-3.1-8b-static",
+    "domain_adapter_ids": ["clinical_style_lora_v3", "billing_policy_lora_v2"],
+    "user_proxy_id": "user_proxy_7f31",
+    "shared_weight_contains_user_data": false
+  },
+  "deletion_request": {
+    "subject_id": "user_1288",
+    "delete_objects": ["user_proxy_7f31", "retrieval_cache_1288", "feedback_log_1288"],
+    "retain_objects": ["clinical_style_lora_v3"],
+    "verification": {
+      "baseline_return_test": "passed",
+      "cross_user_contamination_test": "passed"
+    }
+  }
+}
+```
+
+这条 mock flow 的核心是：LLM 隐私不是只看 prompt 有没有 PII，而是要看用户信息到底有没有进入不可局部删除的共享状态。
+
+### 18A.40 去中心化 FL 的新重点：隐私保护还要同时抗投毒和抗网络层操控
+
+2026-04-29，International Journal of Information Security 发表 `RADAR: Robust aggregation with dynamic adversarial-resilient routing decentralized federated learning`。它提醒了一个常被初学者忽略的点：FL 把原始数据留在本地，并不代表整个系统天然可信。
+
+在去中心化 FL 里，攻击者不一定要偷原始数据，也可以：
+
+- 通过 model poisoning 污染聚合
+- 通过网络层选择或 eclipse attack 让某个节点只看到恶意邻居
+- 通过长期拓扑观察推断参与方关系
+
+RADAR 的方向是把 robust aggregation 和 moving-target-style 动态路由结合起来，避免攻击者长期控制某个节点的邻居集合。对 primer 的启发是：生产 FL 系统里的 privacy design 必须和 integrity design 一起看。否则“数据不出本地”的隐私叙事可能被投毒、后门或网络操控直接破坏。
+
+### 18A.41 Privacy-preserving RAG 的一个新方向：先生成 DP 合成表，再检索
+
+2026 年 Expert Systems with Applications 的 `PrivTabRAG` 把一个很现实的企业问题讲清楚了：RAG 并不会天然保护隐私。尤其是表格数据，直接 row linearization 后做 embedding，很容易把敏感字段、稀有组合和 membership signal 带进向量库。
+
+PrivTabRAG 的路线是：
+
+- 离线生成 DP synthetic tables
+- 让 synthetic table 更适配 retrieval / embedding 分布
+- 在线 RAG 查询只查 synthetic table
+- 在线查询不再持续消耗新的隐私预算
+
+这个方向很适合放进 primer，因为它给 RAG 隐私一个务实架构：不要只在 query time 做过滤，也不要默认把原始表格直接向量化；更稳的做法可能是先把可检索知识资产变成带 DP 语义的 synthetic retrieval corpus，再把在线检索和回答限制在这个语料上。
+
+它的局限也要写清楚：DP synthetic corpus 只能保护被建模的数据发布面，不能自动防止 prompt 注入、权限绕过、输出误用、embedding cache 泄漏或下游回答重新组合出敏感信息。因此企业 RAG 仍然需要 ACL、审计、引用控制、输出过滤和数据生命周期治理。
+
+### 18A.42 FL 研究的共识正在从“数据不出本地”转向“攻击面分层治理”
+
+2026-03-04，International Journal of Information Security 发表 `A systematic review on privacy preservation in federated learning`。这篇综述系统梳理了 153 篇 FL 隐私保护论文，覆盖 homomorphic encryption、differential privacy、secure aggregation、local differential privacy、通信协议、模型更新过程和威胁模型。
+
+它对 primer 的价值不在于某个单点算法，而是确认了一个工程共识：联邦学习不是一个单独的隐私保证，而是一套分布式系统。它至少同时暴露四类面：
+
+- `input plane`：本地原始样本、特征、标签
+- `update plane`：梯度、模型参数、客户端更新
+- `coordination plane`：客户端选择、通信协议、掉线处理
+- `output plane`：最终模型、指标、分群结果、下游解释
+
+因此，生产 FL 的隐私设计不能只写“raw data never leaves device”。更稳的设计文档应该把每一层的防护机制写清楚，例如：
+
+```json
+{
+  "federated_training_threat_model": {
+    "raw_data_location": "client_only",
+    "update_protection": ["secure_aggregation", "gradient_clipping"],
+    "privacy_accounting": {
+      "dp_scope": "user_level",
+      "epsilon_total": 3.0,
+      "accountant": "rdp"
+    },
+    "integrity_controls": ["client_attestation", "robust_aggregation"],
+    "known_residual_risks": [
+      "model_inversion_against_final_model",
+      "poisoned_client_updates",
+      "non_iid_utility_loss"
+    ]
+  }
+}
+```
+
+这条 mock flow 想表达：FL 里的“隐私”不是一句部署口号，而是由 update protection、privacy accounting、integrity controls 和 residual risk 一起组成。
+
+### 18A.43 Verifiable functional encryption：FL 聚合开始同时要求隐私和可验证性
+
+2026 年 Journal of Information Security and Applications 的 `VFEFL: Privacy-preserving federated learning against malicious clients via verifiable functional encryption` 提出用 verifiable functional encryption 处理 FL 中两个同时存在的问题：一方面，明文模型更新可能导致 model inversion / gradient leakage；另一方面，恶意客户端或聚合方可能污染聚合过程。
+
+这个方向适合放进 primer，因为它代表了 FL 安全设计的一个趋势：只隐藏梯度还不够，还要让参与方能验证聚合结果确实按协议产生。换句话说，隐私保护和完整性证明正在合并到同一条训练链路里。
+
+一个面向工程的简化数据流可以这样理解：
+
+```json
+{
+  "round": 42,
+  "client_update": {
+    "client_id": "hospital_07",
+    "encrypted_gradient_ref": "s3://fl-round-42/hospital_07.enc",
+    "proof": "vfe_proof_9c12",
+    "weight": 1832
+  },
+  "aggregator_output": {
+    "aggregate_ref": "model_delta_round_42.enc",
+    "verification_status": "passed",
+    "rejected_clients": ["clinic_19"],
+    "reject_reason": "invalid_update_proof"
+  },
+  "privacy_boundary": {
+    "server_sees_plain_client_gradient": false,
+    "clients_verify_aggregate": true
+  }
+}
+```
+
+这类方案离普通业务团队还有距离，但它给了一个重要判断标准：下一代 FL 平台不能只问“更新有没有加密”，还要问“聚合结果是否可验证、恶意客户端如何处理、聚合方作恶时谁能发现”。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -4939,6 +5128,90 @@ TikTok 的 PETAce / SecureNumpy 是另一个落地信号：MPC 工程正在尝�
 
 因此，MPC 的落地成熟度不能只看协议是否安全，也要看它能否进入 Python / SQL / notebook / pipeline 这些日常工作流，同时不把隐私边界隐藏到调用者看不见。
 
+### 18B.40 Duality / AWS Nitro Enclaves：跨境癌症研究里的 confidential collaboration 已经可引用
+
+AWS 的 Duality 案例很适合作为“已经落地的 PET + confidential computing”引用。案例里，NHS England、美国 National Cancer Institute 和英国 Department for Science, Innovation and Technology 共同分析罕见儿童癌症数据；各机构保留患者数据控制权，通过 Duality 平台和 AWS Nitro Enclaves 完成 federated analytics / secure aggregation。
+
+这个案例的价值在于它给了非常具体的生产信号：
+
+- 研究方完成了 `450+` secure federated queries
+- 分析周期从 `23 months` 降到约 `2 months`
+- 数据不需要在机构之间直接搬移
+- 治理能力包括 workload approval 和 differential privacy
+
+它说明 PET 的落地价值不只是“隐私更强”，也包括缩短 legal / data access / cross-border approval 的周期。对 primer 来说，这是 TEE、federated analytics、DP 和治理工作流组合起来的强案例。
+
+最小 mock data 可以这样理解：
+
+```json
+{
+  "collaboration": {
+    "use_case": "rare_pediatric_cancer_research",
+    "participants": ["nhs_england", "national_cancer_institute", "dsit_uk"],
+    "data_residency": "each_institution_keeps_custody",
+    "compute_boundary": "aws_nitro_enclave"
+  },
+  "query_workflow": {
+    "query_id": "incidence_survival_by_region_age_bucket",
+    "workload_approval_id": "approval_2026_rare_cancer_17",
+    "local_outputs": ["encrypted_partial_count", "encrypted_partial_survival_stat"],
+    "enclave_operation": "aggregate_and_threshold",
+    "dp_policy_id": "dp_health_research_v2"
+  },
+  "released_result": {
+    "minimum_cell_count": 20,
+    "dp_noise_applied": true,
+    "raw_patient_rows_released": false,
+    "audit_log_id": "duality_case_query_0450"
+  }
+}
+```
+
+### 18B.41 AWS Clean Rooms Differential Privacy：DP 已经变成可配置的协作查询能力
+
+AWS Clean Rooms Differential Privacy 是一个很好的落地信号：DP 不再只是研究论文或内部平台能力，而是进入了商业 clean room 的配置界面。AWS 文档明确写到，它会在查询运行时对聚合结果加噪，并通过 `Privacy budget` 和 `Noise added per query` 限制可执行的聚合查询量。
+
+这对初学者很有帮助，因为它把 DP 的三个抽象概念翻译成了产品对象：
+
+- `user identifier column`：隐私单位
+- `privacy budget`：有限查询资源
+- `noise added per query`：单次查询消耗速度和结果误差
+
+一个最小 mock policy 可以这样写：
+
+```json
+{
+  "clean_room_dp_policy": {
+    "collaboration_id": "retail_media_lift_2026_q2",
+    "protected_table": "publisher_impressions",
+    "user_identifier_column": "user_id",
+    "privacy_budget_epsilon": 4.0,
+    "noise_added_per_query": 0.25,
+    "remaining_aggregate_functions_estimate": 19
+  },
+  "query_result": {
+    "metric": "converted_users",
+    "raw_count_visible": false,
+    "dp_noisy_count": 12843,
+    "budget_consumed": true
+  }
+}
+```
+
+这个案例也提醒一个边界：产品化 DP 降低了使用门槛，但不会替团队自动决定隐私单位、业务可接受误差、查询模板、分群粒度和预算治理策略。
+
+### 18B.42 Comscore / AWS Clean Rooms：媒体测量里的 double-blind 数据协作
+
+AWS 的 Comscore 案例提供了一个很贴近业务的 clean room 落地场景。Comscore 原本需要把 panel data 与多方数据源交叉分析；使用 AWS Clean Rooms 后，可以让客户和合作伙伴匹配、分析 combined datasets，同时不共享或暴露底层明细数据。案例里还提到最多可邀请 5 个协作者、从 Amazon S3 拉取预加密数据、用共同约定的 join key 做 double-blind 分析，并保护 cookie、first-party ID、IP address 等敏感标识。
+
+这类案例适合放进 primer，因为它说明 clean room 的价值不只是“更安全”，也包括减少数据搬移、统一协作流程和降低为每个合作伙伴单独搭建隔离环境的成本。
+
+### 18B.43 Ad Alliance / Decentriq / Azure Confidential Computing：广告 clean room 已进入日常工作流
+
+Microsoft 的 Ad Alliance 客户案例显示，Decentriq Data Clean Room 基于 Azure Confidential Computing，把 Ad Alliance 与广告伙伴的数据合并分析，用于识别共同目标受众、评估 campaign relevance 和扩展 first-party data 协作。案例里强调，数据以加密形式进入 clean room，环境隔离和 confidential computing 用来保护处理过程，员工也已经把这个方案纳入日常工作。
+
+这个案例补齐了一个重要落地点：TEE + clean room 并不只适合医疗或金融，也已经进入广告和媒体协作。它的关键不是“把所有个人数据匿名化后随便用”，而是把 first-party data 协作限制在受控计算、受控访问、受控输出和持续合规框架里。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -5018,6 +5291,10 @@ TikTok 的 PETAce / SecureNumpy 是另一个落地信号：MPC 工程正在尝�
 53. Snowflake Data Clean Rooms UI in Snowsight public preview
 54. Snowflake Data Clean Rooms, external data from Amazon S3
 55. AWS Clean Rooms, detailed monitoring for collaboration queries
+56. AWS, Duality powers cross-border cancer research using AWS Nitro Enclaves
+57. Microsoft Research, Separable Expert Architecture
+58. AWS Clean Rooms Differential Privacy user guide
+59. Microsoft Customer Stories, Ad Alliance Data Clean Room with Azure confidential computing
 
 ### 论文与研究资料
 
@@ -5060,6 +5337,12 @@ TikTok 的 PETAce / SecureNumpy 是另一个落地信号：MPC 工程正在尝�
 37. IBM Research, FHEIns: Fully Homomorphic Encryption Acceleration for Large Data Applications
 38. Scientific Reports, TrustFed-RHIO: optimization-driven DP federated learning for IIoT attack detection
 39. Cybersecurity, AP-PPFL: anti-poisoning privacy-preserving federated learning
+40. Scientific Reports, Automating differentially private tabular data synthesis via Bayesian optimization
+41. Scientific Reports, Optimization of cross-institutional medical federated learning framework driven by confidential computing
+42. International Journal of Information Security, RADAR decentralized federated learning
+43. Expert Systems with Applications, PrivTabRAG privacy-preserving RAG on tabular data
+44. International Journal of Information Security, A systematic review on privacy preservation in federated learning
+45. Journal of Information Security and Applications, VFEFL: Privacy-preserving federated learning against malicious clients via verifiable functional encryption
 
 ## 20. 参考链接
 
@@ -5172,3 +5455,13 @@ TikTok 的 PETAce / SecureNumpy 是另一个落地信号：MPC 工程正在尝�
 - TikTok Developers, PETAce: Using Applied Cryptography to Enhance Privacy: https://developers.tiktok.com/blog/enhance-privacy-using-PETAce
 - Snowflake Data Clean Room, external data from an Amazon S3 bucket: https://docs.snowflake.com/en/user-guide/cleanrooms/external-data-aws
 - AWS Clean Rooms, detailed monitoring for collaboration queries: https://aws.amazon.com/about-aws/whats-new/2026/01/clean-rooms-detailed-monitoring-collaboration-queries/
+- Scientific Reports, Automating differentially private tabular data synthesis via Bayesian optimization: https://www.nature.com/articles/s41598-026-49077-y
+- Scientific Reports, Optimization of cross-institutional medical federated learning framework driven by confidential computing: https://www.nature.com/articles/s41598-026-44843-4
+- Microsoft Research, Separable Expert Architecture: https://www.microsoft.com/en-us/research/publication/separable-expert-architecture-toward-privacy-preserving-llm-personalization-via-composable-adapters-and-deletable-user-proxies/
+- International Journal of Information Security, RADAR decentralized federated learning: https://link.springer.com/article/10.1007/s10207-026-01257-7
+- Expert Systems with Applications, PrivTabRAG: https://www.sciencedirect.com/science/article/pii/S095741742600936X
+- AWS, Duality powers cross-border cancer research using AWS Nitro Enclaves: https://aws.amazon.com/solutions/case-studies/duality-case-study/
+- International Journal of Information Security, A systematic review on privacy preservation in federated learning: https://link.springer.com/article/10.1007/s10207-026-01229-x
+- Journal of Information Security and Applications, VFEFL: Privacy-preserving federated learning against malicious clients via verifiable functional encryption: https://www.sciencedirect.com/science/article/pii/S2214212626000451
+- AWS Clean Rooms Differential Privacy user guide: https://docs.aws.amazon.com/clean-rooms/latest/userguide/differential-privacy.html
+- Microsoft Customer Stories, Ad Alliance relies on data security in the Data Clean Room with Azure confidential computing: https://www.microsoft.com/en/customers/story/22435-ad-alliance-azure-compute
