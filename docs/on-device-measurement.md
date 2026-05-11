@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-09<br>
+最后更新: 2026-05-10<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -29,6 +29,7 @@
 2026-04-30 追加的 ODM / ODC HAR 逆向把第 4 点具体化：Google-compatible 路径很可能包含 `config -> OPRF/PSM candidate retrieval -> local filtering -> validate` 子流程，最终 `odm_info` 是该子流程之后的 bridge object，而不是单个本地 token。2026-05-01 的 legal review 进一步修正了披露边界：文档不应写成 “no PII leaves device”，而应写成 “raw device identifiers and raw fingerprinting material do not leave the AdNetwork SDK process; MMP may receive scoped pseudonymous attribution material depending on the selected option”。
 2026-05-08 的补充调研再加了一条生产现实：touchpoint 质量本身也需要可验证。IAB Tech Lab 已把基于 Privacy Pass 语义的 device attestation 放进 OM SDK，说明广告 measurement 不只要保护 conversion 侧 PII，也要防止伪造设备、伪造 supply path 把低质量触点灌进归因与优化闭环。本文因此把 device / supply-path attestation 建模为 request-scoped quality receipt，而不是 user identifier 或新的归因 token。
 2026-05-09 的补充调研把“优化”从 attribution label 又向前推进了一步：最新 W3C Attribution Level 1 工作草案继续确认 aggregate + DP + anti-replay 是公开 reporting 的主边界；IAB ADMaP / GPP / DDRF 则说明 clean-room matching、consent/deletion signal 传播已经进入行业标准化；2026-04 修订的 PIE incrementality 研究进一步提醒：last-click 或 on-device claim 只回答“谁应拿到 credit”，不等于回答“这次广告带来多少因果增量”。因此本 RFC 新增 `IncrementalityCalibrationRecord` 与 `PrivacyControlPropagationRecord`，把 request-level optimization label、因果校准、隐私控制传播拆成三个对象，避免把归因事实、增量价值和合规状态混成一张黑盒训练表。
+2026-05-10 的复查补上了三个更贴近生产实现的约束：第一，PrivacyGo 和 DP ad conversion measurement 方向提醒我们，multi-ID private matching 不能把 email、phone、rdid、appsetid、gclid 等标识符先合成一个“万能用户 ID”，而要用 task-scoped identifier bundle、key epoch 和 blind rotation 管住 linkage；第二，AdsBPC 说明广告测量里的实时流式报表可以做 per-user DP，但 privacy unit、release slot、noise plan 和 budget ledger 必须先进入协议对象；第三，Singular 在 2026-05-08 更新的 Google ICM 文档把 Android / iOS open beta、Kids apps、click-through-only、5 秒 ODM timeout、`odm_error`、6 个月 retention 和 LDS->Google consent mapping 都写成生产约束，说明 MMP/AAP 集成状态本身也必须进入 RFC，而不是靠运营手册补充。
 
 本文刻意兼顾生产实用性：
 
@@ -162,7 +163,11 @@ MMP SDK Ask
 | FHE 作为 hardened profile，而不是默认主链路 | FHE 能隐藏被计算的输入，但不能自动解决输出泄露、重放、MMP confirm 和 request-level optimization join；适合私密候选评分、aggregate 加固和小模型加密推理 | 17E、20.16 |
 | attribution label 必须与 incrementality calibration 分开 | 2026-04 修订的 PIE 研究说明 attribution / last-click / exposure rate 等 post-determined aggregate features 可以预测因果增量，但它们本身不是因果真值；优化面应把 claim label、calibration weight、experiment provenance 拆开 | 9.15、12.8、20.18 |
 | clean-room / PET matching 可以做后端对账和跨方测量，但不替代 SRN Ask-Claim-Confirm | ADMaP v1.0 已把 DCR 内两方 matching、attribution computation、report generation 标准化；本 RFC 用它加固 settlement / aggregate verification，而不是让 MMP 前台 claim API 暴露更多字段 | 13、17B、20.18 |
-| consent / deletion / jurisdiction signal 是协议状态，不是 legal 备注 | GPP 与 DDRF V2 说明隐私选择、删除请求、传播状态、签名和错误码需要机器可读；on-device measurement 必须能把这些信号映射到 artifact、token、feature release 和 retention policy | 8.22、9.15、10、20.18 |
+| consent / deletion / jurisdiction signal 是协议状态，不是 legal 备注 | GPP 与 DDRF V2 说明隐私选择、删除请求、传播状态、签名和错误码需要机器可读；on-device measurement 必须能把这些信号映射到 artifact、token、feature release 和 retention policy | 8.23、9.15、10、20.18 |
+| 多标识符私密匹配必须有 task-scoped policy，而不是先合成一个万能 ID | PrivacyGo 把 multi-identifier ad measurement 建模为 reversed OPRF + blind key rotation + DP-obfuscated intersection size；这支持本 RFC 把 identifier bundle、key epoch、linkage guardrail 写成正式对象 | 8.24、9.16、20.19 |
+| 实时报表 DP 不能只写一个 epsilon | Differentially Private Ad Conversion Measurement 要求归因规则、DP 邻接、贡献裁剪 scope 和 enforcement point 一起 operationally valid；AdsBPC 则说明流式广告报表需要 per-user DP、release slot 和非同分布噪声计划 | 8.25、13.2A、20.19 |
+| MMP/AAP ICM 集成状态是协议输入，不是客服排障备注 | 2026-05-08 Singular 文档把 Google ICM 的 Android/iOS open beta、click-through-only、Kids apps、ODM timeout、`odm_error`、retention 和 consent mapping 写成正式接入规则 | 8.19、9.4C、11.5A、20.19 |
+| Cross-MMP ICM 不能被压成一个 `icm_enabled` 布尔值 | AppsFlyer / Singular / Branch / Airbridge / Kochava / Tenjin / Adjust 对 ICM 的描述共同显示：iOS 是 ODM / `odm_info` path，Android 多为 partner-config / API path；claim 语义是 non-deterministic / probabilistic / modeled，需要独立 waterfall tier | 8.19、11.5B、20.20 |
 
 这张表的作用是把“研究/标准/产品资料”转成正文里的实现约束。第一次阅读时可以继续往下读第 6 节；只有在需要追溯依据时再看附录。
 
@@ -1166,6 +1171,20 @@ message SdkMeasurementRuntimeTrace {
   string ads_personalization_status = 22;
   string local_runtime_policy_id = 23;
   string trace_release_scope = 24; // integration_health_only, confidential_debug_only
+  string icm_platform_rollout_state = 25; // open_beta_all_advertisers, allowlisted, unsupported, unknown
+  string icm_reporting_scope = 26; // click_through_install_only, install_and_reengagement, unknown
+  string odm_error_code = 27;
+  string kids_app_policy_state = 28; // supported, unsupported, not_applicable, unknown
+  string user_level_retention_policy_id = 29;
+  string partner_consent_mapping_policy_id = 30;
+  bool advanced_data_sharing_enabled = 31;
+  bool android_sdk_update_required = 32;
+  bool ios_odm_sdk_required = 33;
+  repeated string icm_supported_engagement_types = 34; // click, engaged_view, reattribution, reengagement
+  string icm_claim_semantics = 35; // google_non_deterministic_claim, modeled_tier, probabilistic_tier
+  bool gclid_capture_enabled = 36;
+  bool install_referrer_gclid_capture_enabled = 37;
+  bool gbraid_capture_enabled = 38;
 }
 ```
 
@@ -1175,6 +1194,7 @@ message SdkMeasurementRuntimeTrace {
 - `event_source_system=s2s_api` 或 `measurement_protocol` 时，Google-compatible ODM event-data path 默认 `MUST` 标记为 ineligible，除非特定 partner contract 明确允许。
 - `sdk_init_delay_ms` 与 `deep_link_callback_deferred` 只用于集成健康和用户体验评估，不得进入 bidder / ranking / pacing 训练。
 - `adapter_manifest_hash` 是本地集成证据，不等于 remote config。remote config 不能单独证明某个 network SDK 在设备上可调用。
+- `advanced_data_sharing_enabled`、`gclid_capture_enabled`、`install_referrer_gclid_capture_enabled` 和 `gbraid_capture_enabled` 是 ICM 可用性输入，不是归因真值；它们只能解释为什么 Google non-deterministic claim 可能出现或缺失。
 
 ### 8.19A DeviceSupplyPathAttestationReceipt
 
@@ -1362,6 +1382,86 @@ message PrivacyControlPropagationRecord {
 - `subject_user_id_int64` 只在 advertiser first-party 合法可用时出现；它不是 ad network 的跨 app 用户 ID。
 - deletion / suppression 不应简单删除 aggregate history；更常见的动作是停止未来 release、冻结 request-level feature consumption、轮转 debug key，并记录 audit trail。
 - `PrivacyControlPropagationRecord` 必须能追到 `retention_policy_id`、`feature_policy_id`、`debug_trace_window_id`，否则无法证明 PII 派生物被按范围处理。
+
+### 8.24 MultiIdentifierPrivateMatchPolicy
+
+这个对象描述 advertiser / MMP / ad network 在需要多标识符私密匹配时的任务级策略。它的目标不是增加可见字段，而是防止实现方先把 email、phone、rdid、idfv、appsetid、gclid、gbraid 等材料合成一个长期 universal user id，再把“私密匹配”放到后面补救。
+
+```proto
+message MatchIdentifierSource {
+  string identifier_type = 1; // email_sha256, phone_sha256, idfv, idfa, rdid_zeroed, appsetid, gclid, gbraid, odm_info
+  string source_plane = 2; // device_raw, advertiser_first_party, mmp_compat, adnetwork_touch
+  string normalization_policy_id = 3;
+  string availability_policy_id = 4;
+  bool may_leave_device_raw = 5;
+  bool may_enter_mmp = 6;
+  bool may_enter_optimization = 7;
+}
+
+message MultiIdentifierPrivateMatchPolicy {
+  string private_match_policy_id = 1;
+  string measurement_task_id = 2;
+  string advertiser_id = 3;
+  string app_bundle = 4;
+  repeated MatchIdentifierSource identifier_sources = 5;
+  string matching_protocol = 6; // reversed_oprf, voprf_psm, psi, pjc, encrypted_relay_fallback
+  string oprf_suite_id = 7; // ristretto255, p256, voprf_rfc9497_suite
+  string blind_key_epoch_id = 8;
+  int64 key_epoch_start_ts_ms = 9;
+  int64 key_epoch_expiry_ts_ms = 10;
+  string key_rotation_policy_id = 11;
+  string linkage_guardrail_id = 12; // no_cross_identifier_join, task_scoped_join_only
+  string intersection_release_policy_id = 13;
+  string dp_intersection_size_policy_id = 14;
+  int32 max_identifier_types_per_event = 15;
+  int32 max_candidate_rows_per_bucket = 16;
+  string fallback_policy_id = 17;
+  string audit_manifest_digest = 18;
+}
+```
+
+关键约束：
+
+- `identifier_sources` 是 allowlist，不是 SDK 可以随意添加字段的 schema。
+- `may_leave_device_raw=false` 的标识符只能在端上或 confidential plane 内派生 task-bound material，不能通过 MMP 透传。
+- `blind_key_epoch_id` 必须和 `measurement_task_id`、app、partner 绑定；禁止跨 advertiser / app / purpose 复用同一 blind output。
+- `intersection_release_policy_id` 只能释放 scoped claim、DP-obfuscated count 或 aggregate outcome；不能释放“哪些 identifier pair 命中”的明细。
+- 如果启用 fallback encrypted relay，必须把它标成 lower-privacy profile，不能继续宣称 raw material stayed local。
+
+### 8.25 StreamingDpReleasePlan
+
+这个对象描述实时广告测量报表如何做 per-user DP。它服务 aggregate reporting plane，不改变主链路的 `MMP Ask -> Claim -> Confirm`，也不要求 Phase 1 optimization plane 必须先上 DP。
+
+```proto
+message StreamingDpReleasePlan {
+  string streaming_dp_plan_id = 1;
+  string measurement_task_id = 2;
+  string metric_name = 3; // install_count, purchase_count, revenue_sum, roas_num
+  string attribution_rule_id = 4; // last_click, engaged_click_only, winner_only, fractional_credit
+  string dp_subject_unit = 5; // advertiser_user, app_instance, device_scoped, household, unknown
+  string dp_adjacency_relation = 6; // add_remove_user, replace_user, bounded_events_per_user
+  string contribution_bounding_scope = 7; // per_user_per_campaign_day, per_user_per_task_epoch
+  string contribution_enforcement_point = 8; // device_sdk, confidential_plane, aggregate_collector
+  string release_slot_granularity = 9; // hourly, daily, campaign_day
+  int64 release_slot_start_ts_ms = 10;
+  int64 release_slot_end_ts_ms = 11;
+  string budget_scope_id = 12;
+  int32 epsilon_micros = 13;
+  int64 delta_nanos = 14;
+  string noise_family = 15; // discrete_laplace, gaussian, non_iid_streaming
+  string noise_power_allocation_id = 16;
+  string streaming_state_ref = 17;
+  string dp_audit_profile_id = 18;
+  string release_lifecycle_state = 19; // planned, reserved, released, corrected, frozen
+}
+```
+
+关键约束：
+
+- `attribution_rule_id`、`dp_adjacency_relation`、`contribution_bounding_scope`、`contribution_enforcement_point` 必须同时出现；只写 `epsilon` 不是一个可执行 DP 配置。
+- `dp_subject_unit=unknown` 时，系统只能发布 thresholded / non-DP operational dashboard，不应宣称 user-level DP。
+- `release_slot_granularity` 必须和 budget ledger 对齐；同一 slot 的 correction release 也要扣预算或进入明确的 correction policy。
+- `noise_power_allocation_id` 应记录到训练和报表治理栈，方便解释为什么某些 campaign / slot 的误差不同。
 
 ## 9. Mock payload
 
@@ -1608,7 +1708,21 @@ MMP SDK 在调用某个 ad network Ask 前，应先在本地得到类似下面�
   "att_authorization_status": "DENIED",
   "ads_personalization_status": "UNKNOWN",
   "local_runtime_policy_id": "mmp_odm_runtime_trace_v2",
-  "trace_release_scope": "integration_health_only"
+  "trace_release_scope": "integration_health_only",
+  "icm_platform_rollout_state": "open_beta_all_advertisers",
+  "icm_reporting_scope": "click_through_install_only",
+  "odm_error_code": "",
+  "kids_app_policy_state": "not_applicable",
+  "user_level_retention_policy_id": "google_ads_user_level_6m_v1",
+  "partner_consent_mapping_policy_id": "singular_lds_to_google_ads_consent_v1",
+  "advanced_data_sharing_enabled": true,
+  "android_sdk_update_required": false,
+  "ios_odm_sdk_required": true,
+  "icm_supported_engagement_types": ["click"],
+  "icm_claim_semantics": "google_non_deterministic_claim",
+  "gclid_capture_enabled": true,
+  "install_referrer_gclid_capture_enabled": true,
+  "gbraid_capture_enabled": true
 }
 ```
 
@@ -1639,7 +1753,21 @@ MMP SDK 在调用某个 ad network Ask 前，应先在本地得到类似下面�
   "att_authorization_status": "UNKNOWN",
   "ads_personalization_status": "UNKNOWN",
   "local_runtime_policy_id": "mmp_odm_runtime_trace_v2",
-  "trace_release_scope": "integration_health_only"
+  "trace_release_scope": "integration_health_only",
+  "icm_platform_rollout_state": "unsupported",
+  "icm_reporting_scope": "unknown",
+  "odm_error_code": "ODM_SDK_NOT_PRESENT",
+  "kids_app_policy_state": "unknown",
+  "user_level_retention_policy_id": "google_ads_user_level_6m_v1",
+  "partner_consent_mapping_policy_id": "singular_lds_to_google_ads_consent_v1",
+  "advanced_data_sharing_enabled": false,
+  "android_sdk_update_required": false,
+  "ios_odm_sdk_required": false,
+  "icm_supported_engagement_types": [],
+  "icm_claim_semantics": "unknown",
+  "gclid_capture_enabled": false,
+  "install_referrer_gclid_capture_enabled": false,
+  "gbraid_capture_enabled": false
 }
 ```
 
@@ -2200,6 +2328,96 @@ def handle_confirm(req):
 
 这个例子里 `subject_user_id_int64` 是广告主一方的 first-party user id，不是 ad network 用于跨 app 追踪的用户 ID。Ad network 侧应只通过 policy-bound digest / token map 找到受影响的 request、feature release 和 debug trace window。
 
+### 9.16 multi-ID private match 与 streaming DP release
+
+下面这个 mock 展示“广告主 App / MMP / Ad Network 都有一些可用标识符，但不把它们合成一个万能 ID”的生产形态。`advertiser_user_id:int64` 可以存在，但它只在 advertiser first-party 范围内使用；OPRF/PSM 看到的是 task-bound material。
+
+```json
+{
+  "private_match_policy_id": "pmatch_20260510_icm_install_v1",
+  "measurement_task_id": "icm_install_v3",
+  "advertiser_id": "120045",
+  "app_bundle": "com.example.game",
+  "identifier_sources": [
+    {
+      "identifier_type": "email_sha256",
+      "source_plane": "advertiser_first_party",
+      "normalization_policy_id": "email_lower_trim_sha256_v2",
+      "availability_policy_id": "signed_in_only",
+      "may_leave_device_raw": false,
+      "may_enter_mmp": false,
+      "may_enter_optimization": false
+    },
+    {
+      "identifier_type": "idfv",
+      "source_plane": "mmp_compat",
+      "normalization_policy_id": "uuid_lowercase_v1",
+      "availability_policy_id": "ios_att_independent_idfv",
+      "may_leave_device_raw": true,
+      "may_enter_mmp": true,
+      "may_enter_optimization": false
+    },
+    {
+      "identifier_type": "odm_info",
+      "source_plane": "device_raw",
+      "normalization_policy_id": "opaque_passthrough_v1",
+      "availability_policy_id": "google_icm_event_data_region_allowed",
+      "may_leave_device_raw": true,
+      "may_enter_mmp": true,
+      "may_enter_optimization": false
+    },
+    {
+      "identifier_type": "gclid",
+      "source_plane": "adnetwork_touch",
+      "normalization_policy_id": "case_sensitive_click_id_v1",
+      "availability_policy_id": "deeplink_or_referrer_only",
+      "may_leave_device_raw": true,
+      "may_enter_mmp": true,
+      "may_enter_optimization": false
+    }
+  ],
+  "matching_protocol": "reversed_oprf",
+  "oprf_suite_id": "voprf_rfc9497_p256_sha256",
+  "blind_key_epoch_id": "oprf_epoch_2026_05_w02_us_ios",
+  "key_rotation_policy_id": "blind_key_rotate_weekly_partner_app_v1",
+  "linkage_guardrail_id": "task_scoped_no_cross_identifier_join_v1",
+  "intersection_release_policy_id": "release_claim_token_or_dp_count_only_v1",
+  "dp_intersection_size_policy_id": "dp_intersection_size_eps_0_25_v1",
+  "max_identifier_types_per_event": 3,
+  "max_candidate_rows_per_bucket": 1024,
+  "fallback_policy_id": "encrypted_relay_requires_legal_exception_v1",
+  "audit_manifest_digest": "sha256:138c2e3a6a91..."
+}
+```
+
+一次 aggregate release 则应该像下面这样声明 DP 语义，而不是只在报表任务名字里写 `dp=true`：
+
+```json
+{
+  "streaming_dp_plan_id": "sdp_20260510_install_daily_v1",
+  "measurement_task_id": "agg_install_campaign_day_v4",
+  "metric_name": "install_count",
+  "attribution_rule_id": "winner_only_click_through_install_v2",
+  "dp_subject_unit": "app_instance",
+  "dp_adjacency_relation": "bounded_events_per_user",
+  "contribution_bounding_scope": "per_user_per_campaign_day",
+  "contribution_enforcement_point": "aggregate_collector",
+  "release_slot_granularity": "daily",
+  "release_slot_start_ts_ms": 1778371200000,
+  "release_slot_end_ts_ms": 1778457600000,
+  "budget_scope_id": "advertiser_120045_campaign_day_us",
+  "epsilon_micros": 500000,
+  "delta_nanos": 1,
+  "noise_family": "non_iid_streaming",
+  "noise_power_allocation_id": "adsbpc_global_noise_power_plan_v1",
+  "streaming_state_ref": "sdp://state/2026-05-10/adv-120045/install",
+  "dp_audit_profile_id": "dp_auditorium_streaming_ads_v1",
+  "release_lifecycle_state": "reserved"
+}
+```
+
+这两个对象解决的是两个不同问题：`MultiIdentifierPrivateMatchPolicy` 保护私密匹配不要变成跨标识符追踪；`StreamingDpReleasePlan` 保护公开 aggregate release 不要变成实时、重复、无预算的明细旁路。二者都不允许把 `server_request_id` 或 `claim_token` 暴露给 MMP 之外的新消费方。
+
 ## 10. 敏感 PII 如何流动
 
 ### 10.1 原则
@@ -2453,10 +2671,15 @@ Google 的 [request/response spec](https://developers.google.com/app-conversion-
 以 Singular 当前公开文档为例，生产接入至少暴露出这些约束：
 
 - ICM 在 MMP 侧已是开放 beta / 普遍可接入形态，而不是只存在于 Google Ads UI 内部；
+- 当前公开资料显示 Android ICM open beta 自 `2026-03-30` 起面向所有广告主开放，iOS ICM open beta 自 `2025-11-12` 起面向所有广告主开放；这类 rollout 状态应建模为 `icm_platform_rollout_state`，不能藏在 release notes 里；
 - iOS ICM 要求集成 Google ODM SDK，并升级 MMP SDK 或 S2S API；
 - Singular iOS 原生 SDK 要求 `12.8.1+`，并需要启用 `enableOdmWithTimeoutInterval`；
 - 推荐 timeout 示例是 `5s`，这会延迟 SDK initialization，并可能推迟 deep link callback；
-- ICM 报告侧可能只覆盖 click-through installs，且某些维度如 sub network type 不可用；
+- ICM 报告侧可能只覆盖 click-through installs，且某些维度如 sub network type 不可用；这必须进入 `icm_reporting_scope`，不能让下游误以为它覆盖 view-through、re-engagement 或完整 campaign hierarchy；
+- Google ICM 在部分 MMP 文档中明确覆盖 iOS 14.5+ ATT declined、Android EEA / ads-personalization opt-out 以及 Kids apps，但不覆盖 iOS EEA/UK region；这些应分别进入 `region_eligibility_code`、`att_authorization_status`、`ads_personalization_status`、`kids_app_policy_state`；
+- 如果 ODM SDK 没有产出 `odm_info`，S2S path 应记录并传递 `odm_error` / absence reason，而不是静默降级成 classic attribution；
+- Google Ads user-level data retention 在 MMP 侧可能有 6 个月删除要求，retention policy 必须影响 compat record、debug trace 和 user-level reporting，而不只是 BI 展示；
+- Singular LDS 会映射到 Google `ad_user_data` / `ad_personalization`，因此 consent mapping 应进入 `PrivacyControlPropagationRecord` 或等价 policy object；
 - Android 与 iOS 的区域、allowlist / open-beta 状态、ads personalization 状态不同，不能共用一个 `icm_enabled=true` 布尔字段。
 
 因此 MMP / AAP integration contract `MUST` 显式记录：
@@ -2471,6 +2694,11 @@ Google 的 [request/response spec](https://developers.google.com/app-conversion-
 - `is_firebase_native_event`
 - `region_eligibility_code`
 - `icm_reporting_scope`
+- `icm_platform_rollout_state`
+- `odm_error_code`
+- `kids_app_policy_state`
+- `user_level_retention_policy_id`
+- `partner_consent_mapping_policy_id`
 
 这些字段的消费边界也要写死：
 
@@ -2481,6 +2709,46 @@ Google 的 [request/response spec](https://developers.google.com/app-conversion-
 - 不得替代 `ClaimResponse` 或 `MmpConfirmRequest`。
 
 换句话说，MMP SRN + ODM 的生产形态不是三行公式，而是一个有 timeout、有 SDK 版本、有地区 gating、有 callback 副作用的端到端系统。协议如果不把这些状态字段写出来，排障时就会被迫回到通用日志和人工截图，反而扩大 PII 暴露。
+
+### 11.5B Cross-MMP ICM 集成洞察
+
+把 Singular、AppsFlyer、Branch、Airbridge、Kochava、Tenjin、Adjust 的公开材料放在一起看，可以得到一个更清楚的产品事实：ICM 不是一个“所有 MMP 都照抄同一 SDK 步骤”的集成，而是一组由 Google non-deterministic / modeled claim 驱动、由 MMP 各自落到 attribution waterfall / reporting tier / dashboard 的 partner contract。
+
+| MMP / AAP | iOS 要求 | Android 要求 | 报表语义 | 对 RFC 的含义 |
+|---|---|---|---|---|
+| Singular | Google ODM SDK + Singular SDK / S2S 更新，推荐 5s ODM timeout | Partner configuration + ICM toggle；Android open beta 后不应要求 App 侧 ODM SDK | click-through install only，probabilistic，sub network type 不可用 | `odm_error`、timeout、retention、consent mapping 必须是 runtime state |
+| AppsFlyer | AppsFlyer iOS SDK `6.17.7+`，并集成 Firebase `11.14.0+` 或 standalone Google ODM SDK | Android no SDK update | Google 发送 non-deterministic install claims，AppsFlyer 用自身数据验证；Advanced Data Sharing 决定是否发送无 device ID install | ICM 是 claim + validation，不是 Google 单方最终真值 |
+| Branch | Branch iOS SDK `3.13.3+` + Google ODM SDK / Firebase，或 S2S 传 `odm_info` | Android 暂无 immediate actions，measurement improvements 自动应用 | real-time event-level reporting；iOS / Android 都进入 Branch 报表 | Android 更像 backend / partner capability，不像端上 ODM SDK path |
+| Airbridge | iOS Native SDK `4.4.1+` 并安装 Google On-Device Event Measurement SDK | Android 对 ACi winning touchpoints 提供 ICM，包含 clicks 和 engaged views | Google privacy-preserving conversion modeling / non-deterministic attribution data | engagement scope 不能硬编码为 click-only；要按 MMP / platform 记录 |
+| Kochava | iOS 需要 Firebase / ODM 与 Kochava SDK 更新；S2S 要传 on-device measurement info string | no SDK update；Android modeled attribution 可用性取决于 rollout / allowlist | modeled tier / nondeterministic attribution | waterfall tier 必须进入 `claim_path`，不能混成 deterministic |
+| Tenjin | iOS 需要 on-device conversion measurement 和 Tenjin SDK 版本更新 | no actions needed，automatic enablement | enhanced reporting / more real-time attribution | 小型 MMP 也会把 Android 作为自动 backend enablement，而不是 App SDK 工作 |
+| Adjust | 公开材料强调 SDK-based 和 S2S 都支持，ICM 进入 probabilistic attribution tier / cross-network reporting | 同样覆盖 Android EEA / opt-out cohorts | event-level visibility, probabilistic tier | ICM 是 cross-network reporting 增强，不是替代 MMP SRN |
+
+综合判断：
+
+1. **iOS 是 ODM SDK / `odm_info` path，Android 是 API / referrer / partner-config path。** 多家 MMP 都写出 iOS 需要 ODM 或 Firebase SDK，Android 则常见为 no SDK update / automatic enablement / partner config。RFC 不能把 Android 建模成“也要装 ODM SDK”。
+2. **ICM claim 不是 deterministic attribution。** AppsFlyer 写成 non-deterministic install claims，Singular / Adjust 写成 probabilistic tier，Kochava 写成 modeled tier，Airbridge 写成 non-deterministic attribution data。这些名称不同，但协议语义一致：`claim_path` 应单独标为 `GOOGLE_ICM_NON_DETERMINISTIC` 或等价枚举。
+3. **MMP 仍然做 validation / waterfall / prioritization。** AppsFlyer 明确说 Google claim 需要被 AppsFlyer 数据验证；Kochava 说进入 modeled tier；Singular 说进入 probabilistic attribution。ICM 没有消灭 MMP 的 attribution graph，只是新增一类 Google claim。
+4. **Android 成败关键是“事件与点击/referrer 上下文是否传够”。** Google request spec 支持 `appsetid`、zeroed `rdid`、`gclid`、`market_referrer_gclid`、`gclid_only_request`、`gbraid`、`ad_user_data`、`ad_personalization`。所以 Android ICM 的工程重点不是装 SDK，而是 deep link / install referrer / conversion API / consent flags 是否完整。
+5. **ICM reporting scope 不能写死。** Singular 当前强调 click-through install only；Airbridge 对 Android 写了 clicks + engaged views winning touchpoints；AppsFlyer bulletin 提到 installs 和 re-attributions。RFC 应要求 `icm_supported_engagement_types`、`icm_reporting_scope`、`claim_path` 按 MMP / platform / campaign type 版本化。
+6. **“发送所有 install / event” 是 ICM 的隐性前提。** Singular 的 Google SAN 集成要求发送 all installs、sessions 和 configured events；AppsFlyer 的 Advanced Data Sharing 开启后会发送无 device ID installs。RFC 应把 `advanced_data_sharing_enabled`、`receiving_all_installs`、`receiving_all_events` 视为 capability state，而不是 UI 设置。
+7. **ICM 输出更适合 optimization explanation，不适合当作因果真值。** MMP 语言普遍是 visibility、modeled/probabilistic/non-deterministic reporting、performance insight；这支持本文前面的拆分：ICM attribution label 进入 request-level feedback，但 incrementality 仍要靠 holdout / PIE-style calibration。
+
+推荐新增 contract 字段：
+
+- `claim_path=GOOGLE_ICM_NON_DETERMINISTIC`
+- `mmp_icm_waterfall_tier=probabilistic|modeled|non_deterministic`
+- `advanced_data_sharing_enabled:bool`
+- `receiving_all_installs:bool`
+- `receiving_all_events:bool`
+- `icm_supported_engagement_types:string[]`
+- `android_sdk_update_required:bool`
+- `ios_odm_sdk_required:bool`
+- `gclid_capture_enabled:bool`
+- `install_referrer_gclid_capture_enabled:bool`
+- `gbraid_capture_enabled:bool`
+
+一句话：跨 MMP 对比后，ICM 最值得写进 RFC 的不是“Google 又有一个归因产品”，而是它把 `non-deterministic Google claim -> MMP validation/waterfall -> event-level reporting -> optimization feedback` 变成了一个正式生产路径。
 
 ### 11.6 “partner 接受了请求” 不等于 “归因已成立”
 
@@ -2823,6 +3091,17 @@ device / supply-path attestation 给 optimization 的价值，是把“伪造设
 
 - [OpenDP](https://github.com/opendp/opendp)
 - [google/differential-privacy](https://github.com/google/differential-privacy)
+
+### 13.2A 实时 streaming DP 的落地条件
+
+广告报表通常不是一次性 SQL 导出，而是按小时 / 天不断刷新。AdsBPC 这类研究的生产启发是：可以为了实时性采用 per-user streaming DP，但必须把以下四件事前置成协议，而不是让报表任务自己解释：
+
+- `dp_subject_unit`：到底保护 advertiser user、app instance、device-scoped subject，还是只能说 event-level / thresholded。
+- `contribution_enforcement_point`：贡献裁剪发生在 device SDK、confidential plane，还是 aggregate collector。
+- `release_slot_granularity`：hourly / daily / campaign_day 的 slot 必须和 budget ledger 一一对应。
+- `noise_power_allocation_id`：流式场景可以对不同 slot 分配不同噪声功率，但这个计划必须可审计、可复现、可解释。
+
+这也是为什么本 RFC 新增 `StreamingDpReleasePlan`。它不要求 optimization plane 初期就上 DP；但任何 partner-facing “实时、连续、可下钻”的 aggregate release，都 `SHOULD` 至少拥有这类计划对象。否则系统很容易在 30 天内发布 30 次“看起来只是更新”的报表，实际却消耗了 30 次隐私预算。
 
 ### 13.3 与 DAP/VDAF 对齐
 
@@ -4242,6 +4521,9 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 - 如果 FHE response 改成 threshold decrypt，collector / helper 的 trust model 与 MMP legal role 如何定义？
 - incrementality calibration 的最小实验池应按 campaign、advertiser vertical、geo，还是 creative family 建模？
 - deletion / consent withdrawal 对历史 aggregate release 的处理是否采用 freeze、correction，还是只影响 future release？
+- multi-ID private matching 中，哪些 identifier type 允许同一 task 内共同参与 OPRF/PSM，哪些必须拆成独立 task，避免 linkage amplification？
+- 实时 streaming DP 的默认 privacy unit 应该选 `app_instance`、advertiser first-party user，还是 region / platform 分 profile 配置？
+- ICM / ODM 的 `odm_error`、open-beta rollout、Kids app support 和 6 个月 retention 是否应进入所有 MMP 的统一 partner contract，还是先作为 Google-compatible extension？
 
 ## 19. 最终建议
 
@@ -4251,7 +4533,8 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 2. 再把可用性做稳：采用 `MMP Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`，默认 Option 4：tracking-link `mmp_touch_token + opaque claim_token`。
 3. 再把优化闭环做稳：Confirm 后用 `mmp_touch_token -> req_id` 恢复 request-level label，支撑 creative_id x req_id 级别训练。
 4. 再把因果校准做稳：用 RCT / holdout / PIE-style calibration 给 attribution label 加 `incrementality_weight_micros`，不要把 `is_attributed=true` 当成 `incremental=true`。
-5. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
+5. 再把多标识符和实时报表边界做稳：multi-ID matching 必须有 `MultiIdentifierPrivateMatchPolicy`，streaming aggregate release 必须有 `StreamingDpReleasePlan`，不能用一个万能 user ID 或一个 `epsilon` 字段糊过去。
+6. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
 
 一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，以及谁能在 Confirm 后恢复 req_id”定义成严格协议。
 
@@ -4620,6 +4903,59 @@ Config 下发上下文
 4. GPP / DDRF / deletion signal 必须影响 token、artifact、feature release 和 debug trace lifecycle。
 5. Optimization Phase 1 可以不上 DP，但不能没有 causal calibration provenance 和 privacy-control propagation record。
 
+### 20.19 截至 2026-05-10 的最新 delta：multi-ID、streaming DP 与 ICM 生产约束
+
+这次复查没有推翻主链路，反而补强了三个容易在实现中被低估的地方：多标识符匹配、实时报表 DP、MMP/AAP 集成状态。
+
+第一，multi-ID private matching 不能被实现成“先把所有 ID 合并成一个大 user id，再跑隐私协议”。[PrivacyGo](https://arxiv.org/abs/2506.20981)（2025-06-26）把广告测量里的 multi-identifier profile matching 明确建模为 practical problem，并使用 reversed OPRF、blind key rotation 和 DP-obfuscated intersection size 来减少 cross-identifier linkage 和 membership inference 风险。这对本 RFC 的直接影响是新增 `MultiIdentifierPrivateMatchPolicy`：identifier source、normalization policy、key epoch、linkage guardrail 和 intersection release policy 都必须成为 task-scoped contract。
+
+落地结论：
+
+- email / phone / rdid / appsetid / idfv / gclid / gbraid / `odm_info` 不能因为“都能帮助匹配”就进入同一个长期 join key。
+- 多标识符只能在 `measurement_task_id + app + advertiser + partner + key_epoch` 范围内产生 task-bound material。
+- 对外释放只能是 scoped claim、aggregate value 或 DP-obfuscated intersection size；不要释放 identifier-pair hit 明细。
+- 如果必须做 encrypted relay fallback，要承认它是 lower-privacy profile，而不是继续使用 raw-local-only 的宣传语。
+
+第二，DP ad conversion measurement 的关键不只是噪声机制，而是“什么配置在操作上有效”。[Differentially Private Ad Conversion Measurement](https://arxiv.org/abs/2403.15224)（PoPETS 2024）强调 attribution rule、DP adjacency relation、contribution bounding scope 和 enforcement point 之间有细微耦合，必须一起定义才算 operationally valid。[AdsBPC / Click Without Compromise](https://arxiv.org/abs/2406.02463)（arXiv v4, 2025-09-08）则把实时流式广告报表作为正式问题，并用 per-user DP 和非同分布噪声分配改善准确率。
+
+落地结论：
+
+- `epsilon/delta` 不能单独出现在 RFC 里；它必须绑定 `dp_subject_unit`、`dp_adjacency_relation`、`contribution_bounding_scope`、`contribution_enforcement_point`。
+- 对 hourly / daily campaign reporting，`release_slot_granularity` 和 `budget_scope_id` 必须进入 budget ledger。
+- 流式 release 的 correction / refresh 不能被当成免费更新；要么消耗额外预算，要么进入明确的 correction policy。
+- Phase 1 可以不把 DP 放进 optimization plane，但 partner-facing aggregate plane 应优先补齐 `StreamingDpReleasePlan`。
+
+第三，ICM / ODM 的真实生产约束已经从“SDK 功能”变成“MMP/AAP 集成契约”。Singular 在 [Google Ads attribution integration](https://support.singular.net/hc/en-us/articles/115003252786-Google-Ads-AdWords-Mobile-App-Campaigns-Attribution-Integration)（页面更新 `2026-05-08`）里把 Google ICM 写成 open beta，并给出多条工程边界：Android 自 `2026-03-30` 起对所有广告主开放，iOS 自 `2025-11-12` 起对所有广告主开放；ICM 可覆盖 iOS ATT declined、Android EEA / ads personalization opt-out 和 Kids apps，但不支持 iOS EEA/UK region；报告形态是 click-through install、probabilistic attribution，sub network type 不可用；iOS 接入要求 Google ODM SDK、Singular SDK `12.8.1+`、`enableOdmWithTimeoutInterval`，推荐 5 秒 timeout，且可能延迟 deep link callback；没有产出 `odm_info` 时要传 `odm_error`；Google Ads user-level data 在 MMP 侧有 6 个月 retention 要求；LDS 会映射到 Google `ad_user_data` / `ad_personalization`。
+
+落地结论：
+
+- `SdkMeasurementRuntimeTrace` 需要新增 rollout、reporting scope、`odm_error_code`、Kids app policy、retention policy、consent mapping policy。
+- `icm_enabled=true` 不够；需要区分 platform rollout、region inactive、consent denied、SDK missing、S2S fallback、event source ineligible。
+- MMP/AAP 侧的 `odm_info` / `odm_error` 是 integration health 和 compat egress 状态，不是 attribution truth，也不是 optimization feature。
+- 6 个月 retention 和 LDS->Google consent mapping 应进入 privacy-control propagation，而不是只写在 partner UI 操作文档里。
+
+截至 2026-05-10，本文的新增判断是：on-device measurement RFC 如果只写 OPRF/PSM、Claim/Confirm 和 request-level label，还不够生产化。它还必须把“可用标识符如何组合”“实时 aggregate 如何重复发布”“MMP/AAP SDK 在什么 rollout / region / consent / timeout 状态下产出或缺失 `odm_info`”写进正式协议。
+
+### 20.20 Cross-MMP ICM 资料的共同信号
+
+2026-05-10 的额外复查把视角从 Singular 扩到多个 MMP / AAP。这里的关键不是哪家文档最完整，而是它们共同暴露了 ICM 的真实产品边界。
+
+- AppsFlyer 的 [Google attribution solution bulletin](https://support.appsflyer.com/hc/en-us/articles/37857301293457-Bulletin-AppsFlyer-and-Google-attribution-solution-Open-BETA) 明确写出：Google 会向 AppsFlyer 发送 non-deterministic install claims；这些 claims 如果被 AppsFlyer 数据验证，就用于归因；iOS 需要 AppsFlyer iOS SDK `6.17.7+` 加 Firebase `11.14.0+` 或 standalone Google ODM SDK；Android no SDK update；Advanced Data Sharing 开启后 AppsFlyer 会发送没有 device ID 的 install，否则 ICM 效果受限。
+- Singular 的 [Google Ads attribution integration](https://support.singular.net/hc/en-us/articles/115003252786-Google-Ads-AdWords-Mobile-App-Campaigns-Attribution-Integration) 把 Android / iOS open beta、click-through install only、probabilistic attribution、sub network type unavailable、iOS ODM SDK / timeout / `odm_error`、retention 和 consent mapping 写成具体接入约束。
+- Branch 的 [Google ICM page](https://help.branch.io/account-hub/docs/branch-google-icm-for-enhanced-mobile-measurement) 把 iOS 路径写成 Branch iOS SDK `3.13.3+` + Google ODM SDK / Firebase，或 S2S 传 `odm_info`；Android 则写成 no immediate actions，measurement improvements 自动应用。
+- Airbridge 的 [ICM announcement](https://www.airbridge.io/en/blog/airbridge-google-icm) 把 ICM 描述为 Google proprietary non-deterministic attribution data 进入 Airbridge dashboard；其 [touchpoint definitions](https://help.airbridge.io/en/guides/ad-channel-touchpoint-types) 进一步写出 Android ICM attribution data 可覆盖 ACi winning touchpoints，包括 clicks 和 engaged views；iOS 则需要安装 Google On-Device Event Measurement SDK 并升级 Airbridge iOS Native SDK `4.4.1+`。
+- Kochava 的 [Google Ads ICM article](https://www.kochava.com/ru/blog/google-ads-integrated-conversion-measurement/) 写出 iOS 需要 Firebase / ODM 与 Kochava SDK 更新，S2S 要传 on-device measurement info string；Android no SDK update，modeled attribution 可用性取决于 rollout / allowlist；Google claims 进入 Kochava modeled tier。
+- Tenjin 的 [ICM support article](https://tenjin.com/blog/tenjin-announces-early-support-for-google-ads-integrated-conversion-measurement/) 也呈现同样模式：iOS 需要 on-device conversion measurement 和 SDK 版本更新；Android no actions needed / automatic enablement。
+- Adjust 的 [ICM overview](https://www.adjust.com/blog/integrated-conversion-measurement/) 没给出很细的 SDK 步骤，但明确 ICM 支持 SDK-based 和 S2S integrations，并会进入 Adjust 的 probabilistic attribution tier 和 cross-network reporting。
+
+这些资料合在一起，给本 RFC 三个新约束：
+
+1. `Android ICM` 和 `iOS ICM` 必须分 schema，不是同一套 SDK requirement。Android 更像 `Google App Conversion API + appsetid/zeroed rdid + gclid/referrer/gbraid + consent flags + partner toggle`；iOS 更像 `ODM SDK/Firebase -> odm_info -> MMP/AAP compat API`。
+2. `claim_path` 必须显式表达 MMP waterfall tier。不同 MMP 叫法不一：non-deterministic claim、probabilistic attribution、modeled tier、privacy-preserving conversion modeling；训练面不能把它和 deterministic device-id claim 混成同一种 label。
+3. `icm_supported_engagement_types` 必须平台 / MMP / campaign type 化。Singular 当前偏 click-through install only；Airbridge Android 明确包括 clicks 和 engaged views；AppsFlyer 提到 installs 和 re-attributions。这类差异会直接影响 bidder 如何解释 winner quality。
+
+因此，本文在 `SdkMeasurementRuntimeTrace` 和 11.5B 中补充 `advanced_data_sharing_enabled`、`android_sdk_update_required`、`ios_odm_sdk_required`、`icm_supported_engagement_types`、`icm_claim_semantics`、`gclid_capture_enabled`、`install_referrer_gclid_capture_enabled` 和 `gbraid_capture_enabled`。这些字段的目的不是让 runtime trace 变成训练特征，而是让 ICM 的可用性、缺失原因和 claim 类型可审计。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -4642,6 +4978,9 @@ Config 下发上下文
 16. [Proteus: A Practical Framework for Privacy-Preserving Device Logs](https://arxiv.org/abs/2603.06540)
 17. [Who am I Talking to? A Large-Scale Measurement of Surface Attribution Across Real-World Security and Privacy Interfaces](https://research.google/pubs/who-am-i-talking-to-a-large-scale-measurement-of-surface-attribution-across-real-world-security-and-privacy-interfaces/)
 18. [Predicted Incrementality by Experimentation (PIE) for Ad Measurement](https://arxiv.org/abs/2304.06828)
+19. [PrivacyGo: Privacy-Preserving Ad Measurement with Multidimensional Intersection](https://arxiv.org/abs/2506.20981)
+20. [Differentially Private Ad Conversion Measurement](https://arxiv.org/abs/2403.15224)
+21. [Click Without Compromise: Online Advertising Measurement via Per User Differential Privacy](https://arxiv.org/abs/2406.02463)
 
 ### 21.2 Standards
 
@@ -4678,6 +5017,13 @@ Config 下发上下文
 14. [IAB Tech Lab Device Attestation Support in OM SDK](https://iabtechlab.com/press-releases/device-attestation-support-in-open-measurement-sdk/)
 15. [Open Measurement Device Attestation Implementation Guidance](https://iabtechlab.com/wp-content/uploads/2025/10/Open-Measurement-Device-Attestation-Implementation-Guidance.pdf)
 16. [IAB Project Eidos](https://www.iab.com/news/iab-announces-project-eidos/)
+17. [AppsFlyer and Google attribution solution Open Beta](https://support.appsflyer.com/hc/en-us/articles/37857301293457-Bulletin-AppsFlyer-and-Google-attribution-solution-Open-BETA)
+18. [Branch Partners with Google on ICM](https://help.branch.io/account-hub/docs/branch-google-icm-for-enhanced-mobile-measurement)
+19. [Airbridge now supports Google ICM](https://www.airbridge.io/en/blog/airbridge-google-icm)
+20. [Airbridge Google Ads touchpoint definitions and ICM attribution data](https://help.airbridge.io/en/guides/ad-channel-touchpoint-types)
+21. [Kochava Google Ads Integrated Conversion Measurement](https://www.kochava.com/ru/blog/google-ads-integrated-conversion-measurement/)
+22. [Tenjin Google Ads Integrated Conversion Measurement support](https://tenjin.com/blog/tenjin-announces-early-support-for-google-ads-integrated-conversion-measurement/)
+23. [Adjust Integrated Conversion Measurement overview](https://www.adjust.com/blog/integrated-conversion-measurement/)
 
 ### 21.4 Engineering Components
 
