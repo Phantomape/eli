@@ -97,6 +97,24 @@ Web2App 常见断点主要有四段：
 
 因此，后续评估新增平台或供应商时，可以先问四个问题：是否支持 App 事件回传，是否支持 iOS / Android 独立配置，Web CTA 是否能动态生成带参 deep link，首开恢复是否独立于归因响应。四项缺一项，就不能把它当完整 Web2App 方案。
 
+### 2.9 2026-05-10 资料复核后的边界补充
+
+本轮新增资料没有推翻既有判断，但进一步强化了“测量、路由、首开恢复必须分层验收”的结论：
+
+1. Google 的 deferred deep linking 与 Web to App Acquisition Measurement 是两套不同能力。前者更偏 App campaign 场景下的安装后落页，且公开文档对 Android、YouTube / AdMob、24 小时窗口、深链类型有明确限制；后者解决 web campaign 对 app install / first in-app conversion 的可见性。不能把 Google 的测量列或 DDL 配置当成通用 Web 中间页首开恢复方案。
+2. Meta 生态的 deferred deep linking 更依赖 MMP / SDK / SAN 口径协同。Branch、AppsFlyer、Airbridge 等公开资料都把 Meta 相关能力描述为需要额外接入、且在 iOS ATT、AEM、in-app browser、Facebook App Links 等条件下存在明显限制。实操上，Meta 更适合做高质量前台流量和创意承接，首开恢复仍应由 MMP deep link 或自建 session 兜底。
+3. MMP 平台正在把“第二跳参数”产品化。AppsFlyer Smart Script V2、Singular Web-to-App Forwarding、Adjust ODDL、Branch SAN API-Driven DDL 都在处理同一个问题：用户从广告到 Web 后，Web CTA 到商店 / App 的第二跳必须重新携带媒体上下文和业务上下文，且首开路由不能等待慢归因响应。
+4. 选型时要把权限和适用范围写进验收清单。Singular 的部分 Web / PC / Console / CTV postback 能力、Adjust ODDL、Branch SAN API-Driven DDL 等都有账号、早期访问、SAN、ATT 或时间窗口限制。供应商声称“支持 Web2App”不等于当前账号、当前媒体、当前 OS 都能稳定使用。
+
+### 2.10 2026-05-11 资料复核后的校准
+
+本轮复核主要补强了两个判断：
+
+1. `TikTok` 非 App 推广广告的 app activity measurement 公开文档仍明确支持“Web 落地页之后继续测量 App 安装和 App 内事件”，且文档口径强调每条广告只能选择一个 Android 或 iOS app。它适合做内容承接后的 App 结果可见性，但 Web CTA、商店 fallback 和首开恢复仍要由 MMP deep link 或自建 session 承担。
+2. `Apple Web AdAttributionKit` 解决的是隐私保护下的 Web 转化测量，尤其是 iOS / iPadOS App 内广告点击跳到网站后的转化归因；`App AdAttributionKit` 解决的是 App 安装 / re-engagement 的聚合归因。两者都不等同于 Web2App 的首开路由能力，不能替代 Universal Links、App Links、MMP deferred deep link 或服务端 session 载荷。
+
+因此，Apple、Google、TikTok 这类平台越是把“Web 与 App 之间的结果可见性”产品化，落地时越要把验收项拆开：`是否能归因`、`是否能跳转`、`是否能首开恢复`、`是否能把首个关键事件带回媒体优化`。四者都成立，才是完整 Web2App；只有归因或报表可见，只能算测量补强。
+
 ## 3. 标准链路与职责拆解
 
 ```mermaid
@@ -204,6 +222,8 @@ Web2App 容易把两个目标混在一起：一个是“把用户带到正确 Ap
 - 归因层可以延迟：SKAN / AdAttributionKit postback、MMP 归因响应、媒体回传都可能滞后，不能成为首开路由的阻塞条件。
 - 报表层要允许概率与聚合：iOS 侧出现 `null`、粗粒度转化值、延迟回传或隐私阈值不足，并不等于链路失败；它只说明该口径不能用于用户级复盘。
 
+还要区分 `App AdAttributionKit` 和 `Web AdAttributionKit`：前者偏 App 安装与 re-engagement 归因，后者偏 App 内广告点击到网站后的 Web 转化测量。它们能提升隐私合规测量能力，但不会自动把安装后的用户送回商品页、内容页或 onboarding 分支。
+
 因此更稳妥的架构是：`首开路由优先保证体验`，`归因回传随后补齐优化信号`。Adjust ODDL、LinkMe 这类能力，本质上也是在解决“不要等归因完成才交付 deferred deep link”的问题。
 
 ## 5. 广告平台能力梳理
@@ -223,6 +243,8 @@ Google Ads 已将 Web2App 明确产品化为 `Web to App Connect`，并配套 `W
 - `indirect installs` 至少要求把 Android / iOS 的 `first_open` 导入承载 web campaign 的 Google Ads 账号；`Web to app first conv.` 还要求导入 app 内动作，并至少将一个 app 内事件设为 primary action 参与出价
 - Google 的公开口径强调“web campaign 先进入网页，再产生 app 安装 / 首个 app 内转化”这一间接路径；若广告直接跳 App Store / Google Play，则不属于该测量能力覆盖范围
 
+另一个容易混淆的能力是 Google Ads 的 deferred deep linking。它面向“用户点击 App campaign、安装后进入指定 App 内页”的体验恢复，而不是 Web 中间页的通用上下文恢复。公开文档还给出明确限制：ad group deferred deep link 主要用于 Android 的 YouTube / AdMob 场景；要求 App 已实现 custom scheme 或 Android App Links，并在测量 SDK 中启用 deferred deep linking；用户需在一定窗口内安装并打开 App 才能恢复到指定深链。
+
 同时，Google 也给出了很明确的边界：
 
 - 该测量能力适用于“广告先到 web，再带来 app 安装”的路径
@@ -230,6 +252,7 @@ Google Ads 已将 Web2App 明确产品化为 `Web to App Connect`，并配套 `W
 - iOS 侧可见性仍受 ATT 同意和隐私框架约束，Google 公开口径也仅覆盖 ATT consented iOS 流量
 - Google 表示同一次转化不会同时归给 App campaign 和 web campaign；但这只解决 Google / AAP 侧的重复上报，不替代企业内部对 web conversion、install、first_open、首个关键事件的去重规则
 - 这套能力解决的是 web campaign 对 app install / first in-app conversion 的可见性，不替代 Universal Links、App Links 或 MMP deferred deep link 的路由职责
+- Google DDL 解决的是 App campaign 安装后落到哪个 App 内页，Web to App Acquisition Measurement 解决的是 web campaign 贡献 app 结果的可见性；两者都不应被当成“任意 H5 CTA 自动恢复首开上下文”的完整方案
 
 结论上，Google Ads 最适合高意图搜索、商品/服务决策需要先读信息的行业，以及已经完成 App 事件埋点与 deep link 基建的团队。
 
@@ -252,6 +275,12 @@ Meta 没有像 Google 一样单独推出完整的 Web2App 总产品名，但具�
 - Meta 负责流量与创意
 - 自建 Web 落地页负责承接与筛选
 - MMP / deep link 平台负责参数继承、延迟深链、归因回流
+
+近期 MMP 公开资料也进一步说明了 Meta 链路的边界：
+
+- 付费 App install / re-engagement 场景可配置 direct deep link，但 deferred deep link 常依赖 MMP、Meta SDK、AEM / SAN 数据或广告目标限制，不是所有 Meta 入口都天然支持。
+- iOS 侧受 ATT、AEM 和 in-app browser 影响更明显。部分 MMP 文档会要求在 Meta 归因优先、AEM payload 存在或用户未授权时调整 deep link 处理逻辑。
+- Facebook App Links 更像 Meta 生态内的网页元数据标准，不等同于 iOS Universal Links / Android App Links，也不能替代跨媒体的 delayed / deferred context restore。
 
 因此 Meta 链路的关键不是把所有用户尽快送商店，而是先明确 Web 页承担的角色：如果是游戏、工具、订阅或电商，Playable、内容预览、权益解释和社证信息通常能提高安装前意图；如果只是低信息量 H5，则很容易在 in-app browser 里增加一次无效跳转。
 
@@ -398,6 +427,8 @@ Branch 的 `Journeys + Deepviews + deep linking` 组合，本质上是在解决�
 - 支持桌面 Web 通过 QR code 引导到移动 App，适合内容、电商、票务和旅游等桌面决策、移动履约的场景
 - 支持把桌面站 banner、二维码、移动站 smart banner 与同一套 Branch Link / SDK 口径连接起来，减少“桌面上看、手机上装、App 里无法复盘”的断点
 
+Branch 近期资料还把 SAN deferred deep linking 单独产品化，说明 Google、Meta 等自归因网络的 deferred deep link 数据需要通过专门 API / MMP 口径进入 App 首开回调，而不是天然包含在普通 Branch Link 中。该能力对新安装 / 重装更有价值，但 iOS 侧仍可能受 ATT 授权、SAN 数据延迟和归因窗口影响。因此，Branch 在 SAN 流量上的价值不是“绕开隐私限制”，而是在合规前提下把广告网络数据尽量转成 App 可消费的 deep link data。
+
 Branch 特别适合内容、社区、电商、OTA、票务等对上下文恢复要求高的业务。
 
 ### 6.3 Adjust：路由、fallback 与 iOS 恢复能力强
@@ -414,6 +445,7 @@ Adjust 过去更偏归因底座，现在公开能力里也已补上了 Web2App �
 
 - `LinkMe` 明确面向 `iOS 15+ Safari` 的 deferred deep linking 与 attribution reporting
 - `ODDL` 强调把 deferred deep link 从归因响应中解耦，优先通过更快的 session response 交付首开路由；但该能力仍属于 Early Access，且公开文档提到最近点击窗口等限制，应按灰度能力评估
+- ODDL 默认使用最近一次符合条件的 Adjust link engagement 来决定首开路由，公开文档提到 15 分钟窗口；SAN deferred deep link 不会因为 ODDL 自动加速，因为 SAN 归因来自独立 API / pipeline
 - Smart Banners 允许从移动网页统一承接“已安装直达 / 未安装去商店”
 
 因此，Adjust 更适合重视稳定性、fallback 与 iOS 恢复成功率的团队。
@@ -435,11 +467,14 @@ Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下
 - 通过 `Conversion APIs` 把安装和 post-install 事件继续回传给广告平台
 - 支持移动 Web CTA 和桌面 Web QR code 两类 Web2App 路径
 - 支持把 Web、PC、Console、CTV campaign 的 install 与 post-install / in-game events 通过 partner Conversion APIs 回流给媒体，用于 web campaign 优化；但部分 web / PC / console / CTV postback 能力面向特定客户开放，选型时要确认账号权限
+- Conversion Postbacks for Web / PC / Console 可把非移动端事件通过 partner cAPI 或其他 S2S endpoint 回传，用于媒体优化、内部同步或下游系统触发；但这属于优化信号层，不自动解决 App 首开页面恢复
 - 文档明确提醒 Facebook、Instagram、TikTok 等 in-app browser 到系统浏览器的上下文切换会造成归因损耗，应使用对应广告网络的 tracking link 格式先捕获点击
 
 这类能力尤其适合多平台买量、归因体系复杂、希望把 Web 来源继续喂给媒体优化模型的团队。
 
 如果团队主要诉求是“让媒体优化模型知道这个 app install 来自哪个 web campaign”，Singular 这类参数转发方案通常比单纯做一个短链更关键。它把 `utm_source`、`utm_campaign`、`utm_content` 等 Web 维度映射到移动归因报表，避免所有自有站安装都被粗暴归到 “Mobile Web to App” 一类。
+
+但这类 forwarding 的核心仍是“归因参数继承”。如果安装后要回到具体内容、商品、权益页或 onboarding 分支，还必须同步设计 `_dl / _ddl / passthrough` 与 App 内路由解析；否则报表能看到来源，用户体验仍可能只落首页。
 
 这一点也适用于自建方案：Web2App 的关键不是把所有参数无差别塞进最终 URL，而是确定哪些字段需要进入三条不同通道。`媒体字段` 要进入媒体和 MMP 报表，`业务字段` 要进入 App 首开路由，`诊断字段` 要进入内部日志和看板。三条通道可以共享同一个 click/session id，但不要依赖单一 query string 在 in-app browser、系统浏览器、商店和 App 之间完整存活。
 
@@ -798,114 +833,124 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
    https://support.google.com/google-ads/answer/15929459?hl=en
 4. Google Ads, About Web to App Acquisition Measurement  
    https://support.google.com/google-ads/answer/16440462?hl=en
-5. TikTok Ads Manager, About the App Promotion Objective  
+5. Google Ads, About deferred deep linking  
+   https://support.google.com/google-ads/answer/16420273?hl=en
+6. Google Ads, Set up and edit ad group deferred deep linking  
+   https://support.google.com/google-ads/answer/12373847?hl=en
+7. TikTok Ads Manager, About the App Promotion Objective  
    https://ads.tiktok.com/help/article/what-is-app-promotion-objective?lang=en
-6. TikTok Ads Manager, How to measure app activity for non-app promotion campaigns  
+8. TikTok Ads Manager, How to measure app activity for non-app promotion campaigns  
    https://ads.tiktok.com/help/article/how-to-measure-app-activity-for-non-app-promotion-campaigns?lang=en
-7. TikTok Ads Manager, About Deeplinks  
+9. TikTok Ads Manager, About Deeplinks  
    https://ads.tiktok.com/help/article/understanding-deeplinks-and-deferred-deeplinks
-8. TikTok Ads Manager, About Deferred Deeplinks  
+10. TikTok Ads Manager, About Deferred Deeplinks  
    https://ads.tiktok.com/help/article/about-deferred-deeplinks?lang=en
-9. Meta for Business, Playable ads  
+11. Meta for Business, Playable ads  
    https://www.facebook.com/business/ads/playable-ad-format
-10. Meta Business Help Center, About Conversions API  
+12. Meta Business Help Center, About Conversions API  
     https://www.facebook.com/business/help/AboutConversionsAPI
-11. Facebook Help Center, View websites in the Facebook app  
+13. Facebook Help Center, View websites in the Facebook app  
     https://www.facebook.com/help/289776536190480/
-12. Snapchat for Business, App Power Pack  
+14. Snapchat for Business, App Power Pack  
     https://forbusiness.snapchat.com/blog/app-power-pack?lang=en-US
-13. Snapchat for Business, Sponsored Snaps  
+15. Snapchat for Business, Sponsored Snaps  
     https://forbusiness.snapchat.com/advertising/sponsored-snaps
-14. Snapchat for Business, Snap Pixel  
+16. Snapchat for Business, Snap Pixel  
     https://forbusiness.snapchat.com/advertising/snap-pixel
-15. X Business, App installs campaign  
+17. X Business, App installs campaign  
     https://business.x.com/en/advertising/campaign-types/app-installs
-16. X Business, Mobile app measurement and attribution  
+18. X Business, Mobile app measurement and attribution  
     https://business.x.com/en/help/campaign-setup/create-an-app-installs-campaign/mobile-app-measurement-and-attribution
-17. X Business, Mobile app advertising guide  
+19. X Business, Mobile app advertising guide  
     https://business.x.com/en/resources/mobile-app-advertising-guide
-18. Snapchat for Business, Drive App Growth with Snapchat Ads  
+20. Snapchat for Business, Drive App Growth with Snapchat Ads  
     https://forbusiness.snapchat.com/advertising/app-growth
 
 ### 深链、归因与系统基础设施
 
-19. Apple Developer, Promoting Apps with Smart App Banners  
+21. Apple Developer, Promoting Apps with Smart App Banners  
     https://developer.apple.com/documentation/webkit/promoting-apps-with-smart-app-banners
-20. Apple Developer, Allowing apps and websites to link to your content  
+22. Apple Developer, Allowing apps and websites to link to your content  
     https://developer.apple.com/documentation/xcode/allowing-apps-and-websites-to-link-to-your-content/
-21. Apple Developer, Measuring ad performance with AdAttributionKit  
+23. Apple Developer, Measuring ad performance with AdAttributionKit  
     https://developer.apple.com/app-store/ad-attribution/
-22. Apple Ads, Using AdAttributionKit to measure app ad performance  
+24. Apple Ads, Using AdAttributionKit to measure app ad performance  
     https://ads.apple.com/app-store/help/attribution/0093-adattributionkit-to-measure-performance
-23. Apple Ads, Measuring performance of ads on the App Store  
+25. Apple Ads, Measuring performance of ads on the App Store  
     https://ads.apple.com/app-store/help/attribution/0028-measuring-ad-performance
-24. Apple Ads, App ad attribution overview
+26. Apple Ads, App ad attribution overview
     https://ads.apple.com/app-store/help/attribution/0094-ad-attribution-overview
-25. Android Developers, About App Links
+27. Android Developers, About App Links
     https://developer.android.com/training/app-links/about
-26. Android Developers, Google Play Install Referrer
+28. Android Developers, Google Play Install Referrer
     https://developer.android.com/google/play/installreferrer
-27. AppsFlyer, Smart Banners—mobile web-to-app (for marketers)
+29. AppsFlyer, Smart Banners—mobile web-to-app (for marketers)
     https://support.appsflyer.com/hc/en-us/articles/360000764837-Smart-Banners-mobile-web-to-app-for-marketers-
-28. AppsFlyer, Web-to-App Deep Linking Solution
+30. AppsFlyer, Web-to-App Deep Linking Solution
     https://www.appsflyer.com/products/deep-linking/web-to-app/
-29. AppsFlyer, OneLink Smart Script overview
+31. AppsFlyer, OneLink Smart Script overview
     https://support.appsflyer.com/hc/en-us/articles/360000677217-OneLink-Smart-Script-overview
-30. AppsFlyer, Create deep linking and redirection links with OneLink
+32. AppsFlyer, Create deep linking and redirection links with OneLink
     https://support.appsflyer.com/hc/en-us/articles/208874366-Create-deep-linking-and-redirection-links-for-your-campaigns-with-OneLink
-31. AppsFlyer, Deferred Deep Linking Solution
+33. AppsFlyer, Deferred Deep Linking Solution
     https://www.appsflyer.com/products/deep-linking/deferred-deep-linking/
-32. Branch, Web to App
+34. Branch, Web to App
     https://help.branch.io/using-branch/docs/web-to-app
-33. Branch, Smart Banners & Web-to-App Engagement
+35. Branch, Smart Banners & Web-to-App Engagement
     https://www.branch.io/products/banners/
-34. Branch, Deepviews Overview
+36. Branch, Deepviews Overview
     https://help.branch.io/using-branch/docs/deepviews
-35. Branch, Journeys: Desktop Banners
+37. Branch, Journeys: Desktop Banners
     https://help.branch.io/docs/desktop-journeys
-36. Branch, QR Codes Overview
+38. Branch, QR Codes Overview
     https://help.branch.io/docs/qr-codes-1
-37. Adjust, Deep links
+39. Branch, Facebook Ads Deferred Deep Linking
+    https://help.branch.io/marketer-hub/docs/facebook-ads-deferred-deep-linking
+40. Branch, SAN API-Driven Deferred Deep Linking
+    https://help.branch.io/developer-hub/docs/san-deferred-deep-linking
+41. Adjust, Deep links
     https://help.adjust.com/en/article/deep-links
-38. Adjust, LinkMe
+42. Adjust, LinkMe
     https://help.adjust.com/en/article/linkme
-39. Adjust, Optimized Deferred Deep Linking
+43. Adjust, Optimized Deferred Deep Linking
     https://help.adjust.com/en/article/optimized-deferred-deep-linking-oddl
-40. Adjust, Smart banners
+44. Adjust, Smart banners
     https://help.adjust.com/en/article/smart-banners
-41. Singular, Website-to-Mobile App Attribution Forwarding for Mobile Web
+45. Singular, Website-to-Mobile App Attribution Forwarding for Mobile Web
     https://support.singular.net/hc/en-us/articles/360042283811-Website-to-Mobile-App-Attribution-Forwarding-for-Mobile-Web
-42. Singular, Web, Web-to-App, PC, & Console Campaign Optimization
+46. Singular, Web, Web-to-App, PC, & Console Campaign Optimization
     https://support.singular.net/hc/en-us/articles/30577283058459-Optimize-Web-Campaigns-for-Mobile-PC-Console-Acquisition-Using-Conversion-APIs
-43. Singular, Singular Links / Tracking Links FAQ
+47. Singular, Singular Links / Tracking Links FAQ
     https://support.singular.net/hc/en-us/articles/360030934212-Singular-Links-Tracking-Links-FAQ
-44. Singular, Mobile Attribution for Connected TV FAQ
+48. Singular, Mobile Attribution for Connected TV FAQ
     https://support.singular.net/hc/en-us/articles/13581281810331-Mobile-Attribution-for-Connected-TV-FAQ
-45. Firebase, Dynamic Links Deprecation FAQ
+49. Firebase, Dynamic Links Deprecation FAQ
     https://firebase.google.com/support/dynamic-links-faq
-46. Firebase, Migrate from Dynamic Links to App Links & Universal Links
+50. Firebase, Migrate from Dynamic Links to App Links & Universal Links
     https://firebase.google.com/support/guides/app-links-universal-links
-47. Singular, Web SDK - Overview & Getting Started
+51. Singular, Web SDK - Overview & Getting Started
     https://support.singular.net/hc/en-us/articles/41862111062299-Web-SDK-Overview-Getting-Started
-48. Singular, Web SDK - Native JavaScript Implementation Guide
+52. Singular, Web SDK - Native JavaScript Implementation Guide
     https://support.singular.net/hc/en-us/articles/41863502734619-Web-SDK-Native-JavaScript-Implementation-Guide
-49. Branch, Activation Migration Guide
+53. Branch, Activation Migration Guide
     https://help.branch.io/marketer-hub/docs/activation-migration-guide
-50. Reddit for Business, App Install Campaigns
+54. Reddit for Business, App Install Campaigns
     https://www.business.reddit.com/campaign-objective/app-installs
-51. Quora Ad Support, How do Quora app install ads work?
+55. Quora Ad Support, How do Quora app install ads work?
     https://quoraadsupport.zendesk.com/hc/en-us/articles/115010300987-How-do-Quora-app-install-ads-work
-52. LinkedIn Marketing Solutions, LinkedIn Ads
+56. LinkedIn Marketing Solutions, LinkedIn Ads
     https://business.linkedin.com/marketing-solutions/ads
-53. X Ads API, Mobile Conversions
+57. X Ads API, Mobile Conversions
     https://docs.x.com/x-ads-api/measurement/mobile-conversions
-54. X Ads API, Web Conversions
+58. X Ads API, Web Conversions
     https://docs.x.com/x-ads-api/measurement/web-conversions
-55. Singular, Conversion Postbacks for Web, PC, and Console FAQ
+59. Singular, Conversion Postbacks for Web, PC, and Console FAQ
     https://support.singular.net/hc/en-us/articles/19017155637403-Conversion-Postbacks-for-Web-PC-and-Console-FAQ
-56. AppsFlyer, About link structure and parameters
+60. AppsFlyer, About link structure and parameters
     https://support.appsflyer.com/hc/en-us/articles/207447163-About-link-structure-and-parameters
-57. AppsFlyer Developer Hub, OneLink Smart Script V2
+61. AppsFlyer Developer Hub, OneLink Smart Script V2
     https://dev.appsflyer.com/hc/docs/dl_smart_script_v2
-58. AppsFlyer, Set up Smart Script to convert web visitors
+62. AppsFlyer, Set up Smart Script to convert web visitors
     https://support.appsflyer.com/hc/en-us/articles/4413588932241-Set-up-Smart-Script-to-convert-web-visitors
+63. Apple Developer Documentation, AdAttributionKit
+    https://developer.apple.com/documentation/AdAttributionKit
