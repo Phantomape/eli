@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-10<br>
+最后更新: 2026-05-11<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -30,6 +30,7 @@
 2026-05-08 的补充调研再加了一条生产现实：touchpoint 质量本身也需要可验证。IAB Tech Lab 已把基于 Privacy Pass 语义的 device attestation 放进 OM SDK，说明广告 measurement 不只要保护 conversion 侧 PII，也要防止伪造设备、伪造 supply path 把低质量触点灌进归因与优化闭环。本文因此把 device / supply-path attestation 建模为 request-scoped quality receipt，而不是 user identifier 或新的归因 token。
 2026-05-09 的补充调研把“优化”从 attribution label 又向前推进了一步：最新 W3C Attribution Level 1 工作草案继续确认 aggregate + DP + anti-replay 是公开 reporting 的主边界；IAB ADMaP / GPP / DDRF 则说明 clean-room matching、consent/deletion signal 传播已经进入行业标准化；2026-04 修订的 PIE incrementality 研究进一步提醒：last-click 或 on-device claim 只回答“谁应拿到 credit”，不等于回答“这次广告带来多少因果增量”。因此本 RFC 新增 `IncrementalityCalibrationRecord` 与 `PrivacyControlPropagationRecord`，把 request-level optimization label、因果校准、隐私控制传播拆成三个对象，避免把归因事实、增量价值和合规状态混成一张黑盒训练表。
 2026-05-10 的复查补上了三个更贴近生产实现的约束：第一，PrivacyGo 和 DP ad conversion measurement 方向提醒我们，multi-ID private matching 不能把 email、phone、rdid、appsetid、gclid 等标识符先合成一个“万能用户 ID”，而要用 task-scoped identifier bundle、key epoch 和 blind rotation 管住 linkage；第二，AdsBPC 说明广告测量里的实时流式报表可以做 per-user DP，但 privacy unit、release slot、noise plan 和 budget ledger 必须先进入协议对象；第三，Singular 在 2026-05-08 更新的 Google ICM 文档把 Android / iOS open beta、Kids apps、click-through-only、5 秒 ODM timeout、`odm_error`、6 个月 retention 和 LDS->Google consent mapping 都写成生产约束，说明 MMP/AAP 集成状态本身也必须进入 RFC，而不是靠运营手册补充。
+2026-05-11 的复查没有推翻 `Ask -> Claim -> Confirm` 主链路，但补上了 optimization training 的隐私契约：Google Research 的 Private Ad Modeling with DP-SGD 说明 DP-SGD 已经能用于 CTR、CVR 和 conversion count 这类广告任务，但广告数据的高稀疏、高类别不平衡会让“全量 DP-SGD”成为成本很高的 profile；Training Differentially Private Ad Prediction Models with Semi-Sensitive Features 进一步说明，生产上更合理的中间态是把特征拆成 known features、semi-sensitive derived features 和 protected labels。本文因此新增 `TrainingPrivacyPolicy`，要求 trainer 明确 `privacy_profile`、`privacy_unit`、`adjacency_relation`、feature sensitivity manifest、DP accountant 和 audit profile。Phase 1 仍可不上 DP，但不能把“未上 DP 的内部优化样本”包装成隐私保护训练。
 
 本文刻意兼顾生产实用性：
 
@@ -45,7 +46,8 @@
 - 如果你只想理解方案，先读 `1-4`、`7`、`9.4-9.6`、`17C-17D`。
 - 如果你要评审架构，重点读 `6-8`、`10-14`、`17B`。
 - 如果你关心 legal / privacy risk，重点读 `10`、`11`、`17C-17D`、`19`。
-- 如果你要实现或调 SDK，重点读 `7.4B`、`7.4C`、`8`、`9`、`17A`、`17B`。
+- 如果你要实现或调 SDK，重点读 `7.4`、`8`、`9`、`17A`、`17B`。
+- 如果你要做优化训练，重点读 `8.8`、`8.14-8.17A`、`9.14`、`9.17`、`12`。
 
 第一次阅读时可以先跳过大段 schema。schema 的作用是把边界写死，不是让人从字段定义开始理解系统。
 
@@ -166,6 +168,7 @@ MMP SDK Ask
 | consent / deletion / jurisdiction signal 是协议状态，不是 legal 备注 | GPP 与 DDRF V2 说明隐私选择、删除请求、传播状态、签名和错误码需要机器可读；on-device measurement 必须能把这些信号映射到 artifact、token、feature release 和 retention policy | 8.23、9.15、10、20.18 |
 | 多标识符私密匹配必须有 task-scoped policy，而不是先合成一个万能 ID | PrivacyGo 把 multi-identifier ad measurement 建模为 reversed OPRF + blind key rotation + DP-obfuscated intersection size；这支持本 RFC 把 identifier bundle、key epoch、linkage guardrail 写成正式对象 | 8.24、9.16、20.19 |
 | 实时报表 DP 不能只写一个 epsilon | Differentially Private Ad Conversion Measurement 要求归因规则、DP 邻接、贡献裁剪 scope 和 enforcement point 一起 operationally valid；AdsBPC 则说明流式广告报表需要 per-user DP、release slot 和非同分布噪声计划 | 8.25、13.2A、20.19 |
+| optimization training 的隐私 profile 必须显式区分 known / semi-sensitive / protected label | DP-SGD 在广告 CTR/CVR/conversion count 任务上可行，但广告数据稀疏且类别不平衡；semi-sensitive feature DP 给了比“全量 DP”或“只做 label DP”更贴近生产的折中 | 8.17A、9.17、12.3、20.21 |
 | MMP/AAP ICM 集成状态是协议输入，不是客服排障备注 | 2026-05-08 Singular 文档把 Google ICM 的 Android/iOS open beta、click-through-only、Kids apps、ODM timeout、`odm_error`、retention 和 consent mapping 写成正式接入规则 | 8.19、9.4C、11.5A、20.19 |
 | Cross-MMP ICM 不能被压成一个 `icm_enabled` 布尔值 | AppsFlyer / Singular / Branch / Airbridge / Kochava / Tenjin / Adjust 对 ICM 的描述共同显示：iOS 是 ODM / `odm_info` path，Android 多为 partner-config / API path；claim 语义是 non-deterministic / probabilistic / modeled，需要独立 waterfall tier | 8.19、11.5B、20.20 |
 
@@ -1114,8 +1117,50 @@ message OptimizationTrainingRow {
   string decision_id = 20;
   string srn_partner_id = 21;
   int64 feedback_snapshot_ts_ms = 22;
+  string training_privacy_policy_id = 23;
+  string feature_sensitivity_manifest_id = 24;
 }
 ```
+
+### 8.17A TrainingPrivacyPolicy
+
+这个对象定义“训练系统到底在保护什么”。它不是给 MMP 的字段，也不是用来阻止 request-level optimization 的；它的作用是避免训练面把 `raw_ip`、`boot_time` 派生物、归因 label、广告上下文全部混成一类数据，然后只用一句“我们会做 DP”带过。
+
+```proto
+message TrainingPrivacyPolicy {
+  string training_privacy_policy_id = 1;
+  string training_task_id = 2;
+  string trainer_policy_id = 3;
+  string model_family = 4; // LIGHTGBM, XGBOOST, WIDE_AND_DEEP, DLRM
+  string privacy_profile = 5; // NO_DP_BASELINE, LABEL_DP, SEMI_SENSITIVE_DP, FULL_USER_LEVEL_DP
+  string privacy_unit = 6; // request, app_instance, advertiser_user, account
+  string adjacency_relation = 7; // add_remove_user, replace_label, replace_sensitive_feature_bundle
+  repeated string known_feature_names = 8;
+  repeated string semi_sensitive_feature_names = 9;
+  repeated string protected_label_names = 10;
+  repeated string prohibited_raw_feature_names = 11;
+  string feature_sensitivity_manifest_id = 12;
+  string dp_accountant_id = 13;
+  double epsilon = 14;
+  double delta = 15;
+  double noise_multiplier = 16;
+  double clipping_norm = 17;
+  string clipping_policy_id = 18;
+  string sampling_policy_id = 19;
+  string privacy_audit_profile_id = 20;
+  string empirical_privacy_eval_id = 21;
+  string library_profile = 22; // lightgbm_xgboost_baseline, tensorflow_privacy, jax_privacy, opendp
+  string release_gate = 23; // offline_only, shadow, online_eligible
+}
+```
+
+约束：
+
+- `privacy_profile=NO_DP_BASELINE` 允许存在，但只能表示内部受控优化 baseline，不能对外宣称 DP。
+- `LABEL_DP` 只保护 label 时，`known_feature_names` 必须穷尽所有进入训练的特征；否则就是把未知敏感特征误当公开特征。
+- `SEMI_SENSITIVE_DP` 是推荐的 Phase 2 profile：campaign、creative、placement 这类上下文通常可视为 known；`ip_churn_bucket`、`boot_time_freshness_bucket`、`reinstall_hint_bucket` 和 label 则进入 protected side。
+- `FULL_USER_LEVEL_DP` 必须显式声明 `privacy_unit` 和 `adjacency_relation`，不能只记录 `epsilon/delta`。
+- `prohibited_raw_feature_names` 至少应包含 `raw_ip`、`boot_time_ms`、完整 `user_agent`、`device_fp_hash`、`odm_info`、`claim_token`。
 
 ### 8.18 AggregateCollectorBudgetState
 
@@ -2240,7 +2285,9 @@ def handle_confirm(req):
   "sample_weight_micros": 1000000,
   "decision_id": "dec_01JTRPF2VY9T21Q2FJAA1K8M7X",
   "srn_partner_id": "appsflyer",
-  "feedback_snapshot_ts_ms": "1761795105123"
+  "feedback_snapshot_ts_ms": "1761795105123",
+  "training_privacy_policy_id": "tpp_semi_sensitive_ads_v1",
+  "feature_sensitivity_manifest_id": "fsm_20260511_request_opt_v1"
 }
 ```
 
@@ -2417,6 +2464,70 @@ def handle_confirm(req):
 ```
 
 这两个对象解决的是两个不同问题：`MultiIdentifierPrivateMatchPolicy` 保护私密匹配不要变成跨标识符追踪；`StreamingDpReleasePlan` 保护公开 aggregate release 不要变成实时、重复、无预算的明细旁路。二者都不允许把 `server_request_id` 或 `claim_token` 暴露给 MMP 之外的新消费方。
+
+### 9.17 optimization training privacy policy
+
+下面这个 mock 展示 request-level optimization 如何保留足够细粒度，同时不把“所有训练字段都同等敏感”或“所有字段都公开”作为偷懒前提。这里的 `known_feature_names` 是 ad network 已经因广告请求持有的上下文；`semi_sensitive_feature_names` 是从 PII 或本地设备信号派生出来、但已被 bucket 化的字段；`protected_label_names` 是归因和后续 purchase feedback。
+
+```json
+{
+  "training_privacy_policy_id": "tpp_semi_sensitive_ads_v1",
+  "training_task_id": "bidder_purchase_value_d7_us_ios_v4",
+  "trainer_policy_id": "trainer_policy.purchase_value_v3",
+  "model_family": "LIGHTGBM",
+  "privacy_profile": "SEMI_SENSITIVE_DP",
+  "privacy_unit": "advertiser_user",
+  "adjacency_relation": "replace_sensitive_feature_bundle",
+  "known_feature_names": [
+    "campaign_id",
+    "creative_id",
+    "placement_id",
+    "request_hour_bucket",
+    "auction_price_bucket",
+    "mmp_partner_id",
+    "claim_path"
+  ],
+  "semi_sensitive_feature_names": [
+    "network_stability_bucket",
+    "timezone_consistency_bucket",
+    "reinstall_hint_bucket",
+    "ip_churn_bucket",
+    "boot_time_freshness_bucket",
+    "device_authenticity_bucket",
+    "supply_path_quality_bucket"
+  ],
+  "protected_label_names": [
+    "is_attributed",
+    "purchase_value_7d_bucket",
+    "retention_d1"
+  ],
+  "prohibited_raw_feature_names": [
+    "raw_ip",
+    "boot_time_ms",
+    "user_agent",
+    "device_fp_hash",
+    "odm_info",
+    "claim_token"
+  ],
+  "feature_sensitivity_manifest_id": "fsm_20260511_request_opt_v1",
+  "dp_accountant_id": "rdp_accountant_ads_train_v2",
+  "epsilon": 4.0,
+  "delta": 0.00000001,
+  "noise_multiplier": 1.15,
+  "clipping_norm": 1.0,
+  "clipping_policy_id": "per_example_clip_1p0_sparse_dense_split_v1",
+  "sampling_policy_id": "poisson_user_level_sampling_v2",
+  "privacy_audit_profile_id": "dp_auditorium_ads_training_v1",
+  "empirical_privacy_eval_id": "epv_eval_20260511_purchase_d7_shadow",
+  "library_profile": "jax_privacy_shadow_eval",
+  "release_gate": "shadow"
+}
+```
+
+这个对象有两个工程作用：
+
+- 它允许 Phase 1 继续使用 `LightGBM` / `XGBoost` 做 request-level baseline，但明确标注 `NO_DP_BASELINE`，不伪装成 DP。
+- 它为 Phase 2 的 DP 训练留出可执行升级路径：先把 feature sensitivity manifest 固定，再选择 `LABEL_DP`、`SEMI_SENSITIVE_DP` 或 `FULL_USER_LEVEL_DP`，最后用现成库和审计栈跑 shadow / online gate。
 
 ## 10. 敏感 PII 如何流动
 
@@ -2876,6 +2987,21 @@ Phase 1 推荐：
 - 全量 DP-SGD 深度模型
 - 联邦端上训练主路径
 
+这里的判断不是“DP 对优化不重要”，而是广告训练数据有两个现实问题：一是正负样本极不平衡，二是稀疏 ID / embedding / bucket feature 很多。Private Ad Modeling with DP-SGD 已经证明 DP-SGD 可以用于 CTR、CVR 和 conversion count 这类广告任务；但它也意味着训练契约必须正视广告数据的 class imbalance 和 sparse gradients，而不是把图像/NLP 里的默认 DP-SGD recipe 直接搬过来。
+
+更实用的分层是：
+
+- Phase 1: `NO_DP_BASELINE`
+  - 用 `LightGBM` / `XGBoost` 先把 label contract、right-censoring、delayed feedback 和 sample lifecycle 做稳。
+  - 该 profile 只能用于内部优化，不能对外宣称 DP。
+- Phase 2: `SEMI_SENSITIVE_DP`
+  - 把 campaign、creative、placement、request hour 这类 ad request 上下文视为 known features。
+  - 把 `ip_churn_bucket`、`boot_time_freshness_bucket`、`reinstall_hint_bucket`、`device_authenticity_bucket`、purchase label 等视为 protected side。
+  - 用 `TrainingPrivacyPolicy` 固化 `known_feature_names`、`semi_sensitive_feature_names` 和 `protected_label_names`。
+- Phase 3: `FULL_USER_LEVEL_DP`
+  - 仅在确实需要跨广告主、跨 app 或更高保证的训练 release 时启用。
+  - 必须先证明 privacy unit、adjacency relation、sampling policy 和 audit profile 都可执行。
+
 如果后续真的把 DP 引入 optimization training，也不要只记录一个 `epsilon/delta` 就结束。2025 的 [Empirical Privacy Variance](https://research.google/pubs/empirical-privacy-variance/) 说明：名义上相同的 DP 保证，在不同超参数下可能表现出不同的经验隐私风险。因此训练契约至少还应固化：
 
 - `dp_accountant_id`
@@ -2885,7 +3011,7 @@ Phase 1 推荐：
 - `privacy_audit_profile_id`
 - `empirical_privacy_eval_id`
 
-也就是说，Phase 1 可以不先上 DP；但一旦上，就应把“会计、超参、审计、经验评估”一起产品化，而不是只在汇报材料里写一个 epsilon。
+也就是说，Phase 1 可以不先上 DP；但一旦上，就应把“会计、超参、审计、经验评估、feature sensitivity manifest”一起产品化，而不是只在汇报材料里写一个 epsilon。
 
 这不是因为这些方向不重要，而是因为在广告测量落地里，先把 `label contract + policy versioning + sample lifecycle` 做对，收益更大。
 
@@ -3282,6 +3408,7 @@ device attestation 的目标是证明 touchpoint 环境更可信，而不是建�
 - `feature_policy_id`
 - `contribution_policy_id`
 - `trainer_policy_id`
+- `training_privacy_policy_id`
 - `retention_policy_id`
 
 ## 16. 生产实现建议
@@ -3322,9 +3449,12 @@ iOS optional SDK 的推荐实现：
 ### 16.3 optimization training
 
 - baseline: [LightGBM](https://github.com/microsoft/LightGBM) / [XGBoost](https://github.com/dmlc/xgboost)
+- 每个 trainer 都必须消费 `TrainingPrivacyPolicy`，即使 profile 是 `NO_DP_BASELINE`。
+- feature store 应先按 `feature_sensitivity_manifest_id` 分桶，禁止 raw PII 字段绕过 manifest 进入训练。
 - 深度模型或更强隐私训练再考虑：
   - [JAX Privacy](https://github.com/google-deepmind/jax_privacy)
   - [TensorFlow Privacy](https://github.com/tensorflow/privacy)
+- 用 DP 训练时，先跑 shadow / offline gate，记录 `dp_accountant_id`、`privacy_audit_profile_id` 和 `empirical_privacy_eval_id`；不要把实验 notebook 里的 epsilon 当成生产证明。
 
 ### 16.4 aggregate reporting
 
@@ -3354,6 +3484,7 @@ iOS optional SDK 的推荐实现：
 - `claim_token` TTL / replay gate
 - Confirm 后的 token-to-`req_id` join
 - request-level labels
+- `TrainingPrivacyPolicy`，至少标明 `NO_DP_BASELINE` 与 prohibited raw features
 - thresholded aggregate reporting
 - opaque `odm_info` / device artifact，仅在兼容 ICM / AAP path 时启用
 
@@ -3364,6 +3495,7 @@ iOS optional SDK 的推荐实现：
 - TEE-backed confidential processing
 - versioned OPRF/PSM config and candidate store
 - versioned contribution policy
+- feature sensitivity manifest and semi-sensitive training shadow policy
 - DP-backed aggregate reporting
 - policy-aware audit trail
 
@@ -4533,10 +4665,11 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 2. 再把可用性做稳：采用 `MMP Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`，默认 Option 4：tracking-link `mmp_touch_token + opaque claim_token`。
 3. 再把优化闭环做稳：Confirm 后用 `mmp_touch_token -> req_id` 恢复 request-level label，支撑 creative_id x req_id 级别训练。
 4. 再把因果校准做稳：用 RCT / holdout / PIE-style calibration 给 attribution label 加 `incrementality_weight_micros`，不要把 `is_attributed=true` 当成 `incremental=true`。
-5. 再把多标识符和实时报表边界做稳：multi-ID matching 必须有 `MultiIdentifierPrivateMatchPolicy`，streaming aggregate release 必须有 `StreamingDpReleasePlan`，不能用一个万能 user ID 或一个 `epsilon` 字段糊过去。
-6. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
+5. 再把训练隐私做稳：每个 trainer 必须有 `TrainingPrivacyPolicy`，区分 `NO_DP_BASELINE`、`LABEL_DP`、`SEMI_SENSITIVE_DP` 和 `FULL_USER_LEVEL_DP`，不要把 raw PII 派生物和归因 label 混进一张无治理训练表。
+6. 再把多标识符和实时报表边界做稳：multi-ID matching 必须有 `MultiIdentifierPrivateMatchPolicy`，streaming aggregate release 必须有 `StreamingDpReleasePlan`，不能用一个万能 user ID 或一个 `epsilon` 字段糊过去。
+7. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
 
-一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，以及谁能在 Confirm 后恢复 req_id”定义成严格协议。
+一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，谁能在 Confirm 后恢复 req_id，以及 trainer 对哪些字段承担什么隐私 profile”定义成严格协议。
 
 ## 20. 附录：研究、标准与产品依据
 
@@ -4956,6 +5089,32 @@ Config 下发上下文
 
 因此，本文在 `SdkMeasurementRuntimeTrace` 和 11.5B 中补充 `advanced_data_sharing_enabled`、`android_sdk_update_required`、`ios_odm_sdk_required`、`icm_supported_engagement_types`、`icm_claim_semantics`、`gclid_capture_enabled`、`install_referrer_gclid_capture_enabled` 和 `gbraid_capture_enabled`。这些字段的目的不是让 runtime trace 变成训练特征，而是让 ICM 的可用性、缺失原因和 claim 类型可审计。
 
+### 20.21 截至 2026-05-11 的最新 delta：optimization training privacy 也要进 RFC
+
+这次复查没有发现会改变主链路的最新产品资料。GoogleAdsOnDeviceConversion 官方 GitHub release 页面仍显示最新 release 为 `3.5.0`（2026-04-16）；DAP Attribution 扩展仍是 `-01`（2026-02-18）。真正需要补强的是 attribution label 进入训练面之后的隐私契约。
+
+广告优化不是“拿回一个归因 bit 就结束”。一旦 `RequestScopedOptimizationLabel`、`ServerFeatureDerivationRecord` 和 `OptimizationFeedbackRecord` 进入 trainer，系统就必须回答四个问题：
+
+1. 哪些字段本来就是广告请求上下文，攻击者或 ad network 已经可知？
+2. 哪些字段来自 raw IP、boot time、timezone、reinstall hint、device attestation 等敏感观察的派生？
+3. 哪些 label 或 value 是用户行为结果，需要和特征一起保护？
+4. 当前 trainer 是内部 baseline、label DP、semi-sensitive DP，还是完整 user-level DP？
+
+研究侧给出的信号很明确：
+
+- [Private Ad Modeling with DP-SGD](https://research.google/pubs/private-ad-modeling-with-dp-sgd/) 把 DP-SGD 用到 CTR、CVR 和 conversion count 等广告任务上，说明广告优化模型可以走 DP 训练路线；但它同时提醒广告数据有高类别不平衡和稀疏梯度，不能直接套用通用深度学习 DP recipe。
+- [Training Differentially Private Ad Prediction Models with Semi-Sensitive Features](https://research.google/pubs/training-differentially-private-ad-prediction-models-with-semi-sensitive-features/) 给了更贴近生产的分层：一部分 features 可被视为 attacker already knows；剩余 features 与 label 才是要保护的对象。该方向比“全部特征 full DP”或“只保护 label 且丢弃未知特征”更适合广告 request-level optimization。
+
+落地结论：
+
+- `TrainingPrivacyPolicy` 应成为正式对象，而不是 trainer README。
+- `known_feature_names`、`semi_sensitive_feature_names`、`protected_label_names` 和 `prohibited_raw_feature_names` 必须由 feature sensitivity manifest 驱动。
+- Phase 1 可以明确使用 `NO_DP_BASELINE`，但必须禁止 raw PII 和 compat-only artifact 进入训练面。
+- Phase 2 推荐从 `SEMI_SENSITIVE_DP` shadow training 开始，而不是直接把主 bidder 切到 full user-level DP。
+- 如果采用 DP-SGD、label DP 或 semi-sensitive DP，应优先使用 JAX Privacy、TensorFlow Privacy、OpenDP 或同等级库，并保留 accountant、clipping、sampling、audit 和 empirical privacy eval 记录。
+
+这条 delta 把本文的 optimization 设计从“request-level label 必须回来”推进到“label 回来之后怎样进入 trainer”。否则，on-device measurement 只是把 PII 风险从 MMP payload 转移到了训练表。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -4981,6 +5140,8 @@ Config 下发上下文
 19. [PrivacyGo: Privacy-Preserving Ad Measurement with Multidimensional Intersection](https://arxiv.org/abs/2506.20981)
 20. [Differentially Private Ad Conversion Measurement](https://arxiv.org/abs/2403.15224)
 21. [Click Without Compromise: Online Advertising Measurement via Per User Differential Privacy](https://arxiv.org/abs/2406.02463)
+22. [Private Ad Modeling with DP-SGD](https://research.google/pubs/private-ad-modeling-with-dp-sgd/)
+23. [Training Differentially Private Ad Prediction Models with Semi-Sensitive Features](https://research.google/pubs/training-differentially-private-ad-prediction-models-with-semi-sensitive-features/)
 
 ### 21.2 Standards
 
