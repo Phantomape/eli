@@ -115,6 +115,18 @@ Web2App 常见断点主要有四段：
 
 因此，Apple、Google、TikTok 这类平台越是把“Web 与 App 之间的结果可见性”产品化，落地时越要把验收项拆开：`是否能归因`、`是否能跳转`、`是否能首开恢复`、`是否能把首个关键事件带回媒体优化`。四者都成立，才是完整 Web2App；只有归因或报表可见，只能算测量补强。
 
+### 2.11 2026-05-12 资料复核后的校准
+
+本轮复核没有推翻既有结论，但进一步压实了“媒体可见性、SAN 数据回流、首开路由”三者不能混用的边界：
+
+1. `Google Web to App Acquisition Measurement` 的公开口径仍是测量 web campaigns 对 app installs 和首个 app 内转化的贡献。它要求导入 first_open 和 app 内事件，并且适用范围限定在 Search、Performance Max、Shopping、Hotel 等 web campaign；若 web campaign 直接把用户导向 App Store / Google Play，该能力并不适用。因此它是 web campaign 价值识别能力，不是 H5 到 App 的通用路由方案。
+2. `TikTok` 非 App 推广广告 app activity measurement 文档最近仍强调“web conversion / traffic campaign 可先导向 Web 落地页，再测量 app installs / in-app events”，但前提是通过 MMP、App Events SDK 或 App Events API 接入 App 数据，且每条广告只能绑定一个 OS app。它适合把内容页后的 App 结果纳入投放视野，不负责第二跳参数生成和安装后页面恢复。
+3. `Branch SAN API-Driven Deferred Deep Linking` 已把 Google、Meta 等 SAN 来源的数据返回到新安装 / 重装的 deep link data 中，但公开文档同时强调 iOS 侧依赖 ATT opt-in，且可能因第二次 install event 和付费归因判断产生延迟。这个能力能补 SAN 场景下的 DDL 缺口，但不能替代自有落地页上的 link_id / content_id / session 兜底。
+4. `Adjust ODDL` 与 `AppsFlyer Smart Script V2` 的方向形成互补：前者把 DDL 交付从归因响应拆到更快的 session response，后者把 Web 页第二跳动态生成带参 OneLink。它们共同说明 Web2App 的关键不只是“首跳归因”，而是让 Web CTA 到商店 / App 的第二跳持续携带媒体参数和业务意图。
+5. `Firebase Dynamic Links` 在 2025-08-25 后已经不是“待迁移风险”，而是“线上断链风险”。所有仍在邮件、社媒、广告、二维码、历史活动页中使用 `page.link` 或 Firebase custom domain 的入口，都应进入断链扫描和替换清单。
+
+因此，2026 年的 Web2App 验收口径应从“供应商支持 DDL 吗”升级为“第二跳是否动态带参、首开是否不等归因即可恢复、SAN / SKAN / AdAttributionKit 报表是否只作为归因补充、历史短链是否已清理”。这四个问题比单纯比较深链品牌更能决定真实转化损耗。
+
 ## 3. 标准链路与职责拆解
 
 ```mermaid
@@ -818,8 +830,8 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
 1. `Google Ads` 仍是广告平台里原生 Web2App 最完整的方案。
 2. `TikTok Ads` 是“先内容承接、后 App 转化”最明确的平台之一。
 3. `Meta / Snap / X` 更适合做流量与创意前台，完整链路通常要靠外部中台补齐。
-4. `AppsFlyer / Branch / Adjust / Singular` 才是把 Web2App 真正做成完整系统的核心层。
-5. 新项目不应继续把 `Firebase Dynamic Links` 当主链路。
+4. `AppsFlyer / Branch / Adjust / Singular` 才是把 Web2App 真正做成完整系统的核心层，其中第二跳带参、首开 session response、SAN DDL 与 Web SDK forwarding 是 2026 年选型重点。
+5. 新项目不应继续把 `Firebase Dynamic Links` 当主链路；存量项目还需要主动扫描历史广告、二维码、邮件和活动页中的 FDL 入口，避免 2025-08-25 之后形成断链。
 
 ## 12. 参考资料
 
