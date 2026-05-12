@@ -4431,6 +4431,143 @@ PrivTabRAG 的路线是：
 
 这类方案离普通业务团队还有距离，但它给了一个重要判断标准：下一代 FL 平台不能只问“更新有没有加密”，还要问“聚合结果是否可验证、恶意客户端如何处理、聚合方作恶时谁能发现”。
 
+### 18A.44 多模态医疗 FL 的新信号：隐私预算要按模态和机构拆开看
+
+2026-05-09，Scientific Reports 发表 `Multi-modal federated learning with differential privacy for privacy-preserving healthcare AI`。这类研究的价值不在于“医疗 + FL + DP”这个组合本身，而在于它提醒初学者：真实医疗 AI 往往不是一张表，而是多模态数据。
+
+医疗场景里可能同时有：
+
+- 结构化 EHR
+- 影像特征
+- 检验指标
+- 临床文本
+- 时间序列生命体征
+
+如果只写“我们使用 federated learning，所以数据不出医院”，会漏掉两个关键问题：
+
+- 不同模态的重识别风险不同，隐私预算和裁剪策略不应默认一样
+- 不同医院的数据规模、编码习惯和缺失模式不同，聚合时需要处理 non-IID 和 utility imbalance
+
+一个面向工程的 mock policy 可以这样写：
+
+```json
+{
+  "federated_multimodal_job": {
+    "job_id": "cardio_risk_fl_2026_05",
+    "participants": ["hospital_a", "hospital_b", "hospital_c"],
+    "privacy_unit": "patient_id",
+    "modalities": ["ehr_tabular", "lab_timeseries", "radiology_embedding"],
+    "aggregation": "secure_aggregation"
+  },
+  "dp_policy_by_modality": {
+    "ehr_tabular": {
+      "epsilon": 2.0,
+      "clip_norm": 1.2
+    },
+    "lab_timeseries": {
+      "epsilon": 1.5,
+      "clip_norm": 0.8
+    },
+    "radiology_embedding": {
+      "epsilon": 1.0,
+      "clip_norm": 0.6
+    }
+  },
+  "release_controls": {
+    "per_site_metrics_visible": false,
+    "global_model_card_required": true,
+    "residual_risks": ["small_site_inference", "rare_disease_tail_leakage"]
+  }
+}
+```
+
+这条 mock flow 的重点是：多模态 FL 不能只把所有梯度塞进一个 DP accountant。更稳的设计要把 `modality`、`site`、`privacy unit`、`clip norm`、`epsilon` 和小机构残余风险拆开记录。
+
+### 18A.45 DAP 的标准化重点已经从“能聚合”推进到“任务绑定和可治理配置”
+
+IETF PPM 工作组的 DAP 最新草案在 2026 年仍在推进，2026-03 的 latest draft 继续把协议对象拆成 `Client`、两个 `Aggregator`、`Collector`、`Task`、`Report`、`Batch` 等清晰角色。更值得注意的是，`Task Binding and In-Band Provisioning for DAP` 这类扩展开始把任务参数和执行过程做 cryptographic binding。
+
+对 primer 来说，这说明 privacy-preserving measurement 的工程重心正在从：
+
+- “客户端把 metric 切成 share，两个聚合方算 aggregate”
+
+推进到：
+
+- “客户端、聚合方和收集方是否都同意同一组 task 参数”
+- “report 是否绑定到正确的 task / VDAF / batch / aggregation parameter”
+- “collector 是否只能在满足最小 batch 和任务约束时拿到结果”
+
+一个最小 mock report 可以这样理解：
+
+```json
+{
+  "dap_report": {
+    "task_id": "app_crash_rate_daily_v3",
+    "task_config_hash": "sha256:7b0d...",
+    "measurement_type": "counter",
+    "client_time_bucket": "2026-05-12",
+    "public_share": "base64:...",
+    "encrypted_input_shares": {
+      "leader": "hpke:...",
+      "helper": "hpke:..."
+    }
+  },
+  "collection_policy": {
+    "minimum_batch_size": 10000,
+    "allowed_query_window": "daily",
+    "collector": "app_metrics_team",
+    "double_collection_protection": true
+  }
+}
+```
+
+这条数据流想表达：DAP / VDAF 的隐私保证不是“拆成两份”这么简单，还依赖 task 配置、最小批量、防重放、防重复收集、HPKE key 管理和 aggregator 不串通假设。
+
+### 18A.46 DP synthetic data 的生产化正在强调默认值、规模化和非专家可用性
+
+USENIX PEPR 2026 的 `DPSynth: From Research to Production` 很适合作为 2026 年的前沿信号。它的重点不是再证明 DP synthetic data 可行，而是把生产问题讲清楚：真实系统要处理大规模数据、复杂 schema、合理默认参数、可用性、Apache Beam / Spark 这类批处理框架，以及让非 DP 专家能安全使用。
+
+这给导论一个很实际的判断：DP synthetic data 的落地成熟度不能只看生成质量，还要看平台是否具备：
+
+- schema profiling
+- contribution bounding
+- privacy budget ledger
+- validity constraints
+- utility evaluation
+- attack evaluation
+- reproducible release log
+
+一个更接近生产的 mock release record 可以这样写：
+
+```json
+{
+  "dp_synthetic_release": {
+    "dataset": "support_ticket_events",
+    "privacy_unit": "account_id",
+    "mechanism_family": "marginal_based_synthesizer",
+    "compute_backend": "apache_beam",
+    "epsilon": 1.0,
+    "contribution_bounds": {
+      "max_tickets_per_account": 50,
+      "max_events_per_ticket": 20
+    }
+  },
+  "quality_report": {
+    "schema_validity": "passed",
+    "marginal_error_p95": 0.041,
+    "downstream_classifier_auc_delta": -0.018,
+    "known_invalid_combinations_blocked": true
+  },
+  "release_log": {
+    "approved_by": "privacy_review_2026_05",
+    "budget_ledger_entry": "dp_budget_support_ticket_v12",
+    "raw_rows_exported": false
+  }
+}
+```
+
+这条数据流的核心是：DP synthetic data 的产品对象不是一份“看起来像真的数据”，而是一套可审计 release pipeline。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -5212,6 +5349,114 @@ Microsoft 的 Ad Alliance 客户案例显示，Decentriq Data Clean Room 基于 
 
 这个案例补齐了一个重要落地点：TEE + clean room 并不只适合医疗或金融，也已经进入广告和媒体协作。它的关键不是“把所有个人数据匿名化后随便用”，而是把 first-party data 协作限制在受控计算、受控访问、受控输出和持续合规框架里。
 
+### 18B.44 The Weather Company / Lotame / AWS Clean Rooms：clean room 的价值也可以是缩短洞察周期
+
+AWS 的 The Weather Company 与 Lotame 案例给了另一个很业务化的 clean room 引用。双方用 AWS Clean Rooms 做 first-party data 协作和 audience analytics，案例公开给出的效果包括：
+
+- 获取洞察的时间减少 `98%`
+- 相比 legacy ETL 方式快 `7x`
+- 查询效率提升 `7x`
+
+这类案例适合放进 primer，是因为它提醒我们：隐私技术的业务价值不只是“避免泄露”，也可以是减少跨团队 ETL、减少重复搬运数据、缩短 partner onboarding 和分析周期。
+
+一个最小 mock data flow 可以这样写：
+
+```json
+{
+  "clean_room_collaboration": {
+    "provider": "the_weather_company",
+    "partner": "lotame",
+    "platform": "aws_clean_rooms",
+    "use_case": "audience_insight_for_marketing"
+  },
+  "input_tables": {
+    "weather_audience_segments": {
+      "join_key": "hashed_first_party_id",
+      "raw_export_allowed": false
+    },
+    "partner_audience_attributes": {
+      "join_key": "hashed_first_party_id",
+      "raw_export_allowed": false
+    }
+  },
+  "released_output": {
+    "grain": "segment_level",
+    "minimum_group_size": 100,
+    "dashboard_destination": "quicksight_or_partner_bi",
+    "individual_rows_released": false
+  }
+}
+```
+
+这条 flow 说明 clean room 的最小闭环不是“把数据放进安全房间”，而是 `受控输入 -> 受控 join -> 受控查询 -> 受控输出 -> 可用 dashboard`。
+
+### 18B.45 Divvi Up / Firefox：DAP 已经有真实遥测落地路径
+
+Divvi Up 是 ISRG 运营的 privacy-respecting telemetry service，基于 DAP / VDAF 思路：客户端把 metric 分成两份加密 share，发送给两个不串通的数据处理方，最后只合并 aggregate。Divvi Up 页面明确列出 Firefox 作为使用案例，也说明它的系统组件开源，底层基于 DAP 标准化方向。
+
+这个案例很适合 primer，因为它让 DAP 从抽象协议变成一个可理解的产品形态：
+
+- 客户端本地分片
+- 两个非串通 aggregator
+- collector 只拿 aggregate
+- 适合 crash、feature usage、survey、web / mobile telemetry 这类 population-level metrics
+
+一个最小 telemetry report 可以这样写：
+
+```json
+{
+  "client_metric": {
+    "metric_name": "new_feature_enabled",
+    "value": 1,
+    "client_side_plaintext_retained": false
+  },
+  "shares": {
+    "aggregator_a": "encrypted_share_a",
+    "aggregator_b": "encrypted_share_b"
+  },
+  "collector_result": {
+    "time_bucket": "2026-05-12",
+    "aggregate_count": 184203,
+    "individual_metric_visible": false,
+    "minimum_batch_size_met": true
+  }
+}
+```
+
+这类落地很适合给初学者建立直觉：如果业务问题只需要 population-level aggregate，就不要默认把用户级 event log 集中到分析仓库里。
+
+### 18B.46 Fortanix Confidential AI：TEE 正在进入企业 AI inference 和模型 IP 保护
+
+Fortanix 2026-03 发布的 Confidential AI 方案是一个可引用的企业 AI 落地信号：它基于 NVIDIA Confidential Computing，目标是让企业在本地或 AI factory 环境中运行第三方模型，同时保护企业数据不暴露给模型提供方，并保护模型 IP 不被部署方复制或滥用。
+
+这个案例补齐了一个 AI 时代的新场景：confidential computing 不只用于多方 SQL 或医疗统计，也用于 `data owner` 和 `model owner` 彼此不完全信任的 inference 链路。
+
+一个简化 mock contract 可以这样表达：
+
+```json
+{
+  "confidential_ai_inference": {
+    "data_owner": "enterprise_customer",
+    "model_owner": "model_vendor",
+    "execution_environment": "nvidia_confidential_computing",
+    "attestation_required": true
+  },
+  "protections": {
+    "customer_prompt_visible_to_model_vendor": false,
+    "model_weights_visible_to_customer_admin": false,
+    "inference_logs_export_policy": "redacted_aggregate_only",
+    "attestation_evidence_stored": true
+  },
+  "residual_risks": [
+    "authorized_agent_overreach",
+    "unsafe_model_output",
+    "side_channel_or_misconfiguration"
+  ]
+}
+```
+
+这条 flow 的重点是：Confidential AI 解决的是执行层和证据层的信任问题，不自动解决权限设计、模型安全、输出合规或业务授权问题。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -5465,3 +5710,11 @@ Microsoft 的 Ad Alliance 客户案例显示，Decentriq Data Clean Room 基于 
 - Journal of Information Security and Applications, VFEFL: Privacy-preserving federated learning against malicious clients via verifiable functional encryption: https://www.sciencedirect.com/science/article/pii/S2214212626000451
 - AWS Clean Rooms Differential Privacy user guide: https://docs.aws.amazon.com/clean-rooms/latest/userguide/differential-privacy.html
 - Microsoft Customer Stories, Ad Alliance relies on data security in the Data Clean Room with Azure confidential computing: https://www.microsoft.com/en/customers/story/22435-ad-alliance-azure-compute
+- Scientific Reports, Multi-modal federated learning with differential privacy for privacy-preserving healthcare AI: https://www.nature.com/articles/s41598-026-51804-4
+- IETF PPM Working Group, Distributed Aggregation Protocol latest draft: https://ietf-wg-ppm.github.io/draft-ietf-ppm-dap/draft-ietf-ppm-dap.html
+- IETF PPM Working Group, Task Binding and In-Band Provisioning for DAP: https://ietf-wg-ppm.github.io/draft-ietf-ppm-dap-taskprov/draft-ietf-ppm-dap-taskprov.html
+- USENIX PEPR 2026, DPSynth: From Research to Production: https://www.usenix.org/conference/pepr26/presentation/pravilov-dpsynth
+- AWS, The Weather Company and Lotame partnered to Forecast Deeper Insights using AWS Clean Rooms: https://aws.amazon.com/solutions/case-studies/the-weather-company-case-study/
+- Divvi Up, privacy respecting telemetry service: https://divviup.org/
+- Divvi Up, About Divvi Up: https://divviup.org/about/
+- Fortanix, Confidential AI protects proprietary model IP and data for secure AI inference: https://www.fortanix.com/company/pr/2026/03/fortanix-confidential-ai-protects-proprietary-model-ip-and-data-for-secure-ai-inference-in-enterprise-ai-factories
