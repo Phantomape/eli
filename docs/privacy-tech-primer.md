@@ -3502,7 +3502,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-11）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-14）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -4568,6 +4568,282 @@ USENIX PEPR 2026 的 `DPSynth: From Research to Production` 很适合作为 2026
 
 这条数据流的核心是：DP synthetic data 的产品对象不是一份“看起来像真的数据”，而是一套可审计 release pipeline。
 
+### 18A.47 Personalized FL 的新信号：隐私预算要跟个性化策略一起设计
+
+2026-05-12，Scientific Reports 发表 `Multi-modal personalized federated learning with adaptive differential privacy for medical image classification and a privacy-preserving approach`。这条信号和 18A.44 的多模态医疗 FL 很接近，但多了一个更贴近真实产品的问题：医疗影像模型往往不能只训练一个全局模型，不同医院、设备、病种、人群分布都可能需要 personalized model head 或 site-specific adaptation。
+
+这会让 DP 设计更复杂。原因是：
+
+- 全局模型更新需要保护跨机构共享的 patient-level signal
+- 个性化层可能更接近单个机构、单类影像设备或小病种群体
+- adaptive DP 如果只追求“哪里噪声少、哪里准确率高”，可能把隐私预算集中消耗在最敏感的小群体上
+- personalized model 的评估不能只看 global accuracy，还要看每个 site / modality / disease cohort 的隐私-效用折中
+
+所以，personalized FL 的落地文档应该把 `personalization scope` 写成一等对象，而不是把它藏在训练代码里。一个简化 mock policy 可以这样表达：
+
+```json
+{
+  "personalized_fl_job": {
+    "job_id": "brain_mri_pfederated_2026_05",
+    "participants": ["hospital_a", "hospital_b", "hospital_c"],
+    "privacy_unit": "patient_id",
+    "modalities": ["brain_mri_t1", "brain_mri_t2", "clinical_tabular"],
+    "global_backbone": "shared_resnet_transformer",
+    "personalization_scope": "site_specific_classifier_head"
+  },
+  "adaptive_dp_policy": {
+    "accountant": "rdp",
+    "epsilon_total_per_site": 2.5,
+    "epsilon_allocation": {
+      "global_backbone": 1.5,
+      "site_specific_head": 1.0
+    },
+    "allocation_guardrails": [
+      "no_extra_budget_for_site_with_patient_count_below_threshold",
+      "clip_norm_logged_per_modality",
+      "per_site_privacy_spend_visible_to_privacy_reviewer"
+    ]
+  },
+  "release_gate": {
+    "minimum_site_patient_count": 500,
+    "per_site_auc_reported": true,
+    "small_cohort_metrics_suppressed": true,
+    "model_card_required": true
+  }
+}
+```
+
+这条数据流想说明：`adaptive DP` 不是“自动更好”的魔法词。它必须被预算上限、最小 cohort、per-site spend log 和 release gate 约束住，否则个性化越强，越容易在小群体上形成更高泄漏风险。
+
+### 18A.48 语音隐私的评估正在从 EER 转向低误报攻击面
+
+2026-05-13，USC Viterbi 对 ICASSP 2026 研究的介绍里提到 `VoxGuard`，它很适合补进 primer，因为它指出了语音匿名化里一个常见误区：只看 speaker verification 的 Equal Error Rate（EER）可能会低估真实泄漏风险。
+
+语音数据的隐私风险不只是“能不能认出说话人”。它还可能泄露：
+
+- 性别、口音、年龄段、健康或情绪状态等属性
+- 说话人是否在某个训练 / 发布集合中
+- 在低 false positive rate 场景下的高置信识别风险
+
+VoxGuard 的工程启发是：语音匿名化、voice conversion、speech synthetic data 或 voice biometric privacy 不能只报告“平均识别率下降”。更稳的评估应该把两类风险分开：
+
+- `user privacy`：攻击者能否重新识别说话人或判断 membership
+- `attribute privacy`：攻击者能否恢复敏感属性，例如 gender / accent
+
+一个最小 mock evaluation record 可以这样写：
+
+```json
+{
+  "voice_privacy_eval": {
+    "dataset": "support_calls_synthetic_voice_v2",
+    "privacy_unit": "speaker_id",
+    "anonymization_method": "voice_conversion_with_dp_filter",
+    "utility_metrics": {
+      "word_error_rate_delta": 0.028,
+      "speaker_naturalness_score": 4.1
+    },
+    "privacy_metrics": {
+      "eer": 0.31,
+      "low_fpr_user_reid_success_at_0_001": 0.07,
+      "membership_inference_auc": 0.58,
+      "attribute_attack_accuracy": {
+        "gender": 0.91,
+        "accent_region": 0.73
+      }
+    },
+    "release_decision": {
+      "approved": false,
+      "reason": "attribute_privacy_attack_too_strong_despite_acceptable_eer"
+    }
+  }
+}
+```
+
+这条数据流想说明：语音隐私的 release gate 不能只看“声音听起来不像原人”或 EER。对客服、医疗、会议转写、语音助手这类场景，低误报攻击、membership inference 和属性恢复都应进入评估面。
+
+### 18A.49 Regulated GenAI 的商业落地正在把 DP synthetic data 做成“企业内云”产品
+
+2026-05-13，Secludy 宣布推出面向金融服务公司的 DP synthetic data 平台，并完成 seed funding。这个案例不应被当成学术证明，但它是一个很有代表性的市场信号：受监管企业对 GenAI 的核心需求正在从“能不能用 AI”变成“能不能在不暴露真实客户数据的情况下训练、微调、评估和采购 AI”。
+
+它对 primer 的工程启发是：DP synthetic data 的落地对象越来越像一条企业内云流水线，而不是单次导出一份 CSV。真实买方会关心：
+
+- 平台是否部署在客户自己的 cloud / VPC
+- 原始交易、欺诈、客服、贷款文件是否离开受控边界
+- synthetic data 是否有 DP 参数、攻击评估和发布审批
+- 能否支持 vendor evaluation、fine-tuning、prompt / RAG 测试和模型回归测试
+
+一个更贴近金融 GenAI 的 mock data flow 可以这样写：
+
+```json
+{
+  "regulated_synthetic_data_job": {
+    "tenant": "bank_a",
+    "deployment": "customer_vpc",
+    "source_tables": [
+      "transactions_90d",
+      "fraud_investigation_notes",
+      "support_ticket_threads"
+    ],
+    "intended_use": [
+      "llm_vendor_eval",
+      "fraud_agent_fine_tuning",
+      "customer_support_regression_tests"
+    ],
+    "privacy_controls": {
+      "privacy_unit": "customer_id",
+      "epsilon": 1.2,
+      "membership_inference_gate": "required",
+      "rare_combination_suppression": true
+    },
+    "release_artifacts": {
+      "synthetic_jsonl": "approved",
+      "privacy_report": "attached",
+      "raw_customer_rows_exported": false
+    }
+  }
+}
+```
+
+这说明 synthetic data 在企业 AI 里的定位正在变成 `data product with privacy evidence`。如果没有 privacy report、attack evaluation、release log 和用途限制，它仍然只是测试数据生成，不应轻易被称为 privacy-guaranteed AI data。
+
+### 18A.50 Encrypted AI 的前沿开始明显转向系统架构：FHE / MPC / ZKP 要和编译器、硬件、DSL 一起看
+
+2026-05-14 的 SAFE-AI / ISCA 2026 call 释放了一个很清晰的研究社区信号：Encrypted AI 不再只讨论“FHE、MPC、ZKP 是否理论可行”，而是开始集中讨论系统和架构问题，包括：
+
+- encrypted AI 加速
+- 编译器与 DSL
+- 硬件和存储层优化
+- FHE / MPC / ZKP 在真实 AI workload 中的组合
+- 如何让非密码学专家能表达安全计算任务
+
+这和前面 FHEIns、SecureNumpy / PETAce 的信号是一致的。对初学者来说，最重要的判断是：
+
+- `FHE` 很强，但单独不能解决整个 AI 系统问题
+- `MPC` 能降低单点信任，但参与方、通信和掉线容错会影响可用性
+- `ZKP` 更偏“证明某件事按规则发生”，可以补 AI 评测、模型执行、身份 / 合规验证的证据层
+- 真正落地时，瓶颈往往在编译、算子覆盖、I/O、密钥管理、性能 profile 和开发者 API
+
+一个 encrypted AI evaluation 的 mock architecture 可以这样写：
+
+```json
+{
+  "encrypted_ai_task": {
+    "task": "private_model_scoring",
+    "data_owner": "hospital_network",
+    "model_owner": "ai_vendor",
+    "threat_model": "neither_party_reveals_plain_input_or_model_weights"
+  },
+  "technology_mix": {
+    "input_protection": "MPC_or_FHE",
+    "model_ip_protection": "TEE_or_FHE_partition",
+    "result_integrity": "ZKP_or_attested_log",
+    "output_policy": "aggregate_or_patient_local_result_only"
+  },
+  "systems_requirements": {
+    "supported_ops": ["matmul", "activation_approx", "topk_or_threshold"],
+    "latency_budget_ms": 5000,
+    "ciphertext_expansion_budget": "10x_max",
+    "developer_interface": "python_udf_or_compiler_pipeline"
+  }
+}
+```
+
+这条趋势提醒我们：Encrypted AI 的落地成熟度不能只看密码学安全性，还要看“这个系统能不能被数据科学家、ML 工程师和安全团队共同运营”。
+
+### 18A.51 Apple Intelligence 的 DP aggregate trends 是一个典型的“端侧匹配 + 聚合学习”样板
+
+Apple Machine Learning Research 在 2025-04-14 公开的 `Understanding Aggregate Trends for Apple Intelligence Using Differential Privacy` 值得作为 AI 产品里的落地样板补进 primer。它讨论的不是把用户邮件、通知或原始文本直接收集起来训练，而是用 synthetic data 表示候选趋势，再在用户 opt-in analytics 语境下，用端侧匹配和差分隐私帮助 Apple 理解哪些 synthetic embedding / synthetic example 更接近真实使用分布。
+
+这类路径对 AI 产品非常实用，因为它把训练改进拆成了几层：
+
+1. 服务端先生成 synthetic candidates。
+2. 设备在本地比较 synthetic candidate 与真实私有内容的相似性。
+3. 设备只回传受 DP 机制保护的聚合信号。
+4. 服务端用被选中的 synthetic candidates 生成或筛选训练 / 测试数据。
+
+一个极简 mock flow 可以这样写：
+
+```json
+{
+  "server_side": {
+    "synthetic_candidate_id": "syn_email_summary_0421_19",
+    "candidate_embedding": "vector_ref",
+    "raw_user_content_seen_by_server": false
+  },
+  "device_side": {
+    "private_content_type": "email_or_notification",
+    "local_similarity_match": true,
+    "user_opted_in_to_analytics": true
+  },
+  "dp_report": {
+    "mechanism": "local_or_distributed_dp_count",
+    "reported_candidate_id": "syn_email_summary_0421_19",
+    "raw_email_text_reported": false
+  },
+  "training_use": {
+    "selected_synthetic_candidate_count_dp": 18240,
+    "use_for": ["curation", "evaluation", "synthetic_training_data_generation"]
+  }
+}
+```
+
+这条路线的关键不是“synthetic data 自动安全”，而是：真实私有内容留在端侧，服务端学习的是受 DP 保护的 aggregate trend，再用 synthetic artifacts 承接训练改进。对 AI 产品团队来说，这是一种比“上传用户 prompt 做训练”更稳的默认设计。
+
+### 18A.52 PPFL 的最新方向：把 FL 的解密阶段也当成泄漏面
+
+2026-05-12，Information Sciences 在线发表 `Privacy-preserving federated learning via secret sharing and multi-key homomorphic encryption`。这篇研究很适合补进 primer，因为它提醒了一个常被初学者忽略的点：联邦学习的风险不只在“原始数据有没有上传”，也在模型更新、密文聚合和部分解密阶段。
+
+这篇论文讨论的背景是 LLM / foundation model 时代的 cross-silo 或 cross-device fine-tuning。普通 FL 只让参与方上传模型更新，但更新本身可能被重构或推断；multi-key homomorphic encryption 可以让服务器在密文上聚合不同参与方的更新，但如果参与方直接暴露 partial decryption value，诚实但好奇的服务器或串谋参与方仍可能恢复个体更新。论文的方案把 Shamir-style linear secret sharing 加进 CDKS 类 multi-key HE 的解密流程，让服务器只在达到阈值份额后解出聚合结果，而不是拿到每个参与方可被滥用的解密片段。
+
+对工程读者来说，重点不是立刻采用某个具体协议，而是记住这个设计原则：
+
+- `FL` 保护的是原始数据位置，不自动保护模型更新。
+- `HE / secure aggregation` 保护的是聚合过程，但要检查 key management、dropout 和 partial decryption 泄漏面。
+- `secret sharing threshold` 可以把解密权分散掉，减少单个服务器或少数参与方恢复个体更新的机会。
+- 如果要服务 LLM fine-tuning，应该把 update size、latency、dropout tolerance、collusion model 和 post-quantum assumption 一起写进设计文档。
+
+一个最小 mock flow 可以这样表达：
+
+```json
+{
+  "ppfl_round": {
+    "round_id": "fl_llm_tune_2026_05_15_003",
+    "privacy_unit": "institution",
+    "participants": ["hospital_a", "hospital_b", "hospital_c", "hospital_d"],
+    "threat_model": {
+      "server": "honest_but_curious",
+      "collusion_tolerance": "up_to_1_participant_with_server",
+      "dropout_tolerance": "1_of_4"
+    }
+  },
+  "local_training": {
+    "raw_rows_leave_site": false,
+    "update_type": "adapter_gradient_delta",
+    "clip_norm": 0.8
+  },
+  "cryptographic_layer": {
+    "aggregation": "multi_key_homomorphic_encryption",
+    "decryption_guard": "linear_secret_sharing_threshold",
+    "threshold": "3_of_4",
+    "server_sees_individual_update_plaintext": false,
+    "server_sees_individual_partial_decryption": false
+  },
+  "release": {
+    "output": "aggregate_model_update",
+    "audit_artifacts": [
+      "participant_set",
+      "threshold_met",
+      "dropout_record",
+      "collusion_model",
+      "latency_ms",
+      "communication_bytes"
+    ]
+  }
+}
+```
+
+这条 mock data 想说明：生产 PPFL 文档里不应只写“data stays local”。更稳的写法是把 `local data`、`model update`、`ciphertext aggregation`、`partial decryption`、`aggregate release` 五个阶段逐段标明谁能看到什么。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -5457,6 +5733,100 @@ Fortanix 2026-03 发布的 Confidential AI 方案是一个可引用的企业 AI 
 
 这条 flow 的重点是：Confidential AI 解决的是执行层和证据层的信任问题，不自动解决权限设计、模型安全、输出合规或业务授权问题。
 
+### 18B.47 AWS Clean Rooms DP usage logs：预算、敏感度和贡献上界已经进入运营界面
+
+AWS Clean Rooms Differential Privacy 的文档里有一个很适合落地团队引用的细节：用户不仅能配置 `Privacy budget` 和 `Noise added per query`，还能查看 usage logs、calculated differential privacy parameters，以及 aggregate function 的 sensitivity / user contribution limit。
+
+这比“平台支持 DP”更有工程价值，因为它把 DP 从一次性配置推进到运行态治理：
+
+- privacy owner 能看到预算用了多少
+- analyst 能看到还剩多少 aggregation capacity
+- reviewer 能检查某个 SQL 聚合函数的 sensitivity
+- 数据提供方能围绕 user identifier column 和 contribution limit 做 schema review
+
+一个最小运行记录可以这样写：
+
+```json
+{
+  "clean_room_dp_run": {
+    "collaboration_id": "retail_media_q2_lift",
+    "query_id": "analysis_2026_05_13_014",
+    "protected_table": "publisher_impressions",
+    "user_identifier_column": "clean_room_user_id"
+  },
+  "calculated_dp_parameters": {
+    "aggregate_function": "COUNT",
+    "user_contribution_limit": 12,
+    "sensitivity": 12,
+    "noise_added_per_query": 0.25
+  },
+  "budget_usage_log": {
+    "privacy_budget_epsilon_total": 4.0,
+    "utility_used_percent": 31.4,
+    "estimated_aggregations_remaining": 17
+  },
+  "review_decision": {
+    "approved": true,
+    "reason": "minimum audience threshold met; no raw rows exported",
+    "next_review_after_utility_percent": 50
+  }
+}
+```
+
+这条落地案例适合初学者理解一个关键点：DP 产品化以后，最重要的对象不只是 noisy result，而是 `identifier column -> contribution bound -> sensitivity -> budget consumption -> usage log` 这条完整链路。没有这条链路，团队很容易只拿 epsilon 做口号，却无法解释每次查询到底消耗了什么、保护了什么。
+
+### 18B.48 AWS Clean Rooms Audience Uploader：clean room 输出正在进入激活链路
+
+AWS 在 2026-05 发布的 `Audience Uploader from AWS Clean Rooms` implementation guide 是一个很现实的落地信号：clean room 不只用于生成报告，也开始成为受控 audience activation 的中间层。也就是说，协作分析的输出不一定停在 dashboard，还可能进入广告平台、营销平台或 partner activation workflow。
+
+这个案例对 primer 很重要，因为 activation 比 reporting 更敏感。reporting 通常输出聚合结果；activation 往往意味着把某个受众集合交给下游系统使用。即使底层用了 clean room，产品设计仍必须回答：
+
+- 受众是如何从协作查询产生的？
+- 是否只输出 segment handle，而不是可回识别的明细？
+- 目标平台能看到哪些字段？
+- consent、purpose、TTL、最小人群规模和撤回机制是否进入执行链路？
+- 谁能证明这次上传来自被批准的 clean room job？
+
+一个最小 mock activation record 可以这样写：
+
+```json
+{
+  "clean_room_audience_activation": {
+    "collaboration_id": "brand_retailer_q2_activation",
+    "source_job_id": "audience_query_2026_05_15_002",
+    "audience_definition": {
+      "logic": "recent_category_viewers_and_lapsed_buyers",
+      "minimum_segment_size": 5000,
+      "raw_user_rows_exported": false
+    }
+  },
+  "privacy_controls": {
+    "consent_filter_applied": true,
+    "purpose": "paid_media_activation",
+    "ttl_days": 14,
+    "suppression_list_applied": true,
+    "reidentification_fields_blocked": [
+      "email",
+      "phone",
+      "ip_address",
+      "device_id"
+    ]
+  },
+  "activation_output": {
+    "destination": "approved_ad_platform_connector",
+    "payload_type": "audience_handle_or_platform_scoped_token",
+    "recipient_can_download_membership_list": false
+  },
+  "audit": {
+    "approved_by": ["data_provider_privacy_owner", "advertiser_admin"],
+    "policy_version": "activation_policy_v3",
+    "lineage_record_stored": true
+  }
+}
+```
+
+这条案例给初学者的结论是：clean room 落地正在从 `query privacy` 扩展到 `activation privacy`。一旦输出会驱动投放、营销或模型训练，隐私设计就必须覆盖 lineage、connector、recipient capability、撤回和用途限制，而不能只看 SQL 查询阶段是否安全。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -5540,6 +5910,7 @@ Fortanix 2026-03 发布的 Confidential AI 方案是一个可引用的企业 AI 
 57. Microsoft Research, Separable Expert Architecture
 58. AWS Clean Rooms Differential Privacy user guide
 59. Microsoft Customer Stories, Ad Alliance Data Clean Room with Azure confidential computing
+60. AWS Solutions, Audience Uploader from AWS Clean Rooms implementation guide
 
 ### 论文与研究资料
 
@@ -5588,6 +5959,7 @@ Fortanix 2026-03 发布的 Confidential AI 方案是一个可引用的企业 AI 
 43. Expert Systems with Applications, PrivTabRAG privacy-preserving RAG on tabular data
 44. International Journal of Information Security, A systematic review on privacy preservation in federated learning
 45. Journal of Information Security and Applications, VFEFL: Privacy-preserving federated learning against malicious clients via verifiable functional encryption
+46. Information Sciences, Privacy-preserving federated learning via secret sharing and multi-key homomorphic encryption
 
 ## 20. 参考链接
 
@@ -5711,6 +6083,7 @@ Fortanix 2026-03 发布的 Confidential AI 方案是一个可引用的企业 AI 
 - AWS Clean Rooms Differential Privacy user guide: https://docs.aws.amazon.com/clean-rooms/latest/userguide/differential-privacy.html
 - Microsoft Customer Stories, Ad Alliance relies on data security in the Data Clean Room with Azure confidential computing: https://www.microsoft.com/en/customers/story/22435-ad-alliance-azure-compute
 - Scientific Reports, Multi-modal federated learning with differential privacy for privacy-preserving healthcare AI: https://www.nature.com/articles/s41598-026-51804-4
+- Scientific Reports, Multi-modal personalized federated learning with adaptive differential privacy for medical image classification and a privacy-preserving approach: https://www.nature.com/articles/s41598-026-49896-z
 - IETF PPM Working Group, Distributed Aggregation Protocol latest draft: https://ietf-wg-ppm.github.io/draft-ietf-ppm-dap/draft-ietf-ppm-dap.html
 - IETF PPM Working Group, Task Binding and In-Band Provisioning for DAP: https://ietf-wg-ppm.github.io/draft-ietf-ppm-dap-taskprov/draft-ietf-ppm-dap-taskprov.html
 - USENIX PEPR 2026, DPSynth: From Research to Production: https://www.usenix.org/conference/pepr26/presentation/pravilov-dpsynth
@@ -5718,3 +6091,13 @@ Fortanix 2026-03 发布的 Confidential AI 方案是一个可引用的企业 AI 
 - Divvi Up, privacy respecting telemetry service: https://divviup.org/
 - Divvi Up, About Divvi Up: https://divviup.org/about/
 - Fortanix, Confidential AI protects proprietary model IP and data for secure AI inference: https://www.fortanix.com/company/pr/2026/03/fortanix-confidential-ai-protects-proprietary-model-ip-and-data-for-secure-ai-inference-in-enterprise-ai-factories
+- AWS Clean Rooms, Differential privacy policy: https://docs.aws.amazon.com/clean-rooms/latest/userguide/dp-settings.html
+- AWS Clean Rooms, Configuring differential privacy policy: https://docs.aws.amazon.com/clean-rooms/latest/userguide/configure-differential-privacy.html
+- USC Viterbi, USC @ ICASSP 2026 / VoxGuard summary: https://viterbischool.usc.edu/news/2026/05/usc-icassp-2026/
+- arXiv, VoxGuard: Evaluating User and Attribute Privacy in Speech via Membership Inference Attacks: https://arxiv.org/abs/2509.18413
+- Secludy, privacy-safe synthetic data for AI training: https://secludy.com/
+- Secludy / GlobeNewswire, Secludy Raises $4M to Safely Unlock Proprietary Data for GenAI: https://www.globenewswire.com/news-release/2026/05/13/3294051/0/en/secludy-raises-4m-to-safely-unlock-proprietary-data-for-genai.html
+- SAFE-AI 2026, Workshop on Systems and Architectures for Encrypted AI: https://cmu-caos.github.io/safeAI/2026/
+- Apple Machine Learning Research, Understanding Aggregate Trends for Apple Intelligence Using Differential Privacy: https://machinelearning.apple.com/research/differential-privacy-aggregate-trends
+- Information Sciences, Privacy-preserving federated learning via secret sharing and multi-key homomorphic encryption: https://www.sciencedirect.com/science/article/abs/pii/S0020025526005505
+- AWS Solutions, Audience Uploader from AWS Clean Rooms implementation guide: https://docs.aws.amazon.com/pdfs/solutions/latest/audience-uploader-from-aws-clean-rooms/audience-uploader-from-aws-clean-rooms.pdf
