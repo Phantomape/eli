@@ -127,6 +127,36 @@ Web2App 常见断点主要有四段：
 
 因此，2026 年的 Web2App 验收口径应从“供应商支持 DDL 吗”升级为“第二跳是否动态带参、首开是否不等归因即可恢复、SAN / SKAN / AdAttributionKit 报表是否只作为归因补充、历史短链是否已清理”。这四个问题比单纯比较深链品牌更能决定真实转化损耗。
 
+### 2.12 2026-05-13 资料复核后的校准
+
+本轮公开资料复核继续支持既有判断，但有三点值得写入长期口径：
+
+1. `TikTok` 非 App 推广广告的 app activity measurement 文档仍显示 2025 年 11 月更新，且清楚写明 Web Conversion / Traffic campaign 可先导向 Web landing page，再测量 install 与 in-app event。它强化的是媒体侧可见性，仍不负责 Web CTA 的第二跳带参和 App 首开恢复。
+2. `Branch SAN API-Driven DDL` 与 `NativeLink` 代表了两条不同补洞路径：前者把 Google / Meta 等 SAN 数据返回为新安装或重装时可消费的 deep link data，但 iOS 依赖 ATT opt-in 且可能延迟；后者面向 iOS Private Relay 等限制，用用户可选择的剪贴板机制补 deferred deep linking，但会受系统权限提示和用户授权影响。两者都不是“无条件确定性恢复”，上线时要单独监控覆盖率与成功率。
+3. `X Ads` 的公开口径确认，非 App 目标 campaign 可开启 App Conversions measurement 来观察品牌或触达 campaign 的 app install / in-app conversion halo effect；但其移动 App 测量仍依赖获批 MMP 和归因窗口配置，不提供完整 Web 中间页上下文恢复。
+
+因此，Web2App 的最新落地判断可以再压缩为一句话：媒体越来越能看到 Web 后的 App 结果，MMP 越来越能补第二跳和首开上下文，但任何方案都必须把 `媒体测量`、`第二跳带参`、`首开恢复`、`事件回传与去重` 拆成四个独立验收项。
+
+### 2.13 2026-05-14 资料复核后的校准
+
+本轮复核没有发现主结论反转，但进一步确认了三个更细的边界：
+
+1. `Google Web to App Acquisition Measurement` 与 `TikTok` 非 App 推广广告 app activity measurement 仍是“web campaign 后续 App 结果可见性”产品，而不是 Web CTA 到商店再到首开的完整路由系统。Google 仍要求导入 first_open / in-app event，且适用 campaign、inventory、ATT 条件和“不得直接导向 app store”的限制要单独核对；TikTok 仍要求每条广告只绑定一个 Android 或 iOS app，跨 OS 应拆 ad group。
+2. `Adjust ODDL`、`Branch SAN API-Driven DDL`、`Singular Web-to-App Forwarding` 的公开口径继续把 Web2App 拆成不同问题：ODDL 加速最近点击对应的 DDL 交付，但有 Early Access、15 分钟窗口和 SAN 不加速限制；Branch SAN DDL 能把 Google / Meta 等 SAN 数据返回为安装或重装时的 deep link data，但 iOS 依赖 ATT opt-in 且可能延迟；Singular forwarding 负责把 Web campaign 参数带入移动归因，但仍需要 `_dl / _ddl / passthrough` 或自建 session 承载 App 内目标页。
+3. `Apple AdAttributionKit` 对 re-engagement 的支持强化了一个重要原则：Apple 可在已安装时通过注册过的 Universal Link 打开 re-engagement URL，并在归因层生成相应信号；但如果 URL 不是广告 App 注册的 Universal Link，系统会忽略该 URL 或按普通打开处理。这说明 iOS 侧的归因框架也在要求路由基建先正确，不能把 AAK 当作深链修复工具。
+
+因此，最新验收口径应从“四项拆分”再细化为“五项独立证明”：`媒体能看到结果`、`Web 第二跳能动态带参`、`iOS / Android 路由基建真实生效`、`首开恢复不等待归因响应`、`post-install event 可回传且可去重`。缺少任一项，都只能算局部 Web2App 能力。
+
+### 2.14 2026-05-15 资料复核后的校准
+
+本轮公开资料没有推翻前述判断，但把“Web 侧环境约束”和“参数转发治理”两件事进一步前置：
+
+1. `AppsFlyer Smart Banner V2` 文档已把 Web SDK 集成、PBA 组合、Advanced SDK Verification 与 iOS 26 / Safari storage mode 写入同一套落地说明。这说明 Smart Banner 不再只是一个前端入口组件，还要同时处理 Web SDK 安全、浏览器存储策略、隐私披露和跨页状态保留。若 Web2App 依赖 banner 或 web SDK 保存上下文，必须把 Safari 存储限制、cookie consent 和 CMP 文案纳入验收。
+2. `Singular Links` 近期 FAQ 更明确地说明，`_dl`、`_ddl`、fallback redirect、iOS / Android redirect 等参数可在点击时动态覆盖；`_forward_params=1/2` 可控制参数是否转发到 App Store、Web fallback 或 deep link 目标。这强化了一个实践原则：第二跳带参要有白名单和锁定策略，不能让任意 appended 参数覆盖生产短链配置。
+3. `Adjust ODDL`、`Branch NativeLink` 与 `Apple AdAttributionKit re-engagement URL` 继续指向同一个边界：iOS 侧可以用 session response、用户授权剪贴板或 Universal Link re-engagement 改善体验，但这些方案都依赖前置配置、权限或窗口条件。它们是首开恢复的补强层，不是替代 Universal Links / App Links 与 App 内路由解析的底座。
+
+因此，Web2App 的 2026 验收清单需要再增加两项：`Web SDK / banner 在目标浏览器中的存储与同意机制可用`，`动态参数覆盖和转发有明确白名单、锁定与审计规则`。前者决定上下文是否能留住，后者决定上下文是否会被错误覆盖或污染。
+
 ## 3. 标准链路与职责拆解
 
 ```mermaid
@@ -235,6 +265,8 @@ Web2App 容易把两个目标混在一起：一个是“把用户带到正确 Ap
 - 报表层要允许概率与聚合：iOS 侧出现 `null`、粗粒度转化值、延迟回传或隐私阈值不足，并不等于链路失败；它只说明该口径不能用于用户级复盘。
 
 还要区分 `App AdAttributionKit` 和 `Web AdAttributionKit`：前者偏 App 安装与 re-engagement 归因，后者偏 App 内广告点击到网站后的 Web 转化测量。它们能提升隐私合规测量能力，但不会自动把安装后的用户送回商品页、内容页或 onboarding 分支。
+
+AAK 的 re-engagement URL 也应按路由基建看待，而不是按归因字段看待。公开文档要求该 URL 是广告 App 已注册的 Universal Link；如果 Universal Link 配置、域名关联或 App 内路由解析不成立，归因框架无法替你恢复内容上下文。对 Web2App 来说，这再次说明 `Universal Links / App Links` 是底座，不是可选优化项。
 
 因此更稳妥的架构是：`首开路由优先保证体验`，`归因回传随后补齐优化信号`。Adjust ODDL、LinkMe 这类能力，本质上也是在解决“不要等归因完成才交付 deferred deep link”的问题。
 
@@ -422,6 +454,7 @@ AppsFlyer 在 Web2App 上的产品定义非常标准：
 - AppsFlyer 2026 年的链接结构文档进一步明确：需要跨平台、deep link、Android App Links 或 iOS Universal Links 时应使用 OneLink；单平台场景可用 single-platform link。无论哪种，incoming engagement traffic 都应使用 HTTPS，并至少明确 media source、campaign、site ID / sub site ID 等归因字段
 - Smart Script V2 的落地重点不是“页面上有脚本”，而是参数映射是否完整：`mediaSource`、`campaign` 等字段要有 incoming key、default value 与 override 规则；多页落地时要确认参数能跨页面保留；需要内容恢复时，应把商品、活动或内容 ID 写入 `deep_link_value` 或等价字段
 - 如果要分析网页来源，Smart Script V2 可把 `document.referrer` 映射到 `af_channel` 或 `af_sub1-5` 等字段；如果要把 Web 页面状态带到首开，可从 local storage 读取值并写入 outgoing OneLink 参数
+- Smart Banner V2 的公开文档把 Web SDK、PBA snippet、Advanced SDK Verification 和 iOS 26 / Safari storage mode 放在同一集成路径下，说明 Web2App 前端入口也要验收 SDK 加载安全、浏览器存储策略和 cookie consent，而不只是看 banner 是否展示
 - 因此，Web2App 的第二跳不要写成静态商店 URL。更稳妥的做法是从首跳 URL 中抽取 `pid`、`c`、`af_siteid`、UTM 或点击 ID，再动态生成 OneLink / attribution link，把媒体上下文带到安装和首开
 
 它最适合拥有大量自有站、SEO、内容页、CRM 回流流量的团队，把 owned media 也纳入 App 增长漏斗。
@@ -440,6 +473,8 @@ Branch 的 `Journeys + Deepviews + deep linking` 组合，本质上是在解决�
 - 支持把桌面站 banner、二维码、移动站 smart banner 与同一套 Branch Link / SDK 口径连接起来，减少“桌面上看、手机上装、App 里无法复盘”的断点
 
 Branch 近期资料还把 SAN deferred deep linking 单独产品化，说明 Google、Meta 等自归因网络的 deferred deep link 数据需要通过专门 API / MMP 口径进入 App 首开回调，而不是天然包含在普通 Branch Link 中。该能力对新安装 / 重装更有价值，但 iOS 侧仍可能受 ATT 授权、SAN 数据延迟和归因窗口影响。因此，Branch 在 SAN 流量上的价值不是“绕开隐私限制”，而是在合规前提下把广告网络数据尽量转成 App 可消费的 deep link data。
+
+Branch 的 `NativeLink` 则是另一类 iOS 侧补偿方案：它不依赖 IP 地址做 deferred deep linking，而是利用用户可选择的复制 / 粘贴机制在首次打开时恢复深链内容。这个能力适合受 Private Relay、跨浏览器跳转或 iOS 归因延迟影响较大的场景，但要把剪贴板权限提示、用户拒绝、系统版本差异纳入测试矩阵，不能把它当成静默且 100% 覆盖的路由通道。
 
 Branch 特别适合内容、社区、电商、OTA、票务等对上下文恢复要求高的业务。
 
@@ -478,6 +513,7 @@ Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下
 - Web SDK 可通过 `openApp()` 直接跳转，也可用 `buildWebToAppLink()` 先生成链接再绑定到按钮或 QR code
 - 通过 `Conversion APIs` 把安装和 post-install 事件继续回传给广告平台
 - 支持移动 Web CTA 和桌面 Web QR code 两类 Web2App 路径
+- Singular Links 允许在点击时动态覆盖 `_dl`、`_ddl`、fallback、iOS / Android redirect 等参数，也支持用 `_forward_params=1/2` 控制参数转发到商店、Web fallback 或 deep link 目标；这对多落地页复用同一 baselink 很有价值，但必须配置短链参数锁定和覆盖白名单，避免投放侧误改最终路由
 - 支持把 Web、PC、Console、CTV campaign 的 install 与 post-install / in-game events 通过 partner Conversion APIs 回流给媒体，用于 web campaign 优化；但部分 web / PC / console / CTV postback 能力面向特定客户开放，选型时要确认账号权限
 - Conversion Postbacks for Web / PC / Console 可把非移动端事件通过 partner cAPI 或其他 S2S endpoint 回传，用于媒体优化、内部同步或下游系统触发；但这属于优化信号层，不自动解决 App 首开页面恢复
 - 文档明确提醒 Facebook、Instagram、TikTok 等 in-app browser 到系统浏览器的上下文切换会造成归因损耗，应使用对应广告网络的 tracking link 格式先捕获点击
@@ -684,6 +720,8 @@ MVP 的验收标准不是“能跳到商店”，而是至少能回答三件事�
 | 事件回传 | `first_open` 与首个关键事件能回传给 MMP 和对应媒体平台 |
 | 报表去重 | web conversion、install、first_open、first key event 的口径清楚，不重复计算 |
 | 受限环境 | Facebook/Instagram/TikTok 内置浏览器、Safari、Chrome、桌面 QR code 至少各测一轮 |
+| Web SDK 与存储 | Smart Banner / Web SDK 在 Safari、Chrome 和主要 in-app browser 中能保留必要状态；如启用 cookie mode，CMP 与隐私披露已覆盖 |
+| 参数覆盖治理 | 动态追加的 `_dl`、`_ddl`、fallback、UTM、click id 有白名单和锁定规则，生产短链不会被任意 URL 参数覆盖 |
 
 如果只能完成其中一部分，优先级应是：直达和首开恢复 > 参数继承 > 事件回传 > 页面转化优化。
 
@@ -804,6 +842,7 @@ Web2App 真正上线时，最容易出问题的不是单点能力，而是三方
 | 自有移动站、SEO、CRM 有大量高意图访客 | Smart Banner / Journeys / OneLink Smart Script / Singular Web SDK，优先优化首开恢复率 |
 | 桌面 Web、CTV、线下物料要带来移动安装 | QR code deep link + session/token + MMP 跨设备 attribution + post-install event 回传 |
 | iOS 首开恢复不稳定 | Universal Links 基建复核 + LinkMe / ODDL 或等价 session response 方案 + 独立 iOS 测试矩阵 |
+| 已安装用户 re-engagement 要兼顾测量与落页 | AdAttributionKit / SKAN 作为归因层，Universal Links + App 内路由作为体验层 |
 
 因此，Web2App 选型不应问“哪家深链最好”，而应问“当前最大损耗发生在点击、Web CTA、商店、首开恢复、还是媒体回传”。供应商能力只有和损耗位置匹配，才会产生真实增量。
 
@@ -832,6 +871,8 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
 3. `Meta / Snap / X` 更适合做流量与创意前台，完整链路通常要靠外部中台补齐。
 4. `AppsFlyer / Branch / Adjust / Singular` 才是把 Web2App 真正做成完整系统的核心层，其中第二跳带参、首开 session response、SAN DDL 与 Web SDK forwarding 是 2026 年选型重点。
 5. 新项目不应继续把 `Firebase Dynamic Links` 当主链路；存量项目还需要主动扫描历史广告、二维码、邮件和活动页中的 FDL 入口，避免 2025-08-25 之后形成断链。
+
+最终验收不应停在“能否跳转”或“能否归因”，而要逐项确认：第二跳是否动态带参，首开恢复是否不等待归因响应，iOS 侧是否有 ATT / Private Relay / 剪贴板权限等异常路径兜底，首个关键事件是否能带着 Web 与媒体上下文回传并完成内部去重。
 
 ## 12. 参考资料
 
@@ -966,3 +1007,13 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
     https://support.appsflyer.com/hc/en-us/articles/4413588932241-Set-up-Smart-Script-to-convert-web-visitors
 63. Apple Developer Documentation, AdAttributionKit
     https://developer.apple.com/documentation/AdAttributionKit
+64. Branch, NativeLink Deferred Deep Linking
+    https://help.branch.io/developer-hub/docs/nativelink-deferred-deep-linking
+65. Apple Developer Documentation, handleTap(reengagementURL:)
+    https://developer.apple.com/documentation/adattributionkit/appimpression/handletap%28reengagementurl%3A%29
+66. Apple Developer Documentation, Receiving ad attributions and postbacks
+    https://developer.apple.com/documentation/adattributionkit/receiving-ad-attributions-and-postbacks
+67. AppsFlyer Developer Hub, OneLink Smart Banner V2
+    https://dev.appsflyer.com/hc/docs/dl_smart_banner_v2
+68. Apple Developer Documentation, reengagementOpenURLParameter
+    https://developer.apple.com/documentation/adattributionkit/postback/reengagementopenurlparameter
