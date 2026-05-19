@@ -3502,7 +3502,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-14）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-18）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -4844,6 +4844,387 @@ Apple Machine Learning Research 在 2025-04-14 公开的 `Understanding Aggregat
 
 这条 mock data 想说明：生产 PPFL 文档里不应只写“data stays local”。更稳的写法是把 `local data`、`model update`、`ciphertext aggregation`、`partial decryption`、`aggregate release` 五个阶段逐段标明谁能看到什么。
 
+### 18A.53 Privacy-preserving ML 的前沿议题正在收敛到三类问题
+
+Apple Machine Learning Research 在 2026-05-08 公开了 `Workshop on Privacy-Preserving Machine Learning & AI 2026` 的总结。它本身不是一篇单点论文，但很适合作为 primer 的前沿信号，因为 workshop 把讨论集中到三条主线：
+
+- private learning and statistics
+- foundation models and privacy
+- attacks and security
+
+这说明 2026 年的隐私机器学习已经不只是“FL 或 DP 能不能训练模型”。更现实的问题变成：
+
+- 统计发布、模型训练、合成数据、个性化和 telemetry 是否能共享一套 privacy accounting 思维
+- foundation model 的 privacy unit 到底是 token、sequence、document、user、device，还是 account
+- 保护机制是否能经受 membership inference、attribute inference、re-identification、prompt / output leakage 和系统侧攻击
+
+一个面向 AI 产品的最小评估记录可以这样写：
+
+```json
+{
+  "private_ai_eval": {
+    "system": "enterprise_assistant_fine_tune_v4",
+    "privacy_unit": "account_id",
+    "data_sources": ["support_tickets", "admin_docs", "feedback_events"],
+    "protection_stack": ["deduplication", "user_level_dp_finetuning", "output_filtering"]
+  },
+  "attack_eval": {
+    "membership_inference_auc": 0.55,
+    "attribute_inference_tests": ["industry", "company_size", "region"],
+    "prompt_leakage_red_team": "passed_with_findings",
+    "canary_extraction_rate": 0.0
+  },
+  "release_decision": {
+    "allowed": true,
+    "required_controls": [
+      "no_raw_training_examples_in_logs",
+      "small_account_cohort_metrics_suppressed",
+      "privacy_budget_report_attached"
+    ]
+  }
+}
+```
+
+这条趋势对初学者的启发是：AI 时代的 privacy tech 不能只按技术名词分科。更稳的导论结构应该把 `learning/statistics`、`foundation model data lifecycle` 和 `attack evaluation` 放在同一张图里看。
+
+### 18A.54 Clean room 的前沿控制面继续向“可审计协作活动”推进
+
+Snowflake 2026-05-07 的 Data Clean Rooms release notes 增加了 collaboration activity history：新建 collaboration 可以用 `VIEW_ACTIVITY_HISTORY` 审计分析活动，并且每个 collaborator 只能看到与自己账号和贡献资源相关的活动。2026-05-14 的更新则继续推进 Clean Rooms API 15.4 的性能修复和私有预览能力。
+
+这条信号很小，但工程意义很大。clean room 的成熟度正在从：
+
+- 能不能限制 query
+- 能不能限制 join / projection / activation
+- 能不能加 DP 或阈值
+
+继续推进到：
+
+- 谁在 collaboration 里跑过什么 analysis
+- 哪些资源被用到
+- 每个参与方能看到什么审计范围
+- 激活任务结束后 segment records 是否能清理
+
+一个最小 audit mock data 可以这样写：
+
+```json
+{
+  "clean_room_activity_event": {
+    "collaboration_id": "retail_media_q2_2026",
+    "event_type": "analysis_run",
+    "analysis_template": "incremental_lift_report_v3",
+    "runner_account": "advertiser_account",
+    "resource_owner_visible_to": ["publisher_account", "retailer_account"],
+    "timestamp": "2026-05-14T19:22:31Z"
+  },
+  "visibility_scope": {
+    "publisher_account": ["template_name", "own_table_used", "result_delivery_status"],
+    "advertiser_account": ["query_status", "cost", "result_receiver"],
+    "other_collaborators": "only_relevant_activity"
+  },
+  "retention_controls": {
+    "activation_segment_records_deleted_after_job": true,
+    "audit_log_retention_days": 365,
+    "raw_rows_exported": false
+  }
+}
+```
+
+这条数据流想说明：生产级 clean room 不应只记录最终报表，还应记录 `analysis activity -> resource use -> result delivery -> activation cleanup`。如果审计面跟不上，隐私控制很容易停留在平台承诺，而不是可运营证据。
+
+### 18A.55 DP 的落地评估越来越像“证据金字塔”，而不是只报一个 epsilon
+
+NIST `SP 800-226 Guidelines for Evaluating Differential Privacy Guarantees` 虽然发布于 2025-03-06，但在 2026 年的 DP synthetic data、AI telemetry、clean room budget 讨论里仍然是很关键的工程基线。它最值得 primer 反复强调的一点是：评估 DP 软件不能只问“epsilon 是多少”，还要看完整证据链。
+
+一个生产系统里更有用的 DP 评估记录，应该至少把下面这些东西放在一起：
+
+```json
+{
+  "dp_release_review": {
+    "release_name": "weekly_assistant_usage_topics",
+    "privacy_unit": "account_id",
+    "adjacency_relation": "add_or_remove_one_account_week",
+    "epsilon": 1.0,
+    "delta": 0.000001,
+    "contribution_bound": {
+      "max_events_per_account": 20,
+      "max_topics_per_event": 3
+    }
+  },
+  "mechanism_evidence": {
+    "library": "approved_dp_query_engine",
+    "mechanism": "bounded_histogram",
+    "budget_accounting": "central_ledger",
+    "composition_window": "calendar_quarter"
+  },
+  "hazard_checks": {
+    "small_groups_suppressed": true,
+    "clipping_documented": true,
+    "post_processing_reviewed": true,
+    "synthetic_data_claims_have_formal_dp": true
+  }
+}
+```
+
+这条趋势的工程含义是：DP 从研究指标进入产品后，核心产物不是一句 “we use differential privacy”，而是一份可审计的 `privacy unit -> contribution bound -> mechanism -> accounting -> release decision` 记录。尤其是 synthetic data，如果生成过程没有满足 DP，就不应因为“看起来不像原始数据”而被当作强隐私保证。
+
+### 18A.56 Privacy-preserving RAG 正在从“敏感文档检索”变成新的 PET 组合题
+
+2026 年 4-5 月出现了多篇围绕 privacy-preserving RAG 的新研究，例如 `PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation`、`p2RAG: Privacy-Preserving RAG Service Supporting Arbitrary Top-k Retrieval`，以及面向空间检索的 `Privacy Anchor Substitution`。这些论文方向不同，但共同说明一件事：企业把 RAG 接进私有文档、位置、医疗或内部知识库之后，隐私问题不只在“模型会不会训练用户数据”。
+
+RAG 的隐私面至少有四层：
+
+- query privacy：服务方是否能看到用户真实问题或位置
+- corpus privacy：外部模型或检索服务是否能看到私有文档
+- retrieval privacy：返回的 top-k、score、metadata 是否暴露权限或兴趣
+- answer privacy：生成结果是否泄露不该被当前用户看到的片段
+
+一个可落地的 permission-aware private RAG 数据流可以这样拆：
+
+```json
+{
+  "rag_request": {
+    "request_id": "rag_2026_05_17_001",
+    "user_token": "employee_scoped_token",
+    "query_embedding_location": "client_or_trusted_runtime",
+    "raw_query_logged": false
+  },
+  "retrieval_controls": {
+    "permission_filter": ["doc_acl", "region_policy", "matter_id"],
+    "private_top_k_protocol": "encrypted_or_tee_backed_retrieval",
+    "metadata_minimization": ["doc_id_hash", "section_id", "freshness_bucket"]
+  },
+  "generation_controls": {
+    "context_window_contains_only_authorized_chunks": true,
+    "answer_citations_required": true,
+    "denied_chunks_count_exposed_to_user": false
+  },
+  "audit": {
+    "retrieval_policy_version": "rag_privacy_policy_v5",
+    "access_decision_logged": true,
+    "source_documents_exported": false
+  }
+}
+```
+
+这条前沿信号对导论很重要：RAG privacy 不是单独某一个算法能解决的，它通常要把权限系统、TEE / 加密检索、日志最小化、输出约束和审计放在一起。对企业 AI 来说，这可能会成为 clean room 之外另一类高频 PET 场景。
+
+### 18A.57 FHE 的 2026 信号仍然是“更快、更完整”，但落地判断要看算子边界
+
+2026-05-14，DESILO 宣布其第五代 FHE 方案 `GL` 的两篇论文被 CRYPTO 2026 接收。商业新闻不能替代同行评审细节，但它代表了一个值得追踪的方向：FHE 正在从“理论上能在密文上计算”继续推进到更完整的系统方案、AI 推理和大数据应用。
+
+对初学者来说，更务实的判断不是“FHE 是否最强”，而是问清楚下面这些边界：
+
+- 要支持的是加法、乘法、比较、top-k、矩阵乘，还是完整模型推理
+- 允许多长延迟，是批处理分钟级，还是交互式毫秒/秒级
+- 密钥归谁管理，结果由谁解密
+- 输出是否还需要 DP、阈值或审计保护
+
+一个 FHE 方案评估记录可以这样写：
+
+```json
+{
+  "encrypted_compute_candidate": {
+    "use_case": "bank_model_score_batch",
+    "input_owner": "bank",
+    "compute_provider": "analytics_vendor",
+    "supported_operations": ["linear_model", "polynomial_features", "sum_by_bucket"],
+    "unsupported_operations": ["free_text_embedding", "arbitrary_sql_join"]
+  },
+  "runtime_expectation": {
+    "batch_size": 100000,
+    "latency_target": "under_2_hours",
+    "interactive": false
+  },
+  "release_controls": {
+    "decryptor": "bank_key_service",
+    "aggregate_only": true,
+    "dp_or_threshold_after_decrypt": "required_for_external_report"
+  }
+}
+```
+
+这条信号的结论很朴素：FHE 很强，但生产选型时要从 `operation set` 和 `latency budget` 开始，而不是从“能不能加密计算”这个抽象口号开始。
+
+### 18A.58 Personalized Local DP：数据交易和问卷系统开始把“每个属性、每个人的隐私偏好”纳入模型
+
+2026-05-05，`PrivCQ` 发表在 Neural Computing and Applications。它研究的是 private data query system：数据消费者想买到聚合查询结果，数据所有者愿意在得到补偿、且隐私偏好被满足时贡献数据。它的新意不在于“又用了 DP”，而是把问题推进到更细的现实约束：
+
+- 查询不只是单属性 count / sum，而是带条件的多维查询
+- 隐私偏好不是所有人、所有字段一个 epsilon
+- 数据 broker 不一定被完全信任，所以更接近 local DP 场景
+- 采购机制、补偿和查询精度要一起设计
+
+这对 primer 的启发是：`DP budget` 在生产里往往不是一个全局常数。越靠近数据市场、问卷、用户贡献数据、数据捐赠这类场景，越要考虑：
+
+- 用户 A 可能愿意分享年龄段，但不愿意分享收入
+- 用户 B 可能愿意分享收入区间，但要求更高补偿
+- 查询方想要的是条件聚合，比如“某地区 20-29 岁用户的平均消费”
+- 系统必须解释“买了多少隐私、换来多少精度”
+
+一个最小 mock request 可以这样写：
+
+```json
+{
+  "query_request": {
+    "metric": "avg_monthly_spend",
+    "where": {
+      "age_bucket": "20-29",
+      "region": "bay_area"
+    },
+    "max_budget_usd": 1200
+  },
+  "data_owner_privacy_preferences": [
+    {
+      "owner_id": "owner_001",
+      "epsilon_by_attribute": {
+        "age_bucket": 2.0,
+        "region": 1.5,
+        "monthly_spend": 0.7
+      },
+      "minimum_compensation_usd": 3.2
+    },
+    {
+      "owner_id": "owner_002",
+      "epsilon_by_attribute": {
+        "age_bucket": 1.0,
+        "region": 0.8,
+        "monthly_spend": 0.4
+      },
+      "minimum_compensation_usd": 6.5
+    }
+  ],
+  "released_result": {
+    "answer": 84.7,
+    "privacy_model": "personalized_local_dp",
+    "purchased_privacy_summary": {
+      "participants": 143,
+      "estimated_error": 5.9
+    }
+  }
+}
+```
+
+这类研究提醒初学者：如果场景里有“用户主动贡献数据 / 数据市场 / 可补偿的数据查询”，隐私技术不只是算法问题，还会变成机制设计、定价和用户偏好建模问题。
+
+### 18A.59 Clean room release cadence 本身也成为治理对象
+
+Snowflake 2026-05-14 的 Data Clean Rooms 更新看起来很小：主要是 API version 15.4、性能改进、bug fixes，以及 UI / API 更新应用方式。但这条更新适合放进 primer，因为它说明 clean room 已经进入“像数据库和 SaaS 平台一样持续发布”的阶段。
+
+这会带来一个常被忽视的隐私工程问题：当 clean room 的 UI、API、模板能力、执行器和 preview feature 持续变化时，团队不能只在上线第一天做一次 privacy review。
+
+更稳的生产做法是把版本也写进审计链：
+
+```json
+{
+  "clean_room_runtime": {
+    "platform": "snowflake_data_clean_rooms",
+    "api_version": "15.4",
+    "release_date": "2026-05-14",
+    "update_mode": "automatic_on_new_ui_session"
+  },
+  "privacy_review": {
+    "analysis_templates_revalidated": true,
+    "joinable_columns_rechecked": true,
+    "dp_policy_regression_tested": true,
+    "activity_history_checked_after_upgrade": true
+  },
+  "change_risk": {
+    "private_preview_features_enabled": false,
+    "requires_business_reapproval": false
+  }
+}
+```
+
+这个点很小，但很落地：privacy tech 一旦产品化，就必须有版本、变更、回归测试和重新审批的纪律。否则“上个月审过的 clean room 配置”不一定等于“今天运行的 clean room 行为”。
+
+### 18A.60 Federated unlearning：联邦学习开始补“删除影响”的治理面
+
+2026-05-12，Scientific Reports 发表 `Dual asymmetric momentum improves federated class unlearning in edge systems`。这类研究适合补进 primer，因为它提醒一个非常现实的问题：联邦学习系统不只要回答“原始数据有没有上传”，还要回答“当某类数据、某个客户、某个站点或某段采集窗口需要撤回时，模型里对应影响怎么减少”。
+
+在中心化训练里，unlearning 已经很难；在联邦场景里更复杂，因为：
+
+- 原始样本分散在设备或机构里，服务器通常没有完整训练集
+- 参与方可能已经掉线，不能假设所有客户端都能重跑
+- 模型里被删除类别的影响可能和其他类别纠缠
+- 删除请求、隐私预算、模型回滚和重新发布要一起审计
+
+一个面向边缘 FL 的 unlearning request 可以这样写：
+
+```json
+{
+  "federated_unlearning_request": {
+    "request_id": "unlearn_2026_05_18_001",
+    "scope": "class_level",
+    "target": {
+      "label": "old_sensor_fault_code_17",
+      "affected_rounds": ["168-184"],
+      "affected_client_groups": ["factory_edge_cluster_west"]
+    },
+    "privacy_unit": "device_id"
+  },
+  "execution_plan": {
+    "method": "federated_class_unlearning",
+    "requires_raw_data_upload": false,
+    "clients_to_resample": 2400,
+    "momentum_state_adjusted": true,
+    "secure_aggregation_required": true
+  },
+  "release_gate": {
+    "forgetting_metric_passed": true,
+    "retained_class_accuracy_delta": -0.014,
+    "privacy_budget_increment": 0.12,
+    "model_version_after_unlearning": "edge_anomaly_v31"
+  }
+}
+```
+
+这条前沿信号的工程含义是：FL 文档如果只写 `data stays local` 还不够。更完整的生产设计应该把 `deletion request -> affected rounds -> unlearning execution -> retained utility -> privacy budget -> model release` 写成可追踪链路。
+
+### 18A.61 DP 工程正在从“机制正确”推进到“实现可测试”
+
+USENIX PEPR 2026 的 `Privacy in Theory, Bugs in Practice: Grey-Box Testing for Differential Privacy Libraries` 把一个容易被忽略的风险讲得很直接：DP 的数学定义再清楚，具体库实现仍然可能因为边界条件、采样、浮点、clipping、composition 或 post-processing bug 破坏保证。
+
+对工程团队来说，这说明 DP review 不能只停在论文和参数层，还要进入测试层：
+
+- 机制声明是否和代码路径一致
+- contribution bounding 是否在所有入口生效
+- 噪声采样是否符合预期分布
+- small group suppression 和 DP noise 的顺序是否正确
+- composition ledger 是否覆盖重试、回填和 dashboard 自动刷新
+- 测试是否能发现“看起来仍有噪声，但隐私保证已经失效”的实现错误
+
+一个最小 DP library test record 可以这样写：
+
+```json
+{
+  "dp_library_test_run": {
+    "library": "internal_dp_sql_engine",
+    "version": "2.8.1",
+    "mechanisms_tested": ["bounded_count", "bounded_sum", "histogram"],
+    "test_style": "grey_box_statistical_and_invariant_tests"
+  },
+  "invariants": {
+    "contribution_bound_applied_before_noise": true,
+    "epsilon_delta_logged_for_each_release": true,
+    "retry_does_not_double_spend_budget": true,
+    "empty_and_singleton_groups_handled": true
+  },
+  "test_result": {
+    "passed": false,
+    "findings": [
+      {
+        "severity": "high",
+        "component": "bounded_sum",
+        "issue": "negative_values_bypass_clipping_in_one_code_path"
+      }
+    ],
+    "release_blocked": true
+  }
+}
+```
+
+这条趋势对初学者很重要：DP 不是“选一个 epsilon 就结束”。真正可落地的 DP 系统需要 `threat model`、`mechanism proof`、`implementation tests`、`budget ledger` 和 `release gate` 五件事同时成立。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -5827,6 +6208,158 @@ AWS 在 2026-05 发布的 `Audience Uploader from AWS Clean Rooms` implementatio
 
 这条案例给初学者的结论是：clean room 落地正在从 `query privacy` 扩展到 `activation privacy`。一旦输出会驱动投放、营销或模型训练，隐私设计就必须覆盖 lineage、connector、recipient capability、撤回和用途限制，而不能只看 SQL 查询阶段是否安全。
 
+### 18B.49 Snowflake Data Clean Rooms activity history：协作审计正在产品化
+
+Snowflake 2026-05-07 的 Data Clean Rooms 更新把 collaboration activity history 做成了可调用能力：`VIEW_ACTIVITY_HISTORY` 可用于审计 collaboration 内的 analysis activity，并且每个 collaborator 只能看到和自己账号、自己贡献资源相关的活动。
+
+这很适合作为落地案例引用，因为它补上了 clean room 生产化里经常被低估的一层：不是只要“原始数据不导出”就够了，还要能解释协作过程中：
+
+- 谁运行了哪个 approved template
+- 哪些贡献资源被用到
+- 结果是否发给了被批准的 receiver
+- activation 相关的 segment records 是否在任务完成后清理
+- 每个参与方看到的审计范围是否符合最小可见原则
+
+一个简化 event 可以这样理解：
+
+```json
+{
+  "collaboration_activity_history": {
+    "collaboration_id": "publisher_advertiser_measurement_2026_05",
+    "activity_id": "act_01HX...",
+    "activity_type": "analysis_template_execution",
+    "template": "campaign_lift_by_segment",
+    "status": "completed"
+  },
+  "resource_use": {
+    "publisher_table_used": "impressions_clean_room_view",
+    "advertiser_table_used": "conversions_clean_room_view",
+    "raw_export_allowed": false
+  },
+  "result_delivery": {
+    "receiver": "advertiser_analytics_account",
+    "output_grain": "segment_day",
+    "minimum_group_size_enforced": true
+  }
+}
+```
+
+这类 capability 的价值在于把 privacy collaboration 从“相信平台规则”推进到“每次协作活动都有可查证记录”。对企业团队来说，这往往是 clean room 能不能进入长期运营、审计和合规流程的关键。
+
+### 18B.50 Edgeless Systems / NVIDIA Confidential AI：机密计算开始进入受监管 AI 推理
+
+Edgeless Systems 在 2026-03-12 宣布与 NVIDIA Confidential Computing 技术集成，把 Privatemode AI 推向欧洲政府、医疗和其他受监管行业。它的新闻稿还提到，底层技术已经用于保护德国电子健康记录系统 ePA 以及约 5000 万医疗患者的数据。
+
+这个案例适合作为“Confidential AI 从基础设施进入具体行业”的引用。它不是在说 TEE 能自动解决所有隐私问题，而是在说明一个落地模式正在清晰化：
+
+- 模型推理运行在可验证的机密计算环境中
+- 输入、输出和中间状态尽量保持端到端加密
+- 部署对象是政府、医疗、受监管企业这类对数据主权和审计敏感的场景
+- privacy claim 需要和 attestation、密钥管理、日志策略、供应链证据绑定
+
+一个简化的 Confidential AI inference record 可以这样理解：
+
+```json
+{
+  "confidential_ai_inference": {
+    "workload": "clinical_document_summary",
+    "runtime": "confidential_gpu_tee",
+    "model": "regulated_industry_llm",
+    "attestation_required_before_key_release": true
+  },
+  "data_flow": {
+    "input": "encrypted_patient_note",
+    "in_use": "decrypted_only_inside_trusted_runtime",
+    "output": "encrypted_summary_to_hospital_tenant",
+    "provider_plaintext_access": false
+  },
+  "operational_controls": {
+    "debug_shell_enabled": false,
+    "raw_prompt_logging": false,
+    "attestation_report_stored": true,
+    "key_release_policy": "approved_measurement_and_model_hash"
+  }
+}
+```
+
+这类案例给 primer 的落地结论是：Confidential AI 的重点不是“把模型放进 TEE”这一句话，而是 `attestation -> key release -> encrypted inference -> no raw logs -> audit evidence` 这一整条链路。
+
+### 18B.51 Datavant Switchboard + AWS Clean Rooms：医疗协作里的 tokenization + clean room 参考架构
+
+AWS Architecture Center 的 `Datavant Switchboard with AWS Clean Rooms` 是一个很适合初学者理解 healthcare / life sciences 数据协作的落地架构。它不是只说“把数据匿名化”，而是把流程拆成几步：
+
+- 医疗或生命科学公司先在自己的 S3 bucket 中对患者数据做 de-identification 和 tokenization
+- collaborator 之间用 tokenized data 做 link
+- AWS Glue crawler / Data Catalog 把 linked tokenized data 准备成 clean room 可用数据源
+- AWS Clean Rooms 中通过 agreed analysis rules 控制能跑什么查询
+- query result 可以导出到被允许的结果接收方，再进入 Athena、Redshift、SageMaker AI 等分析链路
+
+一个最小 mock data flow 可以这样理解：
+
+```json
+{
+  "patient_source_record": {
+    "patient_name": "removed_before_collaboration",
+    "date_of_birth": "1979-04",
+    "diagnosis_code": "C91.0",
+    "hospital_site": "site_a"
+  },
+  "tokenization_step": {
+    "tool": "datavant_switchboard",
+    "patient_token": "tok_9f82...",
+    "reverse_engineerable_by_collaborator": false,
+    "output_location": "s3://health-org-a/tokenized/2026/q2/"
+  },
+  "clean_room_collaboration": {
+    "join_key": "patient_token",
+    "analysis_rule": "aggregate_only",
+    "allowed_query": "count_patients_by_diagnosis_and_treatment_window",
+    "raw_patient_rows_exportable": false
+  },
+  "result_delivery": {
+    "receiver": "approved_research_account",
+    "output": {
+      "diagnosis_code": "C91.0",
+      "treatment_window": "0-90d",
+      "patient_count": 128
+    }
+  }
+}
+```
+
+这条案例的重点是：医疗数据协作通常不是单一 PET，而是 `de-identification/tokenization -> controlled linkage -> clean room analysis rules -> governed result export` 的组合系统。
+
+### 18B.52 Snowflake Data Clean Rooms API 15.4：持续更新的 clean room 需要版本化审计
+
+Snowflake 2026-05-14 的 Data Clean Rooms 更新提供了一个很具体的生产信号：clean room 平台不是静态产品，而是持续发布 API version、UI 更新、bug fix 和 private preview feature 的运行环境。
+
+对企业落地来说，这意味着 clean room 的审计对象不应只包括“谁跑了什么查询”，还应包括“当时运行在哪个版本”。一个可落地的 collaboration audit record 可以包含：
+
+```json
+{
+  "collaboration_execution": {
+    "collaboration_id": "retail_media_lift_2026_05",
+    "analysis_template": "campaign_lift_by_region",
+    "executed_at": "2026-05-16T18:20:11Z"
+  },
+  "platform_version": {
+    "provider": "snowflake_data_clean_rooms",
+    "api_version": "15.4",
+    "release_note_date": "2026-05-14",
+    "ui_session_started_after_update": true
+  },
+  "post_update_controls": {
+    "approved_template_hash": "sha256:template_v12",
+    "policy_regression_suite": "passed",
+    "dp_enabled": true,
+    "joinable_columns": ["hashed_email", "household_id"],
+    "projectable_columns": ["region", "campaign_id"]
+  }
+}
+```
+
+这条案例看起来不像广告、医疗那样“业务感强”，但它很重要：privacy tech 真正进入平台期后，版本变更、回归测试、preview feature 边界和活动历史一样，都属于隐私治理的一部分。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -5911,6 +6444,8 @@ AWS 在 2026-05 发布的 `Audience Uploader from AWS Clean Rooms` implementatio
 58. AWS Clean Rooms Differential Privacy user guide
 59. Microsoft Customer Stories, Ad Alliance Data Clean Room with Azure confidential computing
 60. AWS Solutions, Audience Uploader from AWS Clean Rooms implementation guide
+61. AWS Architecture Center, Datavant Switchboard with AWS Clean Rooms
+62. Snowflake Data Clean Rooms updates, May 14 2026
 
 ### 论文与研究资料
 
@@ -5960,6 +6495,16 @@ AWS 在 2026-05 发布的 `Audience Uploader from AWS Clean Rooms` implementatio
 44. International Journal of Information Security, A systematic review on privacy preservation in federated learning
 45. Journal of Information Security and Applications, VFEFL: Privacy-preserving federated learning against malicious clients via verifiable functional encryption
 46. Information Sciences, Privacy-preserving federated learning via secret sharing and multi-key homomorphic encryption
+47. Apple Machine Learning Research, Workshop on Privacy-Preserving Machine Learning & AI 2026
+48. Snowflake Data Clean Rooms updates, May 7 2026
+49. NIST SP 800-226, Guidelines for Evaluating Differential Privacy Guarantees
+50. arXiv, PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation
+51. arXiv, p2RAG: Privacy-Preserving RAG Service Supporting Arbitrary Top-k Retrieval
+52. DESILO, GL FHE papers accepted at CRYPTO 2026
+53. Neural Computing and Applications, PrivCQ personalized local DP for conditional queries
+54. arXiv, SoK: Privacy-Enhancing Technologies in Artificial Intelligence
+55. Scientific Reports, Dual asymmetric momentum improves federated class unlearning in edge systems
+56. USENIX PEPR 2026, Privacy in Theory, Bugs in Practice: Grey-Box Testing for Differential Privacy Libraries
 
 ## 20. 参考链接
 
@@ -6101,3 +6646,16 @@ AWS 在 2026-05 发布的 `Audience Uploader from AWS Clean Rooms` implementatio
 - Apple Machine Learning Research, Understanding Aggregate Trends for Apple Intelligence Using Differential Privacy: https://machinelearning.apple.com/research/differential-privacy-aggregate-trends
 - Information Sciences, Privacy-preserving federated learning via secret sharing and multi-key homomorphic encryption: https://www.sciencedirect.com/science/article/abs/pii/S0020025526005505
 - AWS Solutions, Audience Uploader from AWS Clean Rooms implementation guide: https://docs.aws.amazon.com/pdfs/solutions/latest/audience-uploader-from-aws-clean-rooms/audience-uploader-from-aws-clean-rooms.pdf
+- Apple Machine Learning Research, Workshop on Privacy-Preserving Machine Learning & AI 2026: https://machinelearning.apple.com/updates/ppml-2026
+- Snowflake all release notes, May 7 2026 Data Clean Rooms activity history: https://docs.snowflake.com/en/release-notes/all-release-notes
+- NIST SP 800-226, Guidelines for Evaluating Differential Privacy Guarantees: https://csrc.nist.gov/pubs/sp/800/226/final
+- PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation: https://arxiv.org/abs/2604.26525
+- p2RAG: Privacy-Preserving RAG Service Supporting Arbitrary Top-k Retrieval: https://arxiv.org/abs/2603.14778
+- Privacy Without Losing Place: A Paradigm for Private Retrieval in Spatial RAGs: https://arxiv.org/abs/2605.05459
+- DESILO 5th-generation FHE scheme GL accepted at CRYPTO 2026: https://www.prnewswire.com/news-releases/desilos-5th-generation-fhe-scheme-gl-recognized-by-international-academic-community--two-papers-simultaneously-accepted-at-iacr-crypto-2026-302771490.html
+- Edgeless Systems, Confidential AI with NVIDIA: https://www.edgeless.systems/press-release-edgeless-systems-nvidia-confidential-ai
+- AWS Architecture Center, Datavant Switchboard with AWS Clean Rooms: https://docs.aws.amazon.com/pdfs/architecture-diagrams/latest/datavant-switchboard-with-aws-clean-rooms/datavant-switchboard-with-aws-clean-rooms.pdf
+- Snowflake Data Clean Rooms updates, May 14 2026: https://docs.snowflake.com/en/release-notes/2026/other/2026-05-14-dcr
+- Springer Nature, PrivCQ: Trading multi-dimensional conditional queries under personalised local differential privacy: https://link.springer.com/article/10.1007/s00521-026-11988-2
+- arXiv, SoK: Privacy-Enhancing Technologies in Artificial Intelligence: https://arxiv.org/abs/2506.14576
+- Scientific Reports, Dual asymmetric momentum improves federated class unlearning in edge systems: https://www.nature.com/articles/s41598-026-45631-w
