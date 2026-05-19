@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-15<br>
+最后更新: 2026-05-19 UTC<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -39,6 +39,10 @@
 
 2026-05-15 的复查没有改变主链路，但把“端侧敏感信号如何进入优化闭环”补成逐事件对象：W3C TR 索引显示 `Attribution Level 1` 最新公开草案已推进到 `2026-05-14`，仍以 aggregation service、DAP/VDAF-style histogram、anti-replay、privacy budget 和 DP noise 作为公开 reporting 边界；Google Privacy Sandbox 官方退役 ARA / Private Aggregation / On-Device Personalization 等 API 的结论仍然成立；Android `MeasurementManager` 仍是 API 37 deprecated；Google Ads ODM / AAP 文档则再次说明，iOS event-data 路径会从 IP、timestamp 等设备信号派生临时数据，且 EEA/UK/CH 不激活，AAP 集成必须先采集 consent，再传 app conversion / referrer / consent 状态。本文因此新增 `DeviceSensitiveSignalDerivationRecord`：policy 说明“允许怎么做”，record 说明“这一次事件实际做了什么”。这样既能把 `server_request_id:int64` 透传回 Ad Network 内部训练面，又不把 raw `ip`、`boot_time_ms`、`device_fp_hash`、OPRF output 或 `req_id` 暴露给 MMP。
 
+2026-05-17 的复查没有发现需要推翻主链路的新证据。新增的 RFC 化要求是：不能只定义 message schema，还要定义 implementation conformance。W3C TR 索引仍显示 `Attribution Level 1` 最新公开草案日期为 `2026-05-14`；Google ICM 官方文档继续强调它经由第三方 AAP interface 提供更实时、事件级的 reporting，并且 S2S 集成要把 on-device measurement `info` string 传给 AAP；AppsFlyer / Adjust 等 AAP 文档也继续把 ICM 写成 partner integration，而不是通用平台 API。研究侧，CHI 2026 的 Android fingerprinting developer study 说明平台限制并不会自动消灭 SDK 指纹风险，开发者更关心合规与 enforcement。因此本文新增 `MeasurementConformanceProfile`：把 Profile A/B/C/D、第三方库选择、MMP/SRN 合同、敏感信号 policy、request-level optimization、aggregate DP、fallback 与上线门禁写成一个可审计对象，避免每个团队口头声明“我们实现了 RFC”，但实际只实现了其中一小段。
+
+2026-05-19 的复查把隐私边界从“单个子协议安全”推进到“端到端 composition 可解释”。PoPETs 2026 的 private advertising 系统化研究提醒：targeting、engagement、attribution、reporting 各自合理的 privacy notion 并不会自动组合成一个自然的端到端隐私保证，而且有用的广告系统本身会通过 market research 泄露一些信息。W3C Attribution Level 1 `2026-05-14` Working Draft 也明确把 side-channel 风险、privacy budget store、aggregation service 和 DP release 写进核心流程。产品侧，Google ICM 继续要求 S2S 集成把 on-device measurement `info` string 传给 AAP；Adjust ODM 文档进一步把“尽早捕获 app launch time”写成 attribution 准确性的关键要求。本文因此新增 `LaunchClockEvidenceRecord` 与 `EcosystemPrivacyCompositionRecord`：前者把 boot time / launch time 从“可疑指纹材料”约束成短期、可派生、可审计的 clock evidence；后者把 MMP Ask/Claim/Confirm、AAP event-level reporting、Ad Network request-level optimization 和 aggregate release 放在同一张 composition 风险表里，避免把局部隐私声明误读为端到端 DP。
+
 本文刻意兼顾生产实用性：
 
 - 不使用 toy 算法替代生产组件；
@@ -56,7 +60,7 @@
 - 如果你要实现或调 SDK，重点读 `7.4`、`8`、`9`、`17A`、`17B`。
 - 如果你要做优化训练，重点读 `8.8`、`8.14-8.17A`、`9.14`、`9.17`、`12`。
 - 如果你要追端侧敏感 PII 如何变成可用优化信号，重点读 `8.2A-8.2B`、`9.1B-9.1C`、`10`。
-- 如果你要评估上线 trade-off，重点读 `8.2A`、`8.26`、`9.1B`、`9.18`、`15.4`。
+- 如果你要评估上线 trade-off，重点读 `8.2A`、`8.26-8.29`、`9.18-9.21`、`15.4-15.6`。
 
 第一次阅读时可以先跳过大段 schema。schema 的作用是把边界写死，不是让人从字段定义开始理解系统。
 
@@ -181,6 +185,9 @@ MMP SDK Ask
 | 端侧敏感信号要有 release policy，而不是靠字段名约定 | 2026 的移动位置 / 传感器 / TCF 研究共同说明，`ip`、boot time、location-like signal、AAID 这类字段的业务价值与隐私风险都强依赖采集点、consent、cold-start 阶段和 release surface；因此需要把 raw TTL、bucketization、MMP 可见性和 trainer 可见性写成协议对象 | 8.2A、9.1B、10、20.27 |
 | 敏感信号还需要逐事件 derivation record，而不只是全局 policy | Google Ads ODM 文档明确 event-data 路径会使用从 IP / timestamp 等设备信号派生的临时数据；AAP 文档又要求 consent 先于 conversion/referrer 发送。生产上必须记录每次事件实际用了哪些 policy、输出了哪些派生桶、是否允许 MMP / trainer 可见 | 8.2B、9.1C、10、20.28 |
 | 隐私增强方案必须量化 utility / latency / adoption trade-off | 2026-05 PNAS field experiment 和 Privacy-Enhanced Retargeting 实验说明，Privacy Sandbox 类方案的广告效果不是常数，受 adoption、latency、供应侧覆盖和成本分母影响；RFC 需要记录实验设计和业务指标，而不是只记录 privacy profile | 8.26、9.18、15.4、20.27 |
+| RFC 合规性需要一个可审计对象，而不是口头声明 | W3C / ICM / AAP 资料共同说明 measurement 已经是多 surface、多 partner、多 policy 的系统；CHI 2026 Android fingerprinting developer study 又说明平台限制需要 enforcement。实现方应声明具体 profile、必选对象、库栈、fallback、禁止字段和上线门禁 | 8.27、9.19、15.5、20.29 |
+| launch time / clock evidence 要单独建模，不能把 boot time 当普通特征 | Adjust ODM 文档把 app launch time 的早期捕获写成 attribution 准确性的关键因素；W3C Attribution Level 1 又提醒 timing / shared resource side-channel 会泄露 budget、match 或 conversion value 状态。RFC 需要同时记录准确性证据和 side-channel 缓解 | 8.28、9.20、15.6、20.30 |
+| 端到端隐私需要 composition record，而不是拼接局部隐私声明 | PoPETs 2026 private advertising 研究说明广告生态里 targeting、engagement、attribution、reporting 的局部隐私保证不自动组合，且有用广告系统存在不可避免的信息泄露；因此必须把 MMP、AAP、optimization、aggregate release 的残余泄露和上线 gate 写成同一对象 | 8.29、9.21、15.6、20.30 |
 | optimization training 的隐私 profile 必须显式区分 known / semi-sensitive / protected label | DP-SGD 在广告 CTR/CVR/conversion count 任务上可行，但广告数据稀疏且类别不平衡；semi-sensitive feature DP 给了比“全量 DP”或“只做 label DP”更贴近生产的折中 | 8.17A、9.17、12.3、20.21 |
 | MMP/AAP ICM 集成状态是协议输入，不是客服排障备注 | 2026-05-08 Singular 文档把 Google ICM 的 Android/iOS open beta、click-through-only、Kids apps、ODM timeout、`odm_error`、retention 和 consent mapping 写成正式接入规则 | 8.19、9.4C、11.5A、20.19 |
 | Cross-MMP ICM 不能被压成一个 `icm_enabled` 布尔值 | AppsFlyer / Singular / Branch / Airbridge / Kochava / Tenjin / Adjust 对 ICM 的描述共同显示：iOS 是 ODM / `odm_info` path，Android 多为 partner-config / API path；claim 语义是 non-deterministic / probabilistic / modeled，需要独立 waterfall tier | 8.19、11.5B、20.20 |
@@ -1704,6 +1711,137 @@ message MeasurementUtilityExperimentRecord {
 - `adoption_state` 是上线门槛之一。一个在 partial-supply beta 下有效或无效的结果，不能直接外推为全量生产判断。
 - `decision=ship_with_gate` 必须说明 gate，例如 region、MMP partner、SDK version、cold-start cohort 或 aggregate-only reporting。
 
+### 8.27 MeasurementConformanceProfile
+
+这个对象回答一个 RFC 实施中经常被忽略的问题：某个 app / advertiser / MMP / ad network 组合到底实现了哪一级能力。没有 conformance profile，团队很容易说“我们支持 on-device measurement”，但实际只支持 `odm_info` pass-through、没有 Confirm 后的 request-level label、没有 sensitive-signal derivation record，也没有 aggregate budget ledger。
+
+```proto
+message MeasurementConformanceProfile {
+  string conformance_profile_id = 1;
+  string measurement_task_id = 2;
+  string advertiser_id = 3;
+  string app_bundle = 4;
+  string platform = 5; // ios, android, cross_platform
+  string profile_level = 6; // PROFILE_A_MINIMUM, PROFILE_B_DEFAULT, PROFILE_C_CROSS_PARTY, PROFILE_D_FHE_HARDENED
+  string mmp_partner_id = 7;
+  string srn_contract_id = 8;
+  string sdk_compat_profile_id = 9;
+  string request_level_join_mode = 10; // server_request_id_internal_only, aggregate_only, disabled
+  bool request_level_optimization_enabled = 11;
+  string optimization_privacy_mode = 12; // no_dp_confidential, label_dp, semi_sensitive_dp, full_user_level_dp
+  string public_reporting_privacy_mode = 13; // thresholded_only, aggregate_dp, dap_vdaf_aligned
+  repeated string required_protocol_objects = 14;
+  repeated string required_policy_objects = 15;
+  repeated string prohibited_field_names = 16;
+  repeated string sensitive_signal_policy_ids = 17;
+  string training_privacy_policy_id = 18;
+  string aggregate_budget_scheduler_policy_id = 19;
+  string streaming_dp_plan_id = 20;
+  string utility_experiment_id = 21;
+  repeated string approved_library_profiles = 22; // protobuf_buf, circl_voprf, lightgbm, opendp, jax_privacy, openfhe
+  string crypto_suite_policy_id = 23;
+  string runtime_trace_requirement = 24; // required, sampled, disabled
+  string derivation_record_requirement = 25; // required, sampled, disabled
+  string fallback_policy_id = 26;
+  string rollout_gate = 27; // partner_beta, region_allowlist, sdk_version_gate, broad_rollout
+  string break_glass_policy_id = 28;
+  string conformance_test_suite_id = 29;
+  string audit_manifest_digest = 30;
+  int64 effective_from_ts_ms = 31;
+  int64 expires_ts_ms = 32;
+}
+```
+
+关键约束：
+
+- `profile_level=PROFILE_A_MINIMUM` 也必须包含 `claim_token` replay gate、`mmp_touch_token -> server_request_id` 内部 join、`TrainingPrivacyPolicy`、thresholded aggregate reporting 和 prohibited field manifest。否则它不是 minimum production。
+- `request_level_optimization_enabled=true` 时，`request_level_join_mode` 必须是 `server_request_id_internal_only`，且 `prohibited_field_names` 至少包含 `raw_ip`、`boot_time_ms`、`device_fp_hash`、`odm_info`、`claim_token`。
+- `public_reporting_privacy_mode=aggregate_dp` 或 `dap_vdaf_aligned` 时，必须引用 `aggregate_budget_scheduler_policy_id` 或 `streaming_dp_plan_id`；不能只写 `dp=true`。
+- `optimization_privacy_mode=no_dp_confidential` 可以用于 Phase 1，但 conformance profile 必须显式声明，不得把它包装成 full DP。
+- `runtime_trace_requirement=disabled` 只适用于离线研究或不可上线 profile；生产 ICM / ODM / AAP integration 至少应为 `sampled`，推荐 `required`。
+- `approved_library_profiles` 是工程约束，不是宣传材料。OPRF / VOPRF、DP、FHE、GBDT、causal calibration 都应优先使用成熟库或 audited implementation，不应自研 toy primitive。
+
+### 8.28 LaunchClockEvidenceRecord
+
+`boot_time`、app launch time、SDK init delay 都是双刃剑：它们能显著改善 install / first_open attribution 的时间对齐，也可能变成设备指纹或 timing side-channel。因此本文不建议把它们当普通特征写进训练表，而是单独建模为 launch / clock evidence。
+
+```proto
+message LaunchClockEvidenceRecord {
+  string launch_clock_evidence_id = 1;
+  string measurement_task_id = 2;
+  string platform = 3; // ios, android
+  string app_bundle = 4;
+  string sdk_instance_id = 5;
+  int64 server_request_id = 6; // Ad Network internal only
+  int64 app_process_start_wall_ts_ms = 7;
+  int64 sdk_init_wall_ts_ms = 8;
+  int64 first_open_event_wall_ts_ms = 9;
+  int64 monotonic_elapsed_ms_at_sdk_init = 10;
+  int64 monotonic_elapsed_ms_at_first_open = 11;
+  int64 sdk_init_delay_ms = 12;
+  string capture_point = 13; // didFinishLaunchingWithOptions, ContentProvider.onCreate, Activity.onCreate
+  string first_session_delay_state = 14; // inactive, active_waiting, active_released
+  string clock_quality_bucket = 15; // launch_0_250ms, launch_250_1000ms, delayed_gt_1000ms
+  string raw_boot_time_policy_id = 16;
+  bool raw_boot_time_collected = 17;
+  bool raw_boot_time_released = 18;
+  repeated string derived_clock_buckets = 19;
+  repeated string allowed_release_surfaces = 20; // device_derivation_only, runtime_trace, trainer_bucket
+  repeated string prohibited_release_surfaces = 21; // mmp_payload, claim_response, bi_raw_logs
+  string side_channel_mitigation = 22; // constant_path, sampled_trace, disabled
+  string consent_snapshot_id = 23;
+  string derivation_record_id = 24;
+  string trace_id = 25;
+  int64 record_created_ts_ms = 26;
+}
+```
+
+关键约束：
+
+- `raw_boot_time_released` 在生产 profile 中默认必须是 `false`。如果为了 OS / SDK 兼容需要临时采集 raw boot time，也只能在 SDK process 或 confidential derivation plane 内短 TTL 使用。
+- `clock_quality_bucket` 可以进入 optimization plane，但必须是粗粒度桶；不能把 `boot_time_ms`、`monotonic_elapsed_ms_at_*` 原值写入 `OptimizationTrainingRow`。
+- `capture_point` 和 `first_session_delay_state` 属于 integration health，不是用户特征。它们可用于解释 ODM / ICM 命中率下降，但不得直接成为 bidder 的用户级 targeting feature。
+- `side_channel_mitigation=disabled` 只适合离线诊断。生产路径至少要做到固定错误语义、稳定返回形态、采样 trace 和 forbidden-field scan。
+
+### 8.29 EcosystemPrivacyCompositionRecord
+
+这个对象回答 PoPETs 2026 private advertising 研究提出的核心问题：一个广告 measurement 系统不能只证明每个组件“看起来隐私”，还要说明这些组件组合后泄露了什么、哪些泄露是业务上不可避免的、哪些泄露被 gate 住了。
+
+```proto
+message EcosystemPrivacyCompositionRecord {
+  string composition_record_id = 1;
+  string measurement_task_id = 2;
+  string conformance_profile_id = 3;
+  string advertiser_id = 4;
+  string app_bundle = 5;
+  string mmp_partner_id = 6;
+  int64 advertiser_user_id = 7; // advertiser scoped; Protobuf JSON should encode int64 as string
+  int64 server_request_id = 8; // Ad Network internal only
+  string mmp_conversion_id = 9;
+  repeated string composed_surfaces = 10;
+  repeated string raw_sensitive_inputs = 11;
+  repeated string derived_sensitive_outputs = 12;
+  repeated string external_release_surfaces = 13;
+  repeated string internal_release_surfaces = 14;
+  repeated string residual_leakage_channels = 15;
+  repeated string non_composing_privacy_claims = 16;
+  repeated string required_gates = 17;
+  string composition_privacy_statement = 18; // contextual_scope_enforced, no_end_to_end_dp_claim
+  string optimization_release_mode = 19; // request_level_internal, aggregate_only, disabled
+  string public_reporting_mode = 20; // thresholded, aggregate_dp, dap_vdaf_aligned
+  string decision = 21; // ship_with_gates, aggregate_only, block
+  string reviewer = 22;
+  int64 created_ts_ms = 23;
+}
+```
+
+关键约束：
+
+- 只要同时启用 MMP/AAP reporting、SRN Confirm 和 Ad Network request-level optimization，就必须生成 `EcosystemPrivacyCompositionRecord`。
+- `non_composing_privacy_claims` 的作用是阻止误读。例如 “ODM keeps identifiable info on device”、“SRN yes/no is minimal”、“aggregate report has DP” 三句话都可能为真，但三者相加仍不等于 end-to-end DP。
+- `advertiser_user_id:int64` 如果存在，只能作为 advertiser-scoped 输入事实或 MMP 合同内字段；进入 Ad Network / SRN / trainer 前必须转成 task-scoped token、coarse bucket 或受控 label。
+- `decision=ship_with_gates` 必须指向具体 gate，例如 `clock_evidence_required`、`forbidden_field_scan`、`claim_token_replay_cache`、`aggregate_budget_scheduler` 或 `composition_review_required`。
+
 ## 9. Mock payload
 
 ### 9.1 广告请求
@@ -2997,6 +3135,226 @@ def handle_confirm(req):
 - 如果 `adoption_state=partner_beta`，结果只能支持 gated rollout，不能直接支持全量迁移。
 - 如果 cold-start cohort 收益明显、老用户 cohort 无收益，`DeviceSensitiveSignalPolicy.cold_start_gate` 应该收紧，而不是继续长期采集 location-like signal。
 
+### 9.19 conformance profile
+
+下面这条 mock 把前面所有对象收敛成一份实施声明。它适合进入 rollout review、partner certification、internal privacy review 和 incident response runbook。
+
+```json
+{
+  "conformance_profile_id": "conf_20260517_ios_icm_profile_b_v1",
+  "measurement_task_id": "icm_install_v3",
+  "advertiser_id": "120045",
+  "app_bundle": "com.example.game",
+  "platform": "ios",
+  "profile_level": "PROFILE_B_DEFAULT",
+  "mmp_partner_id": "appsflyer",
+  "srn_contract_id": "srn_ask_claim_confirm_v3_appsflyer_googleicm",
+  "sdk_compat_profile_id": "ios_odm_sdk_or_firebase_11_14_plus",
+  "request_level_join_mode": "server_request_id_internal_only",
+  "request_level_optimization_enabled": true,
+  "optimization_privacy_mode": "no_dp_confidential",
+  "public_reporting_privacy_mode": "aggregate_dp",
+  "required_protocol_objects": [
+    "AdRequestContext",
+    "DeviceSensitiveSignalPolicy",
+    "DeviceSensitiveSignalDerivationRecord",
+    "MmpAskRequest",
+    "ClaimResponse",
+    "MmpConfirmRequest",
+    "RequestScopedOptimizationLabel",
+    "AttributionHandshakeState",
+    "SdkMeasurementRuntimeTrace",
+    "TrainingPrivacyPolicy",
+    "AggregateBudgetSchedulerPolicy",
+    "MeasurementUtilityExperimentRecord"
+  ],
+  "required_policy_objects": [
+    "sens_sig_install_coldstart_v1",
+    "claim_policy_v5",
+    "retain_raw_1h_confidential_derived_30d",
+    "debug_no_raw_sensitive_v2",
+    "budget_sched_w3c_attr_v1"
+  ],
+  "prohibited_field_names": [
+    "raw_ip",
+    "boot_time_ms",
+    "device_fp_hash",
+    "oprf_input",
+    "oprf_output",
+    "odm_info",
+    "claim_token",
+    "raw_attestation_token"
+  ],
+  "sensitive_signal_policy_ids": [
+    "sens_sig_install_coldstart_v1"
+  ],
+  "training_privacy_policy_id": "tpp_no_dp_baseline_block_raw_pii_v1",
+  "aggregate_budget_scheduler_policy_id": "budget_sched_w3c_attr_v1",
+  "streaming_dp_plan_id": "sdp_20260510_install_daily_v1",
+  "utility_experiment_id": "mue_20260514_icm_odm_coldstart_us_ios_v1",
+  "approved_library_profiles": [
+    "protobuf_buf_schema_v2",
+    "cloudflare_circl_voprf_or_equivalent_audited",
+    "lightgbm_request_level_baseline",
+    "opendp_or_google_dp_aggregate_release",
+    "dp_auditorium_release_gate"
+  ],
+  "crypto_suite_policy_id": "voprf_rfc9497_p256_sha256_epoch_weekly_v1",
+  "runtime_trace_requirement": "required",
+  "derivation_record_requirement": "required",
+  "fallback_policy_id": "fallback_partner_compat_no_training_raw_pii_v1",
+  "rollout_gate": "partner_beta",
+  "break_glass_policy_id": "support_grant_rotate_debug_keys_v2",
+  "conformance_test_suite_id": "odm_rfc_conformance_ios_v20260517",
+  "audit_manifest_digest": "sha256:8f9f84b8a1d7c3e0...",
+  "effective_from_ts_ms": 1778976000000,
+  "expires_ts_ms": 1781568000000
+}
+```
+
+这条声明的重点不是“我们实现了所有最强隐私技术”，而是把生产事实说清楚：
+
+- request-level optimization 已启用，但 join key 只在 Ad Network 内部。
+- optimization plane 目前是 `no_dp_confidential`，不是严格 DP。
+- 对外 aggregate reporting 已要求 budget scheduler / streaming DP plan。
+- iOS ICM / ODM 的 SDK、runtime trace、`odm_info` 缺失原因和 fallback 都被纳入审计。
+- 禁止字段列表可被 conformance test 自动扫描，避免 raw PII 通过日志、训练样本或 partner compat 表外流。
+
+### 9.20 launch / clock evidence
+
+下面这条 mock 展示如何把 `boot_time` 与 app launch time 纳入 attribution 准确性证据，同时不把它们变成 MMP 或 trainer 可见的 raw fingerprinting material。
+
+```json
+{
+  "launch_clock_evidence_id": "lce_20260519_ios_install_000001",
+  "measurement_task_id": "icm_install_v3",
+  "platform": "ios",
+  "app_bundle": "com.example.game",
+  "sdk_instance_id": "sdk_inst_9f21a4",
+  "server_request_id": "918273645546372819",
+  "app_process_start_wall_ts_ms": "1779206400112",
+  "sdk_init_wall_ts_ms": "1779206400264",
+  "first_open_event_wall_ts_ms": "1779206401198",
+  "monotonic_elapsed_ms_at_sdk_init": "184",
+  "monotonic_elapsed_ms_at_first_open": "1118",
+  "sdk_init_delay_ms": "152",
+  "capture_point": "didFinishLaunchingWithOptions",
+  "first_session_delay_state": "inactive",
+  "clock_quality_bucket": "launch_0_250ms",
+  "raw_boot_time_policy_id": "sens_sig_boot_time_no_release_v1",
+  "raw_boot_time_collected": true,
+  "raw_boot_time_released": false,
+  "derived_clock_buckets": [
+    "launch_0_250ms",
+    "first_open_1s_bucket",
+    "timezone_offset_-0700"
+  ],
+  "allowed_release_surfaces": [
+    "device_derivation_only",
+    "runtime_trace_sampled",
+    "trainer_bucket_clock_quality"
+  ],
+  "prohibited_release_surfaces": [
+    "mmp_payload",
+    "claim_response",
+    "bi_raw_logs"
+  ],
+  "side_channel_mitigation": "constant_path",
+  "consent_snapshot_id": "consent_eea_not_applicable_us_ca_v3",
+  "derivation_record_id": "dsdr_20260519_ios_install_000001",
+  "trace_id": "trace_odm_20260519_001",
+  "record_created_ts_ms": "1779206401308"
+}
+```
+
+注意：Protobuf JSON 里 `int64` 建议编码成字符串，避免 JS / BigQuery JSON 解析时丢精度。类型契约仍然是 `int64`。
+
+### 9.21 ecosystem privacy composition record
+
+下面这条 mock 把 advertiser app、MMP/AAP、SRN、Ad Network optimization 和 aggregate reporting 放到同一张端到端风险表里。它不是一个新的归因 API，而是 rollout review / privacy review / incident response 都能消费的审计对象。
+
+```json
+{
+  "composition_record_id": "ecr_20260519_ios_icm_profile_b_v1",
+  "measurement_task_id": "icm_purchase_v4",
+  "conformance_profile_id": "conf_20260517_ios_icm_profile_b_v1",
+  "advertiser_id": "120045",
+  "app_bundle": "com.example.game",
+  "mmp_partner_id": "appsflyer",
+  "advertiser_user_id": "48293102736498123",
+  "server_request_id": "918273645546372819",
+  "mmp_conversion_id": "conv_af_20260519_000019",
+  "composed_surfaces": [
+    "adnetwork_sdk_observation",
+    "google_odm_info_string",
+    "mmp_ask",
+    "adnetwork_claim",
+    "mmp_confirm",
+    "request_scoped_optimization_label",
+    "aggregate_dp_report"
+  ],
+  "raw_sensitive_inputs": [
+    "advertiser_user_id_int64",
+    "raw_ip",
+    "boot_time_ms",
+    "app_launch_wall_ts_ms",
+    "install_referrer_hint"
+  ],
+  "derived_sensitive_outputs": [
+    "task_scoped_user_token",
+    "ip_geo_country_us",
+    "launch_clock_quality_launch_0_250ms",
+    "odm_event_data_ephemeral",
+    "purchase_value_bucket_50_100"
+  ],
+  "external_release_surfaces": [
+    "mmp_touch_token",
+    "claim_token",
+    "creative_ref",
+    "odm_info_to_aap_s2s",
+    "aggregate_report_campaign_day"
+  ],
+  "internal_release_surfaces": [
+    "server_request_id",
+    "RequestScopedOptimizationLabel",
+    "OptimizationTrainingRow.feature_buckets",
+    "fraud_quality_bucket"
+  ],
+  "residual_leakage_channels": [
+    "mmp_observes_winner_network",
+    "aap_event_level_icm_reporting",
+    "creative_level_reporting",
+    "launch_clock_quality_bucket",
+    "aggregate_release_repetition"
+  ],
+  "non_composing_privacy_claims": [
+    "odm_keeps_identifiable_info_on_device",
+    "srn_claim_response_is_yes_no_or_scoped_token",
+    "public_aggregate_report_uses_dp_budget"
+  ],
+  "required_gates": [
+    "clock_evidence_required",
+    "forbidden_field_scan",
+    "claim_token_replay_cache",
+    "aggregate_budget_scheduler",
+    "composition_review_required"
+  ],
+  "composition_privacy_statement": "contextual_scope_enforced_no_end_to_end_dp_claim",
+  "optimization_release_mode": "request_level_internal",
+  "public_reporting_mode": "aggregate_dp",
+  "decision": "ship_with_gates",
+  "reviewer": "privacy-ads-measurement-review",
+  "created_ts_ms": "1779206410000"
+}
+```
+
+这条记录刻意把 `advertiser_user_id:int64`、`server_request_id:int64` 和 `raw_ip` 放在同一个 mock 里，是为了说明类型和边界，而不是建议把它们合并成一个万能 user row。实际生产中：
+
+- `advertiser_user_id` 只能在 advertiser / MMP 合同允许的范围内使用；进入 Ad Network 前应变成 task-scoped token 或 aggregate feature。
+- `server_request_id` 只能留在 Ad Network 内部，用于 Confirm 后恢复 request-level label。
+- `raw_ip` 与 `boot_time_ms` 只能用于端侧或 confidential derivation，不能进入 MMP payload、普通日志或 trainer raw feature。
+- `residual_leakage_channels` 必须被承认和 gate，而不是用 “privacy-preserving” 一句话盖掉。
+
 ## 10. 敏感 PII 如何流动
 
 ### 10.1 原则
@@ -3938,6 +4296,55 @@ device attestation 的目标是证明 touchpoint 环境更可信，而不是建�
 - 对 location-like / IP-derived signal，若收益只集中在 cold-start cohort，应收紧 `DeviceSensitiveSignalPolicy.cold_start_gate`。
 - 若为了业务可用性决定 Phase 1 不上 DP，必须在 `TrainingPrivacyPolicy.privacy_profile=NO_DP_BASELINE` 和 release note 中明确；不能对外声称 DP。
 
+### 15.5 RFC conformance gates
+
+为了让本文真正像 RFC，而不是架构白皮书，生产上线前建议按下面的 gate 判定实现是否合格。
+
+`MUST` gate：
+
+- 有 `MeasurementConformanceProfile`，且能指向具体 `measurement_task_id`、MMP partner、SDK compat profile、training privacy policy、aggregate budget policy。
+- `ClaimResponse` 与 `MmpConfirmRequest` 有短 TTL、single-use `claim_token`、idempotency key 和 replay cache。
+- `server_request_id` 只在 Ad Network 内部 / confidential plane / optimization label 中出现，不进入 MMP payload 或普通 BI 明细。
+- `raw_ip`、`boot_time_ms`、`device_fp_hash`、OPRF input/output、`odm_info`、`claim_token` 不进入 `OptimizationTrainingRow`。
+- 端侧敏感信号有 `DeviceSensitiveSignalPolicy` 与 `DeviceSensitiveSignalDerivationRecord`；没有 policy 的 raw signal 不采集、不派生、不上报。
+- 如果对外宣称 DP aggregate release，必须有 `StreamingDpReleasePlan` 或 `AggregateBudgetSchedulerPolicy`；否则只能称为 thresholded / non-DP operational reporting。
+
+`SHOULD` gate：
+
+- OPRF / VOPRF、DP、FHE、PJC、GBDT / DP training 均使用成熟第三方库或 audited implementation，并记录在 `approved_library_profiles`。
+- 每个新 privacy profile 上线前有 `MeasurementUtilityExperimentRecord`，至少记录 adoption、latency、observability、ROAS / CPA、fallback decision。
+- MMP / AAP / ICM 集成保留 `SdkMeasurementRuntimeTrace`，把 SDK 缺失、region ineligible、consent disabled、S2S path ineligible、`odm_error` 与 attribution negative 区分开。
+- 对广告媒体侧 touchpoint，若 surface 支持 OM SDK / Privacy Pass-style attestation，应把 attestation 作为 fraud quality bucket，而不是自研设备指纹。
+
+`MAY` gate：
+
+- Phase 1 可以不上 optimization DP，但必须标成 `optimization_privacy_mode=no_dp_confidential`。
+- Phase 1 可以先不部署完整 DAP / VDAF collector，但 aggregate object model 应保留 report / batch / budget / replay lifecycle。
+- Phase 1 可以用 LightGBM / XGBoost baseline，不必直接上 DP-SGD；但特征 sensitivity manifest 和 prohibited raw fields 必须先固定。
+
+### 15.6 composition 与 clock evidence gates
+
+`MeasurementConformanceProfile` 说明“实现到了哪一级”；`EcosystemPrivacyCompositionRecord` 说明“这些实现组合后还泄露什么”。两者都要有，否则上线 review 很容易把局部正确误读为整体正确。
+
+`MUST` gate：
+
+- Profile B 及以上只要启用 MMP/AAP reporting、SRN Confirm 和 request-level optimization，就必须生成 `EcosystemPrivacyCompositionRecord`。
+- 任何 `boot_time`、launch time、SDK init delay 或 IP-derived feature 都必须能追到 `DeviceSensitiveSignalDerivationRecord`；涉及 launch / clock 的还必须能追到 `LaunchClockEvidenceRecord`。
+- `raw_boot_time_released` 必须为 `false`，除非是明确标注为离线法务/安全调查的 break-glass profile。
+- 对外声明必须按 surface 写清楚：MMP payload、AAP ICM reporting、Ad Network trainer、aggregate report 分别有什么保护；不得把局部 DP 或局部 on-device 处理宣传成端到端 DP。
+- SDK / API 路径不得通过返回值、异常、耗时、日志量或重试语义泄露 “是否命中 attribution”、“budget 是否耗尽” 或 “conversion value 是否非零”。
+
+`SHOULD` gate：
+
+- Protobuf JSON 中的 `int64` 字段使用字符串编码，避免 `advertiser_user_id`、`server_request_id` 在 JS / warehouse JSON pipeline 里丢精度。
+- `residual_leakage_channels` 应进入 privacy review 和 experiment readout；例如 MMP 观察 winner network、AAP event-level ICM、creative-level reporting 和 aggregate 重复 release。
+- 对 launch / clock evidence，推荐只把粗桶进入 trainer，例如 `launch_0_250ms`，不要把毫秒级 monotonic clock 当作模型特征。
+
+`MAY` gate：
+
+- Phase 1 可以声明 `composition_privacy_statement=contextual_scope_enforced_no_end_to_end_dp_claim`，不必强行证明端到端 DP。
+- 低量级 campaign 可以先只启用 aggregate / thresholded reporting，把 request-level optimization gate 在高量级、可审计 cohort 中。
+
 ## 16. 生产实现建议
 
 ### 16.1 端上 / SDK
@@ -4002,6 +4409,24 @@ iOS optional SDK 的推荐实现：
 ### 16.6 跨方 reconciliation
 
 如果未来要做 advertiser / publisher / network 的隐私保护对账，优先考虑 [Private Join and Compute](https://github.com/google/private-join-and-compute)，而不是回退到交换原始 user-level 明细。
+
+### 16.7 conformance test suite
+
+建议把 RFC 验收做成自动化测试，而不是靠人工 review 文档。最低测试集应包括：
+
+- schema lint：`Protobuf + buf` 校验字段类型、保留字段、向后兼容。
+- forbidden-field scan：扫描 MMP payload、debug trace、trainer row、BI 明细，确保没有 `raw_ip`、`boot_time_ms`、`device_fp_hash`、OPRF material、`odm_info`、`claim_token`。
+- token replay test：同一 `claim_token` 重放 Confirm 必须失败；过期 token 必须失败。
+- token-to-request join test：MMP 只能回传 `mmp_touch_token` 或 opaque handle，服务端只能在 Confirm 后恢复 `server_request_id`。
+- policy coverage test：任何 `derived_feature_buckets` 都必须能追到 `DeviceSensitiveSignalPolicy`、`DeviceSensitiveSignalDerivationRecord` 和 `feature_policy_id`。
+- launch-clock evidence test：任何 `boot_time`、app launch time 或 SDK init delay 派生桶都必须能追到 `LaunchClockEvidenceRecord`，且 raw clock 不进入 MMP payload / trainer raw feature。
+- composition leak test：同一 `advertiser_user_id`、`server_request_id`、`claim_token` 或 `odm_info` 不得同时出现在 MMP payload、optimization raw feature 和 aggregate release 明细中。
+- side-channel regression test：hit / miss / budget exhausted / consent disabled 路径的返回形态、错误码、日志量和粗粒度耗时必须保持稳定。
+- aggregate budget test：DP / thresholded report 必须有 report、batch、collector、budget、replay lifecycle。
+- partner ineligibility test：SDK missing、region ineligible、consent disabled、S2S ineligible 必须落到 runtime trace，不能写成 attribution negative。
+- training manifest test：训练作业必须消费 `TrainingPrivacyPolicy`，并拒绝 prohibited raw feature。
+
+这些测试不保证系统“绝对隐私”，但能保证实现没有偏离 RFC 的主要边界：MMP 看不到 `req_id`，trainer 看不到 raw PII，对外 release 有预算和 replay 语义。
 
 ## 17. Deployment Profiles
 
@@ -5988,6 +6413,47 @@ Config 下发上下文
 3. `raw_ip`、`boot_time_ms`、`ip_prefix`、OPRF input/output、`device_fp_hash` 继续不得进入 MMP、普通日志或 trainer raw feature。
 4. Phase 1 可以放松 DP：request-level optimization label 可先留在 Ad Network 受控边界，公开 reporting 和跨方分析走 aggregate / threshold / optional-DP。但如果没有 DP，就必须在 `privacy_profile`、`formal_budget_model` 和上线实验记录里诚实标注，不能宣传为严格 DP。
 
+### 20.29 截至 2026-05-17 的最新 delta：从 schema RFC 推进到 conformance RFC
+
+本次复查没有发现需要改变 `MMP Ask -> Ad Network Claim -> MMP Confirm -> server_request_id label release` 的新证据。新增判断是：这份文档已经不能只停在“定义了很多对象”，还要要求实现方声明自己到底实现了哪一级能力。
+
+第一，[W3C Standards and Drafts Index](https://www.w3.org/TR/?status%5B0%5D=draftStandard) 仍显示 `Attribution Level 1` 最新公开草案日期为 `2026-05-14`，文档本身仍声明它是 Working Draft。对 RFC 的含义是：公开 reporting plane 可以继续跟 W3C / DAP / VDAF 的 aggregate、anti-replay、privacy budget 语义对齐，但不应把仍在变化的平台 draft 当作唯一生产依赖。
+
+第二，[Google Ads ICM 官方说明](https://support.google.com/google-ads/answer/16203286?hl=en-EN) 继续把 ICM 定位为通过第三方 App Attribution Partner interface 提供更实时、事件级 reporting 的方案，并明确 S2S 集成需要把 on-device measurement `info` string 传给 AAP。这支持本文把 ICM / ODM 建模为 partner compatibility surface：它能提高 MMP/AAP 报告可见性，但仍不替代 Ad Network 内部 `server_request_id` 优化闭环。
+
+第三，[AppsFlyer ICM bulletin](https://support.appsflyer.com/hc/en-us/articles/37857301293457-Bulletin-AppsFlyer-and-Google-attribution-solution-Open-BETA) 与 [Adjust Google ODM developer guide](https://dev.adjust.com/en/sdk/ios/plugins/google-odm/) 继续把 Google ODM / ICM 写成 SDK / AAP 集成问题：iOS 需要 Firebase 或 Google ODM SDK，Android 更偏 partner-managed path。这支持 `SdkMeasurementRuntimeTrace` 和 `MeasurementConformanceProfile`：`icm_enabled=true` 不是合规声明，必须写清 SDK、partner、region、consent、S2S fallback 和 `odm_info` 缺失语义。
+
+第四，[Uncovering Relationships between Android Developers, User Privacy, and Developer Willingness to Reduce Fingerprinting Risks](https://research.google/pubs/uncovering-relationships-between-android-developers-user-privacy-and-developer-willingness-to-reduce-fingerprinting-risks/)（CHI 2026）提醒一个工程现实：平台限制和开发者善意不足以自动消灭 fingerprinting 风险，真正需要 enforcement、合规可解释性和可执行的 developer workflow。对本文的直接影响是：`DeviceSensitiveSignalPolicy`、`DeviceSensitiveSignalDerivationRecord`、debug-log policy、forbidden-field scan 和 conformance test suite 必须成为上线门槛。
+
+落地结论：
+
+1. 新增 `MeasurementConformanceProfile`，把 Profile A/B/C/D、MMP/SRN 合同、第三方库、敏感信号 policy、DP / non-DP 状态、fallback 和测试套件写成正式对象。
+2. 新增 `9.19 conformance profile` mock，让广告主 app + MMP + Ad Network 的具体组合能声明“支持什么、不支持什么、哪里放松、哪里必须收紧”。
+3. 新增 `15.5 RFC conformance gates` 与 `16.7 conformance test suite`，把 forbidden field、token replay、policy coverage、budget lifecycle 和 training manifest 做成可自动检查的验收项。
+4. Phase 1 继续可以不对 request-level optimization 上 DP，但必须在 conformance profile 里标成 `no_dp_confidential`；只有 aggregate plane 有正式 budget / DP 计划时，才能对外宣称 DP aggregate reporting。
+
+### 20.30 截至 2026-05-19 的最新 delta：composition 与 launch-clock evidence
+
+本次复查没有改变主链路，但把两个之前容易被低估的生产问题补成协议对象：端到端 privacy composition，以及 launch / clock evidence。
+
+第一，[W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 最新公开版本是 `2026-05-14` Working Draft。文档继续把广告测量建模为 user-agent 侧保存 impression、conversion 时产生 encrypted histogram contribution、aggregation service 做 anti-replay 和 DP aggregate release；同时在 security considerations 中明确提醒 timing、shared memory/storage/network/CPU、global budget lock 等 side-channel 风险。对本文的影响是：端侧 Ask / PSM / Claim 路径不能只保证“字段没泄露”，还要避免从返回值、异常、耗时和日志量泄露 hit/miss、budget exhausted 或非零 conversion value。
+
+第二，[Making Sense of Private Advertising: A Principled Approach to a Complex Ecosystem](https://petsymposium.org/popets/2026/popets-2026-0023.php)（PoPETs 2026）把 private advertising 的问题从单个协议提升到 ecosystem composition：targeting、engagement metrics、attribution、reporting 分别设计出的 privacy notion 不会自动组合成一个自然的整体隐私保证；只要广告系统还支持 market research，某些信息泄露就是系统效用的一部分。对本文的影响是：不能把 “ODM keeps identifiable info on device” + “SRN yes/no claim” + “aggregate report has DP” 相加后宣称端到端 DP。本文因此新增 `EcosystemPrivacyCompositionRecord`，要求显式列出 composed surfaces、raw sensitive inputs、external/internal release surfaces、residual leakage channels 和上线 gate。
+
+第三，[Google Ads ICM 官方说明](https://support.google.com/google-ads/answer/16203286?hl=en-EN) 仍把 ICM 定位为 AAP interface 中更实时、事件级的 cross-channel attribution，并要求 S2S 集成把 on-device measurement `info` string 传给 AAP。这继续支持本文的边界：AAP / MMP reporting 是 partner compatibility surface，不是 Ad Network 内部 `server_request_id` 优化闭环的替代品；`odm_info` 可以在合约路径内传递，但不能进入 trainer raw feature。
+
+第四，[Adjust Google ODM developer guide](https://dev.adjust.com/en/sdk/ios/plugins/google-odm/) 进一步把生产细节写实：Adjust SDK `5.4.1` 起支持 ODM plugin；如果 app 已使用 Firebase iOS SDK `11.14.0+`，`GoogleAdsOnDeviceConversion` 依赖会由 Firebase Analytics pod 带入；否则可显式加入 `GoogleAdsOnDeviceConversion`；并且准确归因的关键之一是尽可能早地捕获 app launch time。对本文的影响是：`boot_time` / launch time 既不是普通训练特征，也不是必须完全丢弃的信号，而应进入 `LaunchClockEvidenceRecord`，用粗桶供 attribution health / optimization weighting 使用，raw 值不释放给 MMP、普通日志或 trainer。
+
+第五，[A Hardware-Anchored Privacy Middleware for PII Sharing Across Heterogeneous Embedded Consumer Devices](https://research.google/pubs/a-hardware-anchored-privacy-middleware-for-pii-sharing-across-heterogeneous-embedded-consumer-devices/) 虽然不是广告 measurement 论文，但它提出的 Contextual Scope Enforcement 对本文有直接工程启发：PII 能否释放不能只看字段名，还要看用户意图、workflow context 和接收方 scope。本文把这个思想落到 `DeviceSensitiveSignalPolicy`、`LaunchClockEvidenceRecord` 和 `EcosystemPrivacyCompositionRecord`：同一个 `advertiser_user_id:int64`、`raw_ip` 或 `boot_time_ms` 在 advertiser app、MMP/AAP、Ad Network trainer、aggregate report 中的合法状态不同，必须由协议对象显式声明。
+
+落地结论：
+
+1. 新增 `LaunchClockEvidenceRecord`，把 app launch time、SDK init delay、monotonic clock 和 raw boot time 的采集、分桶、release surface 与 side-channel mitigation 写清楚。
+2. 新增 `EcosystemPrivacyCompositionRecord`，把 advertiser user id、`server_request_id`、`raw_ip`、`boot_time_ms`、`odm_info`、MMP winner、request-level label 和 aggregate release 放进同一张端到端 composition 风险表。
+3. 新增 `9.20` 与 `9.21` mock payload，明确 `advertiser_user_id:int64` 在 Protobuf JSON 中建议编码成字符串，但类型契约仍是 int64；同时说明它不能和 `server_request_id` 合成万能 user row。
+4. 新增 `15.6 composition 与 clock evidence gates`，要求 Profile B+ 在启用 MMP/AAP + SRN Confirm + request-level optimization 时必须产出 composition record。
+5. 更新 `16.7 conformance test suite`，加入 launch-clock evidence、composition leak 与 side-channel regression 测试。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -6026,6 +6492,10 @@ Config 下发上下文
 32. [The TCF doesn't really A(A)ID -- Automatic Privacy Analysis and Legal Compliance of TCF-based Android Applications](https://arxiv.org/abs/2602.20222)
 33. [Blind Targeting: Personalization under Third-Party Privacy Constraints](https://arxiv.org/abs/2507.05175)
 34. [Privacy Preserving Conversion Modeling in Data Clean Room](https://arxiv.org/abs/2505.14959)
+35. [Uncovering Relationships between Android Developers, User Privacy, and Developer Willingness to Reduce Fingerprinting Risks](https://research.google/pubs/uncovering-relationships-between-android-developers-user-privacy-and-developer-willingness-to-reduce-fingerprinting-risks/)
+36. [Making Sense of Private Advertising: A Principled Approach to a Complex Ecosystem](https://petsymposium.org/popets/2026/popets-2026-0023.php)
+37. [Cookie Monster: Efficient On-device Budgeting for Differentially-Private Ad-Measurement Systems](https://arxiv.org/abs/2405.16719)
+38. [A Hardware-Anchored Privacy Middleware for PII Sharing Across Heterogeneous Embedded Consumer Devices](https://research.google/pubs/a-hardware-anchored-privacy-middleware-for-pii-sharing-across-heterogeneous-embedded-consumer-devices/)
 
 ### 21.2 Standards
 
@@ -6079,6 +6549,7 @@ Config 下发上下文
 29. [Google Ads Help: About Integrated Conversion Measurement for App Campaigns](https://support.google.com/google-ads/answer/16203286?hl=en-EN)
 30. [Apple Developer: Measuring ad performance with AdAttributionKit](https://developer.apple.com/app-store/ad-attribution/)
 31. [AppsFlyer: Privacy-preserving campaign measurement](https://support.appsflyer.com/hc/en-us/articles/20489739742609-Privacy-preserving-campaign-measurement)
+32. [Adjust Developer Hub: Google On-device Conversion Measurement](https://dev.adjust.com/en/sdk/ios/plugins/google-odm/)
 
 ### 21.4 Engineering Components
 
