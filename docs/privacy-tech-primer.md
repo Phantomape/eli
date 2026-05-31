@@ -3175,6 +3175,1078 @@ collector 最终拿到的是聚合输出：
 - privacy boundary 来自 client-side sharing、non-colluding aggregators、VDAF 验证、batch threshold 和聚合发布
 - 如果产品需要按用户回查、低阈值分群、任意 join 或 request-level 优化，DAP 通常不是单独答案，需要 clean room、PSI/PJC、TEE 或内部受控日志配合
 
+### 16B.31 Privacy-Preserving RAG / 端到端私密检索增强生成的 Mock Data
+
+2026 年的 RAG 隐私研究开始把问题从“不要把文档拿去训练模型”推进到“检索、排序、提示词组装和生成输出这条链路都可能泄露”。`PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation` 给出的信号很清晰：如果敏感文档和用户 query 都在云上 RAG 里明文出现，单靠访问控制或“不训练”并不够。
+
+一个企业私密 RAG 的原始输入可以这样理解：
+
+```json
+{
+  "private_query": {
+    "request_id": "rag_2026_05_20_001",
+    "employee_id": "u_38192",
+    "question": "Q2 acquisition contract里的termination fee是多少？"
+  },
+  "private_document_chunk": {
+    "doc_id": "legal_mna_2026_q2_v4",
+    "chunk_id": "c_0091",
+    "text": "The termination fee is 3.2% of enterprise value ...",
+    "classification": "legal_confidential"
+  }
+}
+```
+
+隐私增强后的执行记录不应该把 query、chunk text、embedding 全部交给普通云端服务：
+
+```json
+{
+  "privacy_preserving_rag_run": {
+    "request_id": "rag_2026_05_20_001",
+    "retrieval_mode": "encrypted_or_homomorphic_friendly",
+    "query_visible_to_cloud": false,
+    "document_text_visible_to_cloud": false,
+    "ranking_stabilizer": "operation_error_estimation",
+    "client_assisted_rerank": true
+  },
+  "retrieval_result": {
+    "top_k": 4,
+    "returned_to_trusted_client": [
+      {
+        "doc_id": "legal_mna_2026_q2_v4",
+        "chunk_id": "c_0091",
+        "score_bucket": "top_1"
+      }
+    ]
+  },
+  "generation_controls": {
+    "llm_context_scope": "only_authorized_chunks",
+    "raw_chunk_logging": false,
+    "answer_release_policy": "citation_required"
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- RAG 的隐私边界不是单点，而是 `query -> embedding -> retrieval -> ranking -> context -> answer -> logs`
+- 加密检索或 TEE 可以保护执行过程，但仍要控制最终答案、引用、日志和 prompt injection 风险
+- DP-RAG、encrypted RAG、TEE-RAG 解决的是不同层：DP 更偏输出保证，加密/TEE 更偏执行过程保密，企业系统通常需要组合
+
+### 16B.32 DP synthetic tabular data / 可生产化合成表数据的 Mock Data
+
+DP 合成数据最容易被误解成“生成一张看起来像真实数据的假表”。更工程化的理解是：它是一条从真实表到隐私预算、schema 约束、统计边际、质量验证、发布记录的管线。
+
+一个医疗或金融表的原始 schema 可以这样理解：
+
+```json
+{
+  "source_table": {
+    "table_id": "patient_outcomes_2026_q2",
+    "privacy_unit": "patient_id",
+    "row_count": 50274,
+    "columns": [
+      {"name": "age_band", "type": "category", "sensitive": true},
+      {"name": "diagnosis_icd10", "type": "category", "sensitive": true},
+      {"name": "lab_marker_bucket", "type": "category", "sensitive": true},
+      {"name": "followup_months", "type": "integer", "sensitive": false}
+    ]
+  },
+  "release_goal": {
+    "consumer": "external_research_team",
+    "allowed_use": "model_prototyping_and_cohort_feasibility",
+    "row_level_real_data_export": false
+  }
+}
+```
+
+生产化 DP synthetic pipeline 不应该只记录“用了 DP”，而要记录预算、约束和质量门槛：
+
+```json
+{
+  "dp_synthetic_release": {
+    "release_id": "syn_patient_outcomes_2026_05_22",
+    "mechanism_family": "marginal_based_dp_synthesis",
+    "epsilon": 1.0,
+    "delta": 0.000001,
+    "privacy_accountant": "central_dp_budget_ledger",
+    "training_backend": ["apache_beam", "spark"]
+  },
+  "schema_constraints": {
+    "valid_age_band_required": true,
+    "diagnosis_lab_marker_consistency_checks": true,
+    "rare_category_min_count_policy": "suppress_or_group_before_synthesis"
+  },
+  "quality_gates": {
+    "marginal_error_max": 0.04,
+    "downstream_auc_drop_max": 0.03,
+    "membership_inference_audit_required": true,
+    "domain_expert_review_required": true
+  },
+  "published_artifact": {
+    "format": "parquet",
+    "contains_real_rows": false,
+    "intended_for_production_decisions": false
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- 合成数据不天然隐私，必须说明是否有正式 DP 保证
+- 生产系统要同时管理 `privacy budget`、`schema validity`、`utility metrics`、`empirical privacy audit` 和 `release purpose`
+- 医疗、金融这类强约束表不能只看统计相似度，还要检查领域逻辑是否成立
+
+### 16B.33 MPC optimization / 时间受限多方优化的 Mock Data
+
+MPC 不只适合“求和”和“join 后聚合”。2026 年的一个研究方向是把 MPC 放进时间受限的分布式优化里：多方各自有私有约束和成本函数，希望共同找一个可行方案，但不想把内部偏好、容量、报价或资源约束交给中心方。
+
+一个简化的资源分配输入可以这样写：
+
+```json
+{
+  "optimization_task": {
+    "task_id": "joint_logistics_slot_assignment_2026_05",
+    "deadline_seconds": 120,
+    "objective": "minimize_total_delay_and_private_cost",
+    "participants": ["warehouse_a", "carrier_b", "retailer_c"]
+  },
+  "private_inputs": [
+    {
+      "party": "carrier_b",
+      "private_constraints": {
+        "max_trucks": 18,
+        "driver_hour_limit": "private",
+        "route_cost_curve": "private"
+      }
+    }
+  ]
+}
+```
+
+隐私增强后的执行记录更像一个 secure evaluation loop：
+
+```json
+{
+  "mpc_optimization_run": {
+    "candidate_generator": "evolutionary_algorithm",
+    "secure_evaluator": "mpc_cost_and_constraint_check",
+    "time_budget_seconds": 120,
+    "leakage_goal": "only_final_assignment_and_public_feasibility"
+  },
+  "secure_evaluation_round": {
+    "round": 14,
+    "candidate_solution_id": "cand_014_083",
+    "private_costs_revealed_to_coordinator": false,
+    "constraint_violations_revealed_per_party": false,
+    "aggregate_score_visible": true
+  },
+  "final_output": {
+    "assignment_id": "assign_2026_05_22_007",
+    "global_score_bucket": "acceptable",
+    "per_party_private_reasoning_exported": false
+  }
+}
+```
+
+这条 mock data 想说明：当 PET 进入运营优化、调度、供应链和能源场景时，隐私对象不一定是个人身份，也可能是企业的成本函数、容量边界和商业策略。
+
+### 16B.34 Agent memory privacy / 边缘-云 Agent 记忆管理的 Mock Data
+
+LLM agent 的隐私问题和传统 RAG 不完全一样。RAG 主要关心 query、文档、检索结果和 prompt context；agent memory 还会长期保存用户偏好、联系人、日程、地点、健康、财务、工作上下文等“可持续累积”的个人信息。2026 年的 `MemPrivacy` 这类研究把问题拆得更细：在边缘侧识别敏感 span，用结构化占位符保留语义，再让云侧 memory system 做检索、归纳和排序，最后只在本地恢复真实值。
+
+一个原始 agent memory event 可以这样理解：
+
+```json
+{
+  "raw_agent_event": {
+    "event_id": "agent_mem_2026_05_23_001",
+    "user_id": "u_18492",
+    "source": "mobile_assistant_chat",
+    "utterance": "下周二提醒我把Mayo Clinic的账单发给Sarah，金额是1840美元。",
+    "candidate_memory": {
+      "task_type": "bill_followup",
+      "person": "Sarah",
+      "organization": "Mayo Clinic",
+      "amount_usd": 1840,
+      "date": "2026-05-26"
+    }
+  }
+}
+```
+
+隐私增强后的 memory record 不应该把所有原始 span 直接交给云端长期保存：
+
+```json
+{
+  "edge_protected_memory_event": {
+    "event_id": "agent_mem_2026_05_23_001",
+    "edge_classifier_version": "privacy_span_tagger_v3",
+    "privacy_taxonomy": {
+      "person_name": "high",
+      "medical_org": "high",
+      "financial_amount": "high",
+      "date": "medium"
+    }
+  },
+  "cloud_memory_payload": {
+    "semantic_template": "remind_user_to_send_bill_to_<PERSON_1>_from_<ORG_1>_amount_<MONEY_1>_on_<DATE_1>",
+    "typed_placeholders": {
+      "<PERSON_1>": {"type": "person_name", "restored_only_on_device": true},
+      "<ORG_1>": {"type": "medical_org", "restored_only_on_device": true},
+      "<MONEY_1>": {"type": "financial_amount", "restored_only_on_device": true},
+      "<DATE_1>": {"type": "calendar_date", "restored_only_on_device": false}
+    },
+    "raw_utterance_logged_in_cloud": false
+  },
+  "local_restore_map": {
+    "storage": "device_secure_storage",
+    "ttl_days": 30,
+    "synced_to_cloud": false
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- agent memory 的隐私边界是 `capture -> span detection -> placeholder transformation -> cloud memory processing -> local restoration -> retention`
+- 简单 masking 会损害语义；typed placeholder 的价值是尽量保留任务结构，同时不暴露原始敏感值
+- 这不是正式 DP 保证，更像输入最小化和边缘侧 redaction；如果要发布跨用户趋势，仍需要 DP 或聚合阈值
+
+### 16B.35 Edge FL scheduling / 端侧联邦训练调度的 Mock Data
+
+边缘设备联邦学习的工程难点不只是“数据不出端”。如果设备电量低、网络差、训练时间长，系统会自动偏向高端设备和高活跃用户，既影响模型代表性，也可能形成新的隐私和公平性风险。近期研究开始把训练压缩、设备选择、能耗和隐私约束一起看。
+
+一个端侧训练候选记录可以这样理解：
+
+```json
+{
+  "federated_round": {
+    "round_id": "keyboard_next_word_2026_05_24_r18",
+    "target_clients": 50000,
+    "privacy_unit": "device"
+  },
+  "candidate_device_profile": {
+    "device_id": "local_only_device_token",
+    "battery_percent": 74,
+    "network": "wifi",
+    "local_examples": 128,
+    "sensitive_context_classes": ["health_query", "work_message"],
+    "recent_participation_count": 2
+  }
+}
+```
+
+生产系统里的调度输出应该同时看效用、设备负载和隐私预算：
+
+```json
+{
+  "client_selection_decision": {
+    "selected": true,
+    "selection_reason": "sufficient_battery_wifi_and_under_participation_cap",
+    "max_local_epochs": 1,
+    "secure_aggregation_required": true,
+    "dp_clipping_norm": 0.8,
+    "dp_noise_multiplier": 1.1
+  },
+  "upload_payload": {
+    "raw_examples_uploaded": false,
+    "model_update_encrypted_for_secure_aggregation": true,
+    "per_example_gradients_uploaded": false
+  },
+  "fairness_and_privacy_guards": {
+    "participation_cap_per_7_days": 3,
+    "small_cohort_training_blocked": true,
+    "device_class_balance_monitored": true
+  }
+}
+```
+
+这条 mock data 想说明：端侧 FL 的隐私不是一句“本地训练”就结束，还要管理 `client selection -> local training -> secure aggregation -> DP release -> participation accounting` 这条链路。
+
+### 16B.36 Multi-tenant RAG audit / 多租户 RAG 账户串谋审计的 Mock Data
+
+多租户 RAG 里，一个常见承诺是“每个账号的 query 满足某种 per-account DP”。2026-05-19 的 `Auditing Privacy in Multi-Tenant RAG under Account Collusion` 提醒了一个更细的问题：如果同一个租户下有多个账号协调查询同一个 index，泄漏不是按单账号边界理解，而要看 coalition size 和 composition。
+
+一个多账号查询场景可以这样理解：
+
+```json
+{
+  "tenant_rag_index": {
+    "tenant_id": "enterprise_42",
+    "index_id": "legal_contracts_prod",
+    "contains_confidential_docs": true
+  },
+  "colluding_accounts": [
+    {"account_id": "acct_a", "query": "termination fee project atlas"},
+    {"account_id": "acct_b", "query": "atlas merger breakup clause"},
+    {"account_id": "acct_c", "query": "enterprise value 3.2 percent"}
+  ],
+  "advertised_privacy_boundary": {
+    "unit": "account_query",
+    "epsilon_per_account": 0.4,
+    "retrieval_stage": "noise_then_select_top_k"
+  }
+}
+```
+
+更成熟的审计记录应该把 per-account guarantee 和 joint leakage 分开：
+
+```json
+{
+  "rag_privacy_audit": {
+    "audit_id": "rag_audit_2026_05_26_001",
+    "scope": "retrieval_score_channel_only",
+    "generation_channel_scoped_out": true,
+    "same_index_multi_account_collusion_tested": true
+  },
+  "audit_evidence": {
+    "per_account_query_ledger": "merkle_committed",
+    "embedder_commitment": true,
+    "noise_then_select_attestation": true,
+    "coalition_size_estimate": 3
+  },
+  "verdict": {
+    "status": "pass_with_joint_leakage_note",
+    "epsilon_audit": 0.93,
+    "requires_product_copy_change": true
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- RAG 的 DP 边界不能只写“per account”，还要说明多账号、同租户、同 index 查询是否会组合泄漏
+- 检索阶段和生成阶段是两个不同审计对象，top-k selection 安全不等于最终 answer 安全
+- 生产系统需要 query ledger、attestation、coalition-size estimation 和 access-control 审计，而不只是一个 epsilon 参数
+
+### 16B.37 Data space HE aggregation / 数据空间密文聚合的 Mock Data
+
+2026-05-21 的 `Homomorphic Encryption for Privacy-Preserving Data Aggregation in Data Spaces` 把 HE 放进了一个很实际的 data space 场景：多方希望按地理区域汇总能耗数据，但不希望把单个组织或站点的明文读数交给中心方。
+
+原始输入可以这样理解：
+
+```json
+{
+  "energy_data_space": {
+    "task_id": "regional_energy_aggregation_2026_05",
+    "protocol_context": "data_space_protocol",
+    "aggregation_key": "geo_zone_hour"
+  },
+  "participant_reading": {
+    "participant_id": "factory_site_17",
+    "geo_zone": "zone_north_03",
+    "hour": "2026-05-26T13:00:00Z",
+    "kwh": 1842.7,
+    "commercially_sensitive": true
+  }
+}
+```
+
+HE 聚合后的数据流应该避免中心方看到单点明文：
+
+```json
+{
+  "he_aggregation_flow": {
+    "client_side_encryption": true,
+    "ciphertext_payload": "enc(kwh=1842.7)",
+    "aggregator_can_decrypt_individual_reading": false,
+    "supported_operation": "sum_by_geo_zone_hour"
+  },
+  "aggregate_output": {
+    "geo_zone": "zone_north_03",
+    "hour": "2026-05-26T13:00:00Z",
+    "total_kwh": 92744.8,
+    "min_participant_threshold_met": true
+  },
+  "release_controls": {
+    "individual_ciphertexts_retained_days": 7,
+    "small_zone_suppression": true,
+    "downstream_dp_optional_for_public_release": true
+  }
+}
+```
+
+这条 mock data 想说明：HE 很适合固定算子、固定 schema、固定聚合目标的协作场景。它保护的是计算过程中的单方输入；如果聚合分组过细，输出层仍然需要阈值、抑制或 DP。
+
+### 16B.38 Anti-poisoning PPFL / 隐私保护与抗投毒联邦学习的 Mock Data
+
+联邦学习里经常有一个工程张力：你越想保护单个客户端更新，越难识别恶意更新；但如果为了防投毒而检查明文梯度，又会牺牲隐私。2026 年 AP-PPFL 这类工作把这个张力摆到了台面上：用同态加密保护梯度，同时设计加密域或辅助机制里的恶意更新过滤。
+
+一个客户端上传前的记录可以这样写：
+
+```json
+{
+  "fl_client_update": {
+    "round_id": "iot_intrusion_detection_r42",
+    "client_id": "edge_gateway_091",
+    "local_examples": 420,
+    "gradient_vector": "local_plaintext_never_uploaded",
+    "suspected_poisoning": false
+  },
+  "privacy_wrapper": {
+    "encryption": "paillier_or_additive_he",
+    "encrypted_gradient": "ciphertext_vector",
+    "server_can_read_plain_gradient": false
+  }
+}
+```
+
+聚合侧的安全控制不应该只做“加密求和”，还要记录鲁棒性判断：
+
+```json
+{
+  "privacy_preserving_defense": {
+    "importance_vote": "encrypted_or_aggregate_parameter_importance",
+    "similarity_screen": "cosine_similarity_based_filter",
+    "malicious_update_filtered": true,
+    "raw_gradient_exposed_for_debug": false
+  },
+  "round_result": {
+    "accepted_clients": 913,
+    "rejected_clients": 27,
+    "secure_aggregation_completed": true,
+    "model_accuracy_drop_guard_triggered": false
+  }
+}
+```
+
+这条 mock data 想说明：PPFL 不能只问“有没有加密”。生产系统还要同时回答 `privacy of updates`、`robustness to poisoning`、`client accountability`、`debug visibility` 和 `false positive impact`。
+
+### 16B.39 Provably private AI usage insights / 可验证 AI 使用洞察的 Mock Data
+
+生成式 AI 产品越来越需要理解“用户到底怎么使用功能”，但原始 prompt、录音转写、总结结果和失败 trace 都可能包含高度敏感信息。PEPR 2026 的 `Toward Provably Private Insights into AI Use` 给了一个很实用的组合思路：把 TEE 用作可验证处理边界，在 enclave 内用 data expert LLM 解释非结构化输入，再用 DP 发布聚合洞察。
+
+一个原始 AI usage event 可以这样理解：
+
+```json
+{
+  "raw_ai_usage_event": {
+    "event_id": "recorder_ai_2026_05_27_001",
+    "user_id": "u_92731",
+    "feature": "meeting_summary",
+    "transcript_excerpt": "Alice said the oncology trial budget is delayed...",
+    "prompt": "Summarize action items and risks",
+    "model_output": "Budget approval is a blocker for the oncology trial."
+  }
+}
+```
+
+隐私增强后的 analytics pipeline 不应该让普通日志系统直接消费这些明文：
+
+```json
+{
+  "provably_private_insight_run": {
+    "event_id": "recorder_ai_2026_05_27_001",
+    "processing_boundary": "verifiable_tee",
+    "remote_attestation_required": true,
+    "raw_prompt_visible_to_analytics_team": false,
+    "raw_transcript_persisted": false
+  },
+  "secure_interpretation": {
+    "data_expert_llm_runs_inside_enclave": true,
+    "derived_labels": [
+      "meeting_summary",
+      "budget_risk",
+      "health_related_context"
+    ],
+    "label_confidence_bucket": "high"
+  },
+  "dp_release": {
+    "privacy_unit": "user",
+    "batch_threshold": 500,
+    "epsilon_spent": 0.15,
+    "published_metric": {
+      "feature": "meeting_summary",
+      "risk_label": "budget_risk",
+      "noisy_count": 18342
+    }
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- AI usage analytics 的敏感点不只是训练数据，也包括 prompt、上下文、输出、失败 trace 和调试日志
+- TEE 解决“谁能看见处理中的明文”，DP 解决“聚合结果是否泄露个体贡献”，两者保护层不同
+- 如果要对外声称 provably private，最好把 attestation、代码版本、DP batch、预算消耗和发布记录都变成审计对象
+
+### 16B.40 Embedding obfuscation is not privacy / 输入向量混淆不是隐私保证的 Mock Data
+
+很多 AI 产品会把“我们只上传 embedding，不上传原文”包装成隐私保护。PEPR 2026 的 `The Emperor's New Embeddings` 这类工作提醒：embedding、hash、降维向量或“不可读表示”并不自动等于隐私。只要它还保留足够语义来完成推理，也可能保留足够信息被关联、重构或用于成员推断。
+
+一个容易误判的推理输入可以这样写：
+
+```json
+{
+  "ml_inference_request": {
+    "request_id": "infer_2026_05_27_002",
+    "raw_text": "My HIV medication causes nausea after lunch.",
+    "client_side_transform": "sentence_embedding_v5",
+    "embedding_dimension": 768,
+    "vendor_claim": "raw text is not uploaded"
+  }
+}
+```
+
+更严谨的隐私评估记录应该把 embedding 当成敏感派生数据：
+
+```json
+{
+  "embedding_privacy_review": {
+    "derived_payload_classification": "sensitive_semantic_representation",
+    "reconstruction_attack_tested": true,
+    "attribute_inference_tested": true,
+    "membership_inference_tested": true,
+    "cross_context_linkability_tested": true
+  },
+  "release_decision": {
+    "allowed_to_third_party_model": false,
+    "allowed_inside_tee": true,
+    "retention_days": 0,
+    "logging_allowed": false,
+    "public_privacy_claim": "raw text is not uploaded; embeddings remain sensitive and are processed under restricted controls"
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- “不可读”不是隐私定义，privacy claim 需要攻击模型和可测试边界
+- embedding 应该按敏感派生数据治理，而不是按匿名数据治理
+- 如果业务必须云端推理，TEE、MPC、HE、访问控制、零保留日志和输出审计要按威胁模型组合，而不是把 embedding 混淆当成单独答案
+
+### 16B.41 Contextual Integrity LLM / 上下文完整性下的最小披露 Mock Data
+
+2026 年的 LLM 隐私研究开始从“把敏感词删掉”走向“在具体上下文里判断什么信息可以流向谁”。`It Takes Two: Complementary Self-Distillation for Contextual Integrity in LLMs` 把 Contextual Integrity 引入 LLM agent：隐私不是一概隐藏，而是让信息流符合场景规范，在保留任务效用的同时减少不合适披露。
+
+一个 agent 原始请求可以这样理解：
+
+```json
+{
+  "agent_request": {
+    "request_id": "agent_ci_2026_05_28_001",
+    "user_goal": "帮我给HR写一封请假邮件",
+    "private_context": {
+      "diagnosis": "early-stage breast cancer",
+      "treatment_schedule": "chemotherapy every Friday",
+      "manager_name": "Priya",
+      "company_policy": "medical leave allowed with HR documentation"
+    }
+  },
+  "recipient_context": {
+    "recipient": "hr_department",
+    "allowed_disclosure_norm": "medical_leave_need_and_dates_only"
+  }
+}
+```
+
+一个更成熟的 privacy-aware LLM 输出控制不应该只是正则脱敏，而要把 disclosure decision 变成可审计结构：
+
+```json
+{
+  "contextual_integrity_decision": {
+    "task_relevant_information": [
+      "requesting_medical_leave",
+      "leave_dates",
+      "documentation_available"
+    ],
+    "suppressed_information": [
+      "specific_diagnosis",
+      "treatment_type",
+      "manager_private_notes"
+    ],
+    "disclosure_policy": "minimum_necessary_for_hr_leave_process",
+    "model_training_method": "privacy_utility_self_distillation"
+  },
+  "generated_email": {
+    "contains_specific_diagnosis": false,
+    "contains_medical_leave_dates": true,
+    "requires_user_confirmation_before_send": true
+  },
+  "audit_record": {
+    "privacy_failure_mode_checked": [
+      "over_disclosure",
+      "task_failure_from_over_redaction",
+      "recipient_context_mismatch"
+    ]
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- LLM 隐私不是越少输出越好，而是“谁在什么场景下应该知道什么”
+- masking、redaction、DP、TEE 之外，还需要 disclosure policy、recipient context 和 user confirmation
+- 这类方法不替代密码学 PET，但能补上 agent workflow 中“输出是否合适”的决策层
+
+### 16B.42 Personalized DP budget FL / 基于重识别风险分配隐私预算的 Mock Data
+
+传统 DP-FL 往往给所有 client 使用同一个 epsilon，但真实系统里的 re-identification risk 并不一致：小医院、罕见病队列、偏远地区 IoT 站点或小企业客户的风险可能更高。2026 年 `Privacy Preserving Machine Learning Workflow: from Anonymization to Personalized Differential Privacy Budgets in Federated Learning` 给了一个很工程化的方向：先做匿名化和风险评估，再按 client 风险分配个性化 DP budget，并监测 client drift 与投毒风险。
+
+一个 cross-silo 医疗 FL 输入可以这样写：
+
+```json
+{
+  "federated_training_network": {
+    "job_id": "hospital_readmission_fl_2026_05",
+    "privacy_unit": "hospital_client",
+    "model_task": "readmission_risk_prediction"
+  },
+  "client_risk_profile": [
+    {
+      "client_id": "hospital_small_rural_07",
+      "records": 820,
+      "rare_condition_ratio": 0.18,
+      "reidentification_risk": "high"
+    },
+    {
+      "client_id": "hospital_large_urban_02",
+      "records": 184000,
+      "rare_condition_ratio": 0.02,
+      "reidentification_risk": "medium"
+    }
+  ]
+}
+```
+
+隐私预算控制面可以这样设计：
+
+```json
+{
+  "personalized_dp_budget_policy": {
+    "risk_metric": "client_reidentification_risk_score",
+    "budget_assignment": [
+      {
+        "client_group": "high_risk_small_clients",
+        "epsilon_per_round": 0.03,
+        "sampling_probability": 0.08,
+        "extra_anonymization_required": true
+      },
+      {
+        "client_group": "medium_risk_large_clients",
+        "epsilon_per_round": 0.08,
+        "sampling_probability": 0.18,
+        "extra_anonymization_required": false
+      }
+    ],
+    "privacy_accounting": {
+      "budget_ledger_per_client": true,
+      "client_can_change_privacy_tier": "requires_review",
+      "drift_detection_enabled": true
+    }
+  },
+  "training_round_output": {
+    "raw_records_shared": false,
+    "model_update_secure_aggregated": true,
+    "client_drift_alert": false,
+    "poisoning_review_triggered": false
+  }
+}
+```
+
+这条 mock data 想说明：DP-FL 的产品问题不是“开不开 DP”这么简单，而是要把 client 风险、采样概率、预算消耗、匿名化前处理和 drift/poisoning 监控放到同一个控制面里。
+
+### 16B.43 Agent tool-call shadow data / 工具调用泄漏的 Mock Data
+
+PEPR 2026 的 `Shadow Data in Tool Calls` 很适合补进 AI agent 隐私部分。很多 agent 系统会把用户 prompt 当成主要隐私对象，却低估了外部工具调用本身也会泄漏信息：查天气、查地图、查日历、查 CRM、查医疗价格时，API request 的参数、时间、地点、账号和 tool name 就可能暴露用户意图。
+
+一个原始 agent 任务可以这样理解：
+
+```json
+{
+  "agent_task": {
+    "task_id": "agent_tool_2026_05_29_001",
+    "user_prompt": "帮我找下周三去肿瘤科复诊附近的停车场，并加入日历",
+    "sensitive_inferences": [
+      "possible_health_condition",
+      "clinic_visit",
+      "location_pattern"
+    ]
+  },
+  "naive_tool_calls": [
+    {
+      "tool": "maps.search",
+      "query": "parking near oncology clinic 123 main st",
+      "sent_to_third_party": true
+    },
+    {
+      "tool": "calendar.create_event",
+      "title": "oncology follow-up",
+      "sent_to_calendar_provider": true
+    }
+  ]
+}
+```
+
+更成熟的 agent privacy layer 不应该只在最终 answer 上脱敏，而要在 tool boundary 前做最小披露和用途分离：
+
+```json
+{
+  "tool_call_privacy_plan": {
+    "sensitive_intent_classification": "health_related_location_task",
+    "tool_minimization_required": true,
+    "third_party_tool_policy": "coarsen_or_proxy_sensitive_queries",
+    "user_confirmation_required": true
+  },
+  "protected_tool_calls": [
+    {
+      "tool": "maps.search",
+      "query": "parking near 123 main st",
+      "removed_terms": ["oncology"],
+      "location_precision": "street_block",
+      "proxy_or_oblivious_relay": true
+    },
+    {
+      "tool": "calendar.create_event",
+      "title": "appointment",
+      "private_note_stored_locally": "oncology follow-up",
+      "raw_medical_context_synced": false
+    }
+  ],
+  "audit_record": {
+    "shadow_data_reviewed": true,
+    "tools_receiving_sensitive_context": [],
+    "retention_days_for_tool_trace": 0
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- agent privacy 的边界不止是 prompt 和 answer，还包括 tool name、query 参数、时间、地点、recipient 和 trace log
+- tool-call minimization、local notes、oblivious relay、coarsening、confirmation UI 都是可落地控制
+- 如果 agent 能自主选择工具，tool policy 应该像数据访问策略一样被审计，而不是藏在 prompt 里
+
+### 16B.44 AI provenance without surveillance / AI 内容溯源的 Mock Data
+
+AI 内容透明度和隐私之间有天然张力。PEPR 2026 的 `Provenance Without Surveillance` 提醒：C2PA、watermark、AI label 或 provenance metadata 可以帮助透明披露，但如果设计粗糙，也可能把用户身份、设备、编辑流程、地理位置或账号关系变成新的跟踪信号。
+
+一个图片编辑产品的原始 provenance 记录可能长这样：
+
+```json
+{
+  "ai_media_edit_event": {
+    "asset_id": "img_2026_05_29_0042",
+    "user_id": "u_91824",
+    "device_id": "phone_serial_like_value",
+    "location": "37.7749,-122.4194",
+    "edit_steps": [
+      "remove_background",
+      "generate_replacement_object",
+      "color_adjust"
+    ],
+    "label_requirement": "ai_assisted_content"
+  }
+}
+```
+
+隐私工程后的 provenance payload 应该只披露满足透明义务所需的信息：
+
+```json
+{
+  "privacy_preserving_provenance": {
+    "public_label": "ai_assisted",
+    "disclosure_level": "content_process_only",
+    "contains_user_id": false,
+    "contains_device_id": false,
+    "contains_precise_location": false,
+    "contains_full_edit_history": false
+  },
+  "selective_disclosure": {
+    "viewer_can_see": [
+      "ai_assisted_label",
+      "tool_provider",
+      "high_level_generation_category"
+    ],
+    "auditor_can_request_under_policy": [
+      "signed_processing_attestation",
+      "model_family",
+      "coarse_timestamp"
+    ]
+  },
+  "retention_and_linkability_controls": {
+    "cross_platform_tracking_identifier": false,
+    "metadata_rotation": true,
+    "creator_identity_revealed_by_default": false
+  }
+}
+```
+
+这条 mock data 想说明：AI provenance 是透明度系统，不应顺手变成身份系统。落地时要把 `what must be disclosed`、`who may verify`、`what metadata is linkable` 和 `how long it is retained` 分开设计。
+
+### 16B.45 Developer privacy risk intake / 开发者隐私评估工具化的 Mock Data
+
+很多 privacy tech 最后失败，不是因为协议本身错，而是因为产品早期没有把数据流、recipient、用途、retention 和用户预期问清楚。PEPR 2026 的 `Turning Privacy Risk Assessment Into 20 Questions for Developers` 给了一个很实用的方向：把隐私风险评估从开放式专家访谈，部分转成结构化、多选式、可审计的 intake。
+
+一个开发者提交的新功能可以这样写：
+
+```json
+{
+  "feature_intake": {
+    "feature": "ai_sales_call_coach",
+    "data_collected": [
+      "call_audio",
+      "transcript",
+      "speaker_name",
+      "crm_account_id",
+      "model_feedback"
+    ],
+    "intended_use": "generate coaching feedback and aggregate product quality metrics",
+    "external_processors": ["speech_to_text_vendor", "llm_vendor"],
+    "retention_days_requested": 180
+  }
+}
+```
+
+结构化隐私评估工具应该输出可执行的 control plan，而不是只给一个高/中/低风险标签：
+
+```json
+{
+  "privacy_risk_intake_result": {
+    "risk_questions_answered": 20,
+    "high_risk_dimensions": [
+      "voice_biometrics",
+      "customer_confidential_content",
+      "third_party_processing",
+      "long_retention"
+    ],
+    "recommended_controls": [
+      "on_device_or_tee_transcription_for_sensitive_accounts",
+      "raw_audio_retention_max_7_days",
+      "transcript_redaction_before_llm",
+      "dp_or_thresholded_aggregate_quality_metrics",
+      "customer_admin_opt_out"
+    ]
+  },
+  "review_gate": {
+    "privacy_review_required": true,
+    "security_review_required": true,
+    "can_launch_experiment_without_controls": false
+  }
+}
+```
+
+这条 mock data 想说明：privacy tech 导论不能只教算法，也要教“什么时候该触发哪种控制”。结构化 intake 的价值是让开发者在架构还没定死之前，就把数据最小化、PET 选型、保留策略和审批门槛拉进设计。
+
+### 16B.46 Federated RAG / 跨机构私密 RAG 的 Mock Data
+
+2026-05-25 的 `FedRAG` 把 RAG 隐私问题推进到跨机构知识协作：医院、律所、金融机构或研究中心可能都想让模型同时利用多方知识库，但不希望把本机构文档、query 或中间 attention state 明文交给其他节点。它的核心启发是：RAG 的隐私边界不只在向量库，也在 distributed inference 和 KV cache / attention 执行路径上。
+
+一个跨机构 RAG 输入可以这样理解：
+
+```json
+{
+  "federated_rag_request": {
+    "request_id": "fedrag_2026_05_29_001",
+    "question": "这名患者是否符合跨院临床试验入组条件？",
+    "requesting_site": "hospital_a",
+    "collaborating_sites": ["hospital_b", "research_center_c"]
+  },
+  "local_knowledge_boundary": {
+    "hospital_a": ["local_patient_summary", "local_lab_markers"],
+    "hospital_b": ["trial_protocol_chunks"],
+    "research_center_c": ["biomarker_guideline_chunks"]
+  }
+}
+```
+
+隐私增强后的执行记录要把“数据驻留”和“跨节点推理”分开记录：
+
+```json
+{
+  "federated_rag_execution": {
+    "plaintext_docs_leave_origin_site": false,
+    "plaintext_query_shared_to_all_sites": false,
+    "distributed_attention_mode": "scrambled_or_masked_intermediate_state",
+    "specialized_hardware_required": false,
+    "model_retraining_required": false
+  },
+  "intermediate_state_controls": {
+    "kv_cache_visible_cross_site": false,
+    "token_order_permuted": true,
+    "intermediate_inversion_test_required": true,
+    "per_site_audit_log": true
+  },
+  "answer_release": {
+    "returned_to": "hospital_a_clinician",
+    "source_site_citations": ["hospital_b:trial_protocol_017"],
+    "raw_foreign_chunks_exported": false
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- 私密 RAG 不能只保护 embedding store，还要保护 distributed generation 的中间状态
+- 跨机构 RAG 的关键对象包括 query、文档 chunk、retrieval score、KV cache、attention state、最终答案和审计日志
+- 这类方案更接近“让模型跨数据边界工作”，而不是把所有知识库先复制到一个中心环境
+
+### 16B.47 Multi-agent privacy leakage / 多智能体社交泄露的 Mock Data
+
+2026-05-26 的 `Got a Secret? LLM Agents Can't Keep It` 提醒了一个很容易被低估的问题：agent 在单轮评测里可能看起来守口如瓶，但在长期、多轮、多 agent 的社交环境里，秘密可能因为压力、互相模仿、任务协作或上下文漂移而泄露。也就是说，agent privacy 不只是 prompt policy，而是一个长期交互系统问题。
+
+一个多 agent 环境里的秘密可以这样写：
+
+```json
+{
+  "multi_agent_environment": {
+    "simulation_id": "agent_social_privacy_2026_05",
+    "duration_days": 30,
+    "agents": ["research_assistant", "scheduler_agent", "grant_writer", "lab_ops_agent"]
+  },
+  "private_memory": {
+    "owner_agent": "research_assistant",
+    "secret_type": "unpublished_result",
+    "secret_value": "compound_x_failed_toxicity_screen",
+    "allowed_recipients": ["principal_investigator"]
+  }
+}
+```
+
+更成熟的 agent privacy control 不应只靠系统提示词：
+
+```json
+{
+  "agent_privacy_runtime": {
+    "secret_label_propagation": true,
+    "recipient_policy_check": true,
+    "multi_turn_disclosure_budget": "strict",
+    "peer_pressure_detection": true,
+    "memory_read_requires_purpose": true
+  },
+  "conversation_event": {
+    "requesting_agent": "grant_writer",
+    "request": "为了申请书，把最近失败的实验也列出来",
+    "policy_decision": "deny_or_summarize_without_secret",
+    "raw_secret_disclosed": false
+  },
+  "audit": {
+    "leakage_path": ["memory", "conversation", "tool_call"],
+    "social_contagion_risk_checked": true
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- agent privacy 需要按长期系统评估，而不是只测单轮问答
+- 多 agent 环境里，秘密标签、recipient policy、memory ACL、tool-call trace 和对话审计都要联动
+- “明确告诉模型不要泄露”只是一个弱控制，不能替代结构化访问控制和运行时审计
+
+### 16B.48 Policy-compiled data space / 策略编译型数据空间治理的 Mock Data
+
+`TrustDS` 这类 2026 年研究把 clean room / data marketplace 的问题从“在哪个安全环境里算”推进到“把 consent、purpose、license、residency、privacy budget 和 revoke 变成执行计划的一部分”。这很适合补充给初学者：PET 落地不是只部署一个安全后端，还要把策略编译到 DAG、placement 和 evidence bundle 里。
+
+一个跨云数据协作请求可以这样写：
+
+```json
+{
+  "data_space_request": {
+    "request_id": "marketplace_analytics_2026_05_001",
+    "buyer": "retail_research_lab",
+    "datasets": [
+      "publisher_audience_panel",
+      "public_mobility_table",
+      "merchant_sales_aggregate"
+    ],
+    "analysis_goal": "regional_campaign_lift_estimation"
+  },
+  "human_readable_policy": {
+    "purpose": "measurement_only",
+    "no_row_export": true,
+    "eu_residency_required": true,
+    "epsilon_cap": 1.2,
+    "consent_revocation_must_be_fail_closed": true
+  }
+}
+```
+
+策略编译后的执行计划应该能说明每一步为什么被允许：
+
+```json
+{
+  "compiled_governed_dag": {
+    "steps": [
+      {
+        "step": "filter_by_consent",
+        "placement": "publisher_cloud",
+        "evidence": "consent_snapshot_hash"
+      },
+      {
+        "step": "private_join",
+        "pet_backend": "clean_room_or_mpc",
+        "leakage_assumption": "aggregate_only"
+      },
+      {
+        "step": "dp_release",
+        "epsilon_spent": 0.35,
+        "privacy_budget_ledger": "campaign_lift_2026"
+      }
+    ],
+    "revocation_semantics": "fail_closed_before_next_run",
+    "portable_evidence_bundle": true
+  }
+}
+```
+
+这条 mock data 想说明：
+
+- 合规策略不能停在文档里，应该影响实际执行路径、云区域、PET 后端和输出发布
+- evidence bundle 是工程化 privacy 的关键产物：它回答“为什么这次运行是被允许的”
+- clean room、MPC、DP、TEE 都可能是 DAG 里的节点，而不是互相排斥的产品名
+
+### 16B.49 Zero-trust agent runtime / 零信任 Agent 运行时的 Mock Data
+
+2026 年 agent 平台研究和开源项目开始把隐私问题落到运行时：agent 不只是生成文本，它会持久运行、调用工具、访问内部 API、保留状态、消耗预算并在多个隔离环境之间移动。`Agyn` 这类工作强调 agent definition as code、Kubernetes runtime、least privilege 和 zero-trust access，这对 privacy engineering 的启发是：agent 的数据边界应该由基础设施强制，而不只由 prompt 承诺。
+
+一个企业 agent 定义可以这样写：
+
+```json
+{
+  "agent_definition": {
+    "agent_id": "finance_close_assistant",
+    "runtime": "kubernetes_isolated_session",
+    "allowed_tools": [
+      "read_gl_entries",
+      "draft_variance_summary"
+    ],
+    "denied_tools": [
+      "export_bank_account_table",
+      "send_external_email"
+    ]
+  },
+  "data_access_policy": {
+    "least_privilege": true,
+    "purpose_bound_tokens": true,
+    "session_secret_isolation": true,
+    "budget_limit_usd_per_day": 20
+  }
+}
+```
+
+运行时审计记录应该覆盖 tool、credential 和数据流：
+
+```json
+{
+  "agent_runtime_event": {
+    "event_id": "agent_runtime_2026_05_30_001",
+    "tool_called": "read_gl_entries",
+    "requested_scope": "monthly_close_variance",
+    "approved_scope": "aggregated_account_bucket_only",
+    "raw_row_export_allowed": false
+  },
+  "zero_trust_checks": {
+    "network_reachability_policy_passed": true,
+    "credential_injected_outside_model_context": true,
+    "tool_response_redacted_before_memory_write": true,
+    "human_approval_required_for_external_send": true
+  }
+}
+```
+
+这条 mock data 想说明：agent privacy 的落地控制面包括 network policy、tool scope、credential handling、memory write policy、budget 和 audit。模型本身不会天然遵守企业数据边界，运行时必须把边界变成默认约束。
+
 ## 16C. 这些技术怎么用到 Ad Network 里
 
 这一节把前面的技术直接放到 ad network 场景里来看。
@@ -3502,7 +4574,7 @@ de-identification
 
 到这一步你再看各种新名词，就不容易迷路。
 
-## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-18）
+## 18A. 2025-2026 最新前沿与落地信号（截至 2026-05-29）
 
 这一节只放我认为“既前沿，又足够能指导工程判断”的信号。
 
@@ -5225,6 +6297,544 @@ USENIX PEPR 2026 的 `Privacy in Theory, Bugs in Practice: Grey-Box Testing for 
 
 这条趋势对初学者很重要：DP 不是“选一个 epsilon 就结束”。真正可落地的 DP 系统需要 `threat model`、`mechanism proof`、`implementation tests`、`budget ledger` 和 `release gate` 五件事同时成立。
 
+### 18A.62 Privacy-preserving RAG 正在变成 AI 隐私的新主战场
+
+2026-04-29 的 `PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation` 把 RAG 的隐私问题讲得很具体：RAG 依赖云端检索和外部知识库，风险不只在模型训练，还在 query、embedding、检索图、排序结果、prompt context 和输出泄露。
+
+这类研究的前沿信号是：企业 RAG 不能只承诺“我们不会训练你的数据”。更完整的私密 RAG 需要回答：
+
+- query 是否暴露给检索服务
+- embedding 是否可被反推或关联
+- 文档 chunk 是否以明文进入第三方排序层
+- 生成答案是否可能复述敏感上下文
+- 日志、trace、debug prompt 是否保存了原始文档
+
+PRAG 的路线把 encrypted / homomorphic-friendly retrieval、client-assisted reranking 和 ranking 稳定性放在一起看，说明 privacy-preserving RAG 正在从“给向量库加权限”变成端到端系统设计题。
+
+### 18A.63 FL + DP 的一个实用方向：按 re-identification risk 分配个性化预算
+
+2026-05-04 的 `Privacy Preserving Machine Learning Workflow: from Anonymization to Personalized Differential Privacy Budgets in Federated Learning` 提供了一个很实用的视角：同一个联邦学习网络里，不同 client 的重识别风险、数据稀疏度和漂移风险可能不同，所以固定一个全局 DP budget 并不总是最合理。
+
+这条研究信号对工程落地的启发是：
+
+- privacy budget 可以跟 client risk score 绑定，而不是只跟训练轮次绑定
+- anonymization、DP、client drift detection 和 poisoning mitigation 应该放在一条 workflow 里看
+- 医疗、金融这类 cross-silo FL 场景里，机构粒度的风险差异可能比设备侧 FL 更明显
+
+一个最小 budget assignment record 可以这样写：
+
+```json
+{
+  "federated_client_privacy_profile": {
+    "client_id": "hospital_site_17",
+    "privacy_unit": "patient",
+    "reidentification_risk_score": 0.78,
+    "client_drift_score": 0.11,
+    "poisoning_watchlist": false
+  },
+  "dp_budget_assignment": {
+    "strategy": "personalized_global_dp",
+    "epsilon_for_next_training_window": 0.7,
+    "reason": "high_reidentification_risk_requires_stronger_noise",
+    "fixed_global_epsilon_baseline": 1.2
+  }
+}
+```
+
+这能帮助初学者理解：DP 参数不是只由数学家在白板上决定，生产系统里还要结合数据稀疏性、机构风险、模型效用和审计策略。
+
+### 18A.64 Clean room 的前沿正在从“双方协作”走向“多方生态协作”
+
+Snowflake 2026-04-28 对 Data Clean Rooms 的产品说明显示，clean room 正在从传统 provider-consumer 模型走向更对称的 multiparty collaboration：多个组织可以在同一个受控环境里贡献数据、共同分析，并把结果用于 activation。
+
+这说明 clean room 的复杂度正在上升：
+
+- 不再只有一个 provider 和一个 consumer
+- identity provider、retailer、publisher、brand、agency、activation partner 可能同时参与
+- governance 不只管 SQL，还要管角色、同意信号、激活出口、自然语言辅助分析和 agentic setup
+
+对 primer 来说，最重要的结论是：clean room 产品化越强，越要把 `participant role`、`allowed action`、`output destination`、`consent proof`、`audit trail` 写进 mock data 和架构图里。
+
+### 18A.65 Confidential AI 的重点正在从“有 TEE”推进到“CPU/GPU/容器/证明链全栈”
+
+NVIDIA 2026-03 的 Confidential AI factory 参考架构把一个趋势讲得很清楚：企业 AI 不再只是把模型放进某个 enclave，而是要把 CPU TEE、confidential GPU、最小化 guest OS、remote attestation、Kubernetes / Confidential Containers 和模型部署链路放在同一个 trust boundary 里看。
+
+这对隐私技术导论很重要，因为很多团队会把 TEE 简化成一句话：
+
+- “数据在 enclave 里跑，所以平台看不到。”
+
+更准确的生产问题应该是：
+
+- 模型权重是谁的资产，谁不能看？
+- prompt / retrieval context / intermediate activation 是否进 GPU VRAM？
+- CPU 到 GPU 的链路是否在保护范围内？
+- attestation 证明的是硬件、镜像、代码版本，还是只证明“某个 TEE 存在”？
+- Kubernetes operator、node admin、日志系统、sidecar、debug shell 是否在信任边界外？
+- attestation token 如何和模型版本、policy digest、数据使用目的绑定？
+
+一个最小 confidential AI inference request 可以这样写：
+
+```json
+{
+  "confidential_ai_request": {
+    "request_id": "cai_req_2026_05_21_001",
+    "tenant": "medical_research_partner_a",
+    "model_ref": "foundation_model:v4.2",
+    "input_classes": ["clinical_note_summary", "retrieval_context"],
+    "expected_boundary": "cpu_tee_plus_confidential_gpu"
+  },
+  "attestation_requirements": {
+    "cpu_tee": "tdx_or_sev_snp",
+    "gpu_confidential_compute": true,
+    "container_image_digest": "sha256:9f3a...",
+    "policy_digest": "sha256:71bc...",
+    "kubernetes_runtime": "confidential_containers"
+  },
+  "release_policy": {
+    "raw_prompt_logging": false,
+    "debug_trace_export": false,
+    "output_filter": "pii_and_secret_scanner_v3",
+    "attestation_required_before_key_release": true
+  }
+}
+```
+
+这条前沿信号的工程含义是：Confidential AI 不是单个硬件开关，而是 `hardware root -> measured image -> policy-bound key release -> protected execution -> controlled output -> audit evidence` 的完整链路。
+
+### 18A.66 但 TEE 风险也在同步升级：物理与 attestation key 攻击必须进入威胁模型
+
+2026 IEEE S&P 的 `TEE.fail` 研究提醒了另一个方向：现代 TEE 的威胁模型不能只停留在“云管理员不能读内存”。研究展示了通过 DDR5 memory bus interposition 观察内存流量、提取密钥，并讨论了对 Intel TDX、AMD SEV-SNP 以及 GPU confidential computing attestation 的影响。
+
+对初学者来说，这不是说“TEE 没用了”。更准确的理解是：
+
+- TEE 适合降低云平台、管理员、普通进程和租户间隔离风险
+- 但它不是物理攻击、供应链攻击、side-channel、attestation key compromise 的终局答案
+- 如果系统把商业结算、模型授权或高价值数据访问完全压在 attestation 上，就要设计 key revocation、hardware security advisory response、deny list、re-attestation 和 fallback
+
+一个 TEE risk review record 可以这样写：
+
+```json
+{
+  "tee_risk_review": {
+    "review_id": "tee_review_2026_05_21_001",
+    "deployment": "confidential_clean_room_prod",
+    "hardware_roots": ["intel_tdx", "nvidia_confidential_gpu"],
+    "physical_attack_in_scope": false,
+    "side_channel_testing_required": true
+  },
+  "attestation_key_controls": {
+    "vendor_advisory_monitoring": true,
+    "revocation_list_refresh_minutes": 30,
+    "deny_unknown_tcb_status": true,
+    "re_attest_before_long_running_job": true
+  },
+  "blast_radius_controls": {
+    "per_job_data_key": true,
+    "max_job_runtime_minutes": 120,
+    "output_thresholding": true,
+    "dp_release_for_external_report": true
+  }
+}
+```
+
+这能帮助读者形成一个更成熟的判断：TEE 是很重要的 privacy infrastructure，但真实系统仍然需要 `DP / thresholding / query governance / key lifecycle / incident response` 来限制输出和故障影响。
+
+### 18A.67 Privacy-preserving RAG 的落地点：把 query、embedding、top-k 和日志都当成敏感数据
+
+2026 的 PRAG、p2RAG、DP-KSA 等研究说明，RAG 隐私已经从“文档权限控制”扩展到整条检索链路。PRAG 强调同时保护 documents 和 queries；p2RAG 进一步把 arbitrary top-k retrieval 的效率和安全性作为核心问题；DP-KSA 则把 DP 引入检索增强生成流程。
+
+这对企业 AI 落地很现实。很多团队会说：
+
+- “我们不会用客户文档训练模型。”
+
+但 RAG 的泄漏面并不只在训练：
+
+- 用户 query 可能暴露业务意图
+- embedding 可能被反推或跨系统关联
+- top-k 文档 ID 会暴露知识库结构
+- reranker 和 prompt builder 可能拿到明文 chunk
+- trace / eval / debug log 可能保存完整上下文
+- 最终回答可能复述不该释放的片段
+
+一个 privacy-preserving RAG trace 可以这样写：
+
+```json
+{
+  "private_rag_trace": {
+    "request_id": "rag_2026_05_21_001",
+    "privacy_profile": "query_and_document_confidentiality",
+    "user_query_class": "enterprise_legal_question",
+    "retrieval_k": 32
+  },
+  "protected_steps": [
+    {
+      "step": "query_embedding",
+      "control": "client_side_embedding_or_tee_embedding",
+      "raw_query_logged": false
+    },
+    {
+      "step": "top_k_retrieval",
+      "control": "secure_top_k_or_encrypted_retrieval",
+      "document_ids_visible_to_service": false
+    },
+    {
+      "step": "reranking",
+      "control": "client_assisted_or_confidential_reranker",
+      "chunk_plaintext_export": false
+    },
+    {
+      "step": "answer_release",
+      "control": "citation_filter_and_secret_scanner",
+      "verbatim_sensitive_span_blocked": true
+    }
+  ],
+  "retention_policy": {
+    "prompt_trace_ttl_hours": 0,
+    "aggregate_quality_metrics_only": true
+  }
+}
+```
+
+这条趋势对 primer 的结论是：Private AI 不能只按模型训练分类。RAG 系统要单独建模 `query privacy`、`document privacy`、`retrieval result privacy`、`prompt trace privacy` 和 `answer release privacy`。
+
+### 18A.68 Apple Intelligence 的 DP 例子说明：端侧匹配、合成数据和聚合发布可以组成一条可理解的数据流
+
+Apple Machine Learning Research 关于 Apple Intelligence aggregate trends 的说明提供了一个适合教学的落地样板：设备端先判断本地内容和候选 synthetic variants / prompt fragments 的匹配情况，再用带噪的匿名信号参与聚合，Apple 学到的是群体趋势，而不是某个用户的邮件、prompt 或设备级记录。
+
+这不是“所有 AI 都应该照搬 Apple 方案”，但它很好地展示了一个可落地模式：
+
+- 原始敏感内容留在设备上
+- 中心侧准备 synthetic candidate 或 fragment
+- 设备只报告带噪、匿名、不可直接关联到账户的匹配信号
+- 中心侧只发布 aggregate trend
+- 小众、唯一、稀有文本不应该被恢复出来
+
+一个简化 mock data flow 可以这样写：
+
+```json
+{
+  "on_device_private_trend_measurement": {
+    "feature": "email_summary_quality_improvement",
+    "privacy_unit": "device_analytics_opt_in_device",
+    "raw_user_content_leaves_device": false
+  },
+  "candidate_material": {
+    "synthetic_email_variant_id": "syn_email_cluster_042",
+    "fragment": "meeting reschedule request",
+    "generated_by": "central_synthetic_data_pipeline"
+  },
+  "device_side_match": {
+    "local_embedding_similarity_bucket": "high",
+    "reported_signal": "noisy_match_bit",
+    "ip_and_account_id_attached": false
+  },
+  "aggregate_release": {
+    "minimum_population_required": 500,
+    "released_metric": "variant_selected_rate_bucket",
+    "unique_prompt_recovery_allowed": false
+  }
+}
+```
+
+这条落地信号的教学价值在于：它把 `synthetic data`、`local DP`、`on-device processing` 和 `aggregate analytics` 串成了一条读者能理解的数据流，而不是把这些词孤立讲。
+
+### 18A.69 DP synthetic data 的前沿正在从“生成模型”转向“端到端发布系统”
+
+2026-05-02 的 npj Digital Medicine 论文 `Anonymization and visualization of health data and biomarkers` 是一个很适合补进 primer 的信号：隐私保护合成数据不是单独训练一个生成模型，而是要把 preprocessing、正式 DP 训练、经验性隐私风险评估、data sufficiency analysis、领域质量控制和可视化工具连成一条可复现管线。
+
+这条趋势对工程落地很关键。很多团队在讨论 synthetic data 时只问：
+
+- 用 GAN、diffusion、LLM 还是 marginal model？
+
+生产系统更应该问：
+
+- 原始数据是否有足够样本支撑生成？
+- 缺失值、稀有类别、领域约束如何处理？
+- 是否有正式 DP guarantee，还是只有经验性匿名化？
+- synthetic output 是否可能包含真实行或近似唯一病例？
+- 下游模型效用、统计保真度和临床/业务合理性分别怎么验收？
+- 谁能下载合成表，下载后能不能和外部数据 linkage？
+
+这说明 DP synthetic data 的成熟方向不是“生成更像真的假数据”这么简单，而是 `privacy accounting -> generation -> repair/postprocess -> empirical attack testing -> domain review -> governed release`。
+
+### 18A.70 时间受限 MPC 优化说明：PET 正在进入企业协同决策层
+
+2026-05-20 的 `Privacy-Preserving Distributed Optimization Under Time Constraints Using Secure Multi-Party Computation and Evolutionary Algorithms` 把 MPC 带到了另一个实用问题：多方协同优化需要在有限时间内输出可用方案，而不是离线算一个理论最优解。
+
+这类问题和广告、医疗统计不完全一样。隐私对象常常是：
+
+- 企业的成本函数
+- 供应能力和库存约束
+- 报价曲线
+- 调度偏好
+- 风险阈值和内部策略
+
+这条研究信号的工程含义是：MPC 的产品化不能只围绕 `sum / count / join` 展开。未来的落地场景可能会把 `candidate generation` 放在普通环境里，把 `cost evaluation / constraint check` 放进 MPC；系统输出的是可执行方案和有限的 aggregate score，而不是泄露每一方的私有约束。
+
+### 18A.71 Federated LLM fine-tuning 开始面对“隐私”和“归因/问责”的张力
+
+2026-05-07 的 `FedAttr: Towards Privacy-preserving Client-Level Attribution in Federated LLM Fine-tuning` 代表了一个很现实的新问题：联邦微调希望保护 client 更新，但模型数据所有权、watermark radioactivity testing、数据贡献归因和滥用追责又要求系统能识别某些 client-level 信号。
+
+这对 primer 很重要，因为它提醒读者：
+
+- secure aggregation 的目标是隐藏单个 client update
+- 归因、审计、版权证明和恶意 client 排查有时又需要 client-level evidence
+- 这两类目标天然存在张力，不能只靠一句“用了 FL 所以隐私安全”解决
+
+一个工程上更成熟的系统，需要把 `private training`、`audit evidence`、`client consent`、`attribution purpose` 和 `abuse investigation threshold` 分开建模。否则团队很容易在上线后发现：隐私层把所有单体信号都藏住了，但合规或安全团队又要求解释某个模型行为来自哪里。
+
+### 18A.72 Agent memory 隐私正在成为 RAG 之后的下一层系统问题
+
+2026-05-10 提交、2026-05-14 修订的 `MemPrivacy: Privacy-Preserving Personalized Memory Management for Edge-Cloud Agents` 把一个很新的问题讲清楚了：当 LLM agent 开始拥有长期记忆，隐私风险不只是“单次 prompt 里有没有 PII”，而是敏感事实会被反复抽取、归纳、检索、合并，并在云端 memory system 里长期存在。
+
+这条研究的工程信号是：agent memory 不能只靠全局禁存或粗暴脱敏。更可落地的方向是：
+
+- 设备或边缘侧先识别 privacy-sensitive spans
+- 把姓名、地点、机构、金额、健康信息等替换成 typed placeholders
+- 云侧只处理语义结构和可检索模板
+- 需要展示或执行真实任务时，再在本地恢复原始值
+- 对不同类型敏感信息设置不同保护等级和保留时间
+
+一个 agent memory 系统如果要面向生产，至少应该记录 `raw span 是否离开设备`、`placeholder taxonomy`、`local restore map`、`cloud retention`、`memory retrieval scope` 和 `user deletion path`。这类方案不是 DP，也不是 TEE，但它很实用：它把输入最小化推进到了 AI agent 的长期状态管理层。
+
+### 18A.73 Vertical / clustered FL 的重点正在从“数据不出域”推进到“特征拆分、聚类隐私和输出 DP”
+
+2026-04-15 的 `Secure and Privacy-Preserving Vertical Federated Learning` 和 2026-04-22 的 `Differentially Private Clustered Federated Learning with Privacy-Preserving Initialization and Normality-Driven Aggregation` 都指向同一个趋势：FL 不是一个单一模式。
+
+对初学者来说，最容易误解的是把所有 FL 都理解成“每个设备有一份完整样本，本地训练后上传梯度”。真实业务里还有两类重要场景：
+
+- vertical FL：各方拥有同一批实体的不同特征，比如银行有交易特征，医院有健康特征，标签又可能只在一方
+- clustered FL：用户或机构分布高度异质，系统需要先形成更接近的数据簇，再训练更合适的模型
+
+这两类场景的隐私问题也不同。vertical FL 要同时保护输入特征、标签、模型中间量和最终输出；clustered FL 还要注意聚类结果本身可能泄露用户或机构特征。新研究的共同方向是组合 MPC、secure vector sum、DP、privacy-preserving initialization 和更少的 MPC 计算路径，而不是把全部训练都塞进昂贵的安全计算里。
+
+一个 vertical FL execution record 可以这样写：
+
+```json
+{
+  "vertical_fl_job": {
+    "job_id": "vfl_credit_health_risk_2026_05",
+    "entity_alignment": "private_joined_customer_token",
+    "feature_holders": ["bank_a", "clinic_b"],
+    "label_holder": "insurer_c"
+  },
+  "privacy_controls": {
+    "input_feature_plaintext_shared": false,
+    "aggregator_role": "distributed_across_mpc_servers",
+    "intermediate_activations_visible_to_single_party": false,
+    "final_model_release": "dp_protected"
+  },
+  "efficiency_controls": {
+    "mpc_scope": "aggregation_and_sensitive_intermediate_steps_only",
+    "local_plain_training_allowed": true,
+    "communication_budget_tracked": true
+  }
+}
+```
+
+这条趋势对落地判断很有用：当团队说“我们要上联邦学习”时，第一步不是选框架，而是先问数据是横向拆分、纵向拆分，还是高度异质需要聚类；然后再决定 secure aggregation、MPC、DP、TEE 分别放在哪一层。
+
+### 18A.74 DAP 正在把“私密遥测”从论文推进到互联网标准
+
+IETF PPM 工作组的 `Distributed Aggregation Protocol` draft-18 已经进入 2026-05 版本。它的方向很明确：把客户端测量值通过 VDAF 拆分给多个聚合方，让系统只学习批量聚合结果，而不是中心化收集每个用户的明细事件。
+
+这条前沿信号很适合补进 primer，因为它把 MPC 从“高门槛密码学概念”拉回到一个普通产品团队能理解的场景：
+
+- 浏览器或 App 想知道功能使用量、崩溃率、配置覆盖率
+- 单个客户端报告不应该被分析服务直接看到
+- 聚合方只在达到 batch threshold 后发布统计结果
+- 协议层要处理 task provisioning、report verification、aggregation job、collection job 和 replay 防护
+
+这说明隐私技术正在从“数据科学平台功能”进入“测量基础设施协议”。对工程落地来说，DAP 的关键问题不是 SQL 写法，而是 `task schema`、`privacy unit`、`batch window`、`non-collusion assumption`、`VDAF choice` 和 `release threshold`。
+
+### 18A.75 端侧 FL 的下一步重点是“训练调度、能耗和代表性”，不只是 secure aggregation
+
+MIT Lincoln Laboratory 2026-05 的联邦学习研究信号提醒了一个容易被忽略的问题：移动和边缘设备上做 FL 时，训练慢、耗电、网络不稳定，系统往往需要选择“合适设备”参与训练。这个选择过程本身会影响隐私、代表性和公平性。
+
+对初学者来说，这能纠正一个常见误解：
+
+- FL 不是“把训练搬到端上”这么简单
+- secure aggregation 保护的是服务器看不到单个更新，但不解决设备选择偏差
+- DP 保护的是发布结果或模型更新贡献，但会影响小设备、小样本 cohort 的效用
+- 端侧训练调度还要处理电量、网络、算力、参与频率、cohort 最小规模和失败重试
+
+这条趋势的落地含义是：真正的端侧 FL 平台需要把 `client eligibility`、`participation cap`、`secure aggregation`、`DP budget`、`device health`、`fairness audit` 放在同一个控制面里。
+
+### 18A.76 Agentic AI 的 confidential computing 正在从“保护推理”走向“保护工具调用链”
+
+2026 年 agentic AI 的 confidential computing 讨论开始超出普通 LLM inference。agent 不只是接受 prompt 并返回 answer，还会调用工具、检索文档、写入 memory、执行交易、访问企业 API。这里的隐私边界比单次推理更长。
+
+一个成熟的 confidential agent 系统需要回答：
+
+- tool invocation payload 是否进入 TEE / confidential container
+- agent memory 是否和推理上下文处在同一个保护边界
+- attestation 是否绑定到 agent policy、tool allowlist 和模型版本
+- API token、database credential、retrieval result 是否只在受保护执行环境中解封
+- agent trace、reasoning log、tool output 是否被降敏或完全不落盘
+
+这条趋势把 TEE 的工程问题推到了应用层：`attestation -> policy-bound key release -> protected model/tool runtime -> controlled logs -> auditable tool actions`。如果只保护模型权重，却让工具参数、检索结果和执行 trace 明文进入普通日志，confidential AI 的实际隐私价值会大幅缩水。
+
+### 18A.77 Agent 输出层也需要 privacy accounting，而不只是保护 prompt
+
+2026-03 的 `Differential Privacy in Generative AI Agents: Analysis and Optimal Tradeoffs` 提醒了一个容易被忽略的问题：很多 AI 隐私方案把注意力放在用户 prompt、RAG 文档或训练数据上，但 agent 最终输出本身也可能泄露企业数据库、客户记录或内部状态。
+
+这类研究把 response generation 看成一个随机机制，并讨论 token-level / message-level DP。它对工程落地的价值不是说“今天就能直接给所有 agent 输出套一个完美 DP 参数”，而是给出了更正确的建模方式：
+
+- privacy subject 可能是企业数据表里的某个个体，而不是提问用户
+- 输出长度、temperature、检索上下文大小都会影响泄露面
+- 单次回答、连续追问和 agent 自动摘要都应该进入 composition 视角
+- 如果 agent 可以调用数据库，SQL guardrail 之后还要有 answer release guardrail
+
+一个输出层隐私审计记录可以这样写：
+
+```json
+{
+  "agent_answer_release": {
+    "request_id": "agent_sales_ops_2026_05_25_001",
+    "data_subject_boundary": "customer_account",
+    "source_tables": ["crm_opportunities", "support_cases"],
+    "answer_scope": "aggregate_summary_only"
+  },
+  "generation_privacy_controls": {
+    "token_level_dp_analysis": "required_for_external_release",
+    "message_level_budget_ledger": "agent_dp_ledger_q2",
+    "max_answer_tokens": 320,
+    "temperature_policy": "bounded_by_privacy_utility_review"
+  },
+  "release_gate": {
+    "verbatim_row_quote_blocked": true,
+    "small_group_claim_blocked": true,
+    "followup_composition_tracked": true
+  }
+}
+```
+
+这条趋势的核心结论是：agent 隐私不能只看输入和运行环境。真正面向企业数据的 agent 还要把 `retrieval context -> generated tokens -> follow-up conversation -> logs / summaries` 放进同一个隐私预算和发布控制里。
+
+### 18A.78 FL 的 DP 预算正在从“全局一刀切”走向 heterogeneous client sampling
+
+2026-05-01 的 `Optimal Client Sampling in Federated Learning With Client-Level Heterogeneous Differential Privacy` 很适合和前面的个性化 DP 预算放在一起看。它指出经典 DP-FedAvg 在 client privacy requirement 不同的情况下，往往要按最严格的一方统一加噪，导致模型效用损失；GDPFed / GDPFed+ 的思路是按 privacy budget 分组，并优化每组采样比例和 sparsification，减少不必要噪声。
+
+这对生产 FL 平台很实用，因为真实系统里的 client 往往并不同质：
+
+- 医院、银行、地区、设备类型的风险等级不同
+- 有些 client 数据稀疏、样本独特，更容易被重识别
+- 有些 client 可用性差，掉线会影响安全聚合和训练收敛
+- 一刀切的强隐私参数可能让低风险大样本组也承担过高效用损失
+
+一个 heterogeneous FL sampling plan 可以这样写：
+
+```json
+{
+  "fl_privacy_groups": [
+    {
+      "group": "high_risk_small_sites",
+      "epsilon_window": 0.6,
+      "client_sampling_ratio": 0.18,
+      "model_update_sparsification": true
+    },
+    {
+      "group": "standard_risk_large_sites",
+      "epsilon_window": 1.2,
+      "client_sampling_ratio": 0.42,
+      "model_update_sparsification": true
+    }
+  ],
+  "round_controls": {
+    "privacy_unit": "client",
+    "secure_aggregation_required": true,
+    "per_group_noise_calibrated": true,
+    "utility_loss_monitored_per_group": true
+  }
+}
+```
+
+这条前沿信号能帮助读者理解：联邦学习里的 DP 不只是“给更新加噪声”。更成熟的系统会同时优化 `risk grouping`、`client sampling`、`sparsification`、`secure aggregation` 和 `privacy ledger`。
+
+### 18A.79 多租户 RAG 的隐私边界开始从“单账号”走向“串谋审计”
+
+2026-05-19 的 `Auditing Privacy in Multi-Tenant RAG under Account Collusion` 是 RAG 隐私研究里一个很值得补进导论的信号。它指出：如果服务把 per-account DP 当作主要承诺，但同一租户可以用多个账号协调查询同一个 index，那么单账号边界可能低估联合泄漏。
+
+这对企业 RAG 产品很实际。很多 SaaS RAG 系统天然是多租户、多账号、多角色：
+
+- 同一企业租户下可能有管理员、法务、销售、审计账号
+- 这些账号访问的是同一个 document index
+- 每个账号的单次查询看起来合规，但多账号组合可能逐步探测敏感文档是否存在
+- retrieval score / top-k selection 的隐私保证和 LLM answer 的隐私保证不是同一个东西
+
+这条研究的工程启发是：RAG 隐私评估要把 `account`、`tenant`、`index`、`coalition size`、`query ledger`、`retrieval attestation`、`generation release gate` 分开建模。对产品文案来说，也不要只写“per-account DP”，而要说明同租户多账号协作查询时的边界和审计策略。
+
+### 18A.80 HE 的落地形态更可能先出现在固定聚合，而不是任意 AI 推理
+
+2026-05-21 的 `Homomorphic Encryption for Privacy-Preserving Data Aggregation in Data Spaces` 很适合用来校正初学者对 HE 的期待。HE 常被想象成“在密文上运行任何复杂业务逻辑”，但更现实的落地路径往往是固定 schema、固定算子、固定输出的密文聚合。
+
+能源 data space 是一个好例子：各参与方本地加密读数，聚合方在密文上求和，最后只发布区域或时间窗口级总量。这里的隐私对象不一定是个人身份，也可能是企业生产负荷、能源消耗、设备状态和商业节奏。
+
+工程判断上可以这样看：
+
+- 如果需求是 `sum / count / average` 这类有限聚合，HE 更容易进入生产
+- 如果需求是任意 SQL、复杂 join、自由文本 RAG 或 LLM 推理，HE 成本和系统复杂度会明显上升
+- HE 保护输入计算过程，但输出过细仍会泄露，所以还要配合阈值、分桶、抑制或 DP
+
+这条趋势的价值是把 HE 从“神奇加密计算”拉回工程问题：先定义数据类型、算子集合、密钥管理、解密角色和输出粒度，再决定它是不是合适。
+
+### 18A.81 PPFL 的下一步不是只加密梯度，而是同时处理隐私和鲁棒性
+
+2026-04-28 的 AP-PPFL 论文强调了一个现实冲突：联邦学习中的隐私保护机制会隐藏梯度或模型更新，但投毒防御又需要识别异常更新。只做 secure aggregation 可能让服务器看不到单个更新，从隐私角度是好事；但如果恶意客户端混入，模型质量和安全性会受损。
+
+这类研究的前沿信号是：PPFL 正在从单目标系统变成多目标系统。
+
+- 隐私目标：服务器不能轻易从梯度推断客户端数据
+- 鲁棒性目标：恶意客户端不能通过投毒破坏全局模型
+- 可审计目标：系统能解释为什么某些更新被过滤
+- 工程目标：加密、相似度判断、投票和聚合的成本不能让训练不可用
+
+对 primer 来说，这能帮助读者避免一个常见误区：`加密更新`、`secure aggregation`、`DP noise` 都不能自动解决投毒问题；而强投毒防御也不能自动满足隐私目标。生产 FL 平台应该把 privacy review 和 model security review 放在同一张控制面里。
+
+### 18A.82 ZK + secret sharing 的 FL 方向：不只防客户端，也要防恶意聚合方
+
+2026 年 Future Generation Computer Systems 的 `Privacy-preserving federated learning system under malicious collaborators and aggregators` 把 FL 威胁模型又推进了一层：真实协作里不只客户端可能恶意，聚合方也可能作恶，甚至出现恶意协作者与聚合方串谋。论文使用 secret sharing 做协作更新，并引入 zero-knowledge proof 来验证 communicated model score 和 aggregated model。
+
+这条信号适合放进导论，因为它能帮初学者区分三类经常混在一起的问题：
+
+- `confidentiality`：服务器或其他参与方不能看到单个客户端的明文数据或更新
+- `integrity`：聚合结果确实按协议、按合法输入计算出来
+- `availability / robustness`：share withholding、恶意聚合方、掉线或拒绝服务不会让整个训练流程失控
+
+一个更完整的 FL 轮次审计记录可以这样写：
+
+```json
+{
+  "fl_round_with_zk_audit": {
+    "round_id": "cross_bank_fraud_fl_r88",
+    "participants": ["bank_a", "bank_b", "bank_c", "bank_d"],
+    "aggregators": ["agg_1", "agg_2"],
+    "threat_model": [
+      "malicious_collaborators",
+      "malicious_aggregators",
+      "share_withholding"
+    ]
+  },
+  "privacy_layer": {
+    "update_secret_shared": true,
+    "single_aggregator_can_reconstruct_update": false,
+    "raw_training_rows_leave_party": false
+  },
+  "verification_layer": {
+    "zk_proof_for_model_score": true,
+    "zk_proof_for_aggregate_model": true,
+    "invalid_or_missing_share_policy": "exclude_and_log"
+  },
+  "round_output": {
+    "aggregate_model_update_released": true,
+    "proof_verification_status": "passed",
+    "malicious_behavior_evidence_exported": "proof_failure_only"
+  }
+}
+```
+
+这条数据流想说明：下一代 FL 平台不能只写“secure aggregation enabled”。如果参与方之间没有完全信任，还要把 `proof generation`、`proof verification`、`share withholding handling`、`aggregator accountability` 和 `collusion model` 作为一等工程对象。
+
 ## 18B. 已落地场景与可引用案例
 
 这一节只放已经明确能引用到产品、平台或云能力的案例。
@@ -6360,6 +7970,708 @@ Snowflake 2026-05-14 的 Data Clean Rooms 更新提供了一个很具体的生�
 
 这条案例看起来不像广告、医疗那样“业务感强”，但它很重要：privacy tech 真正进入平台期后，版本变更、回归测试、preview feature 边界和活动历史一样，都属于隐私治理的一部分。
 
+### 18B.53 Snowflake multiparty clean rooms：多方广告协作开始产品化
+
+Snowflake 2026-04-28 的 Data Clean Rooms 更新很适合作为“clean room 已经从双边数据合作走向多方生态协作”的落地案例。它提到 multiparty collaboration 已 GA，并把 advertiser、publisher、agency、technology provider、identity provider、media network 等角色放进同一类工作流。
+
+一个多方 clean room 的 collaboration record 可以这样理解：
+
+```json
+{
+  "collaboration_id": "cpg_retail_media_publisher_lift_2026_q2",
+  "participants": [
+    {
+      "org": "brand_a",
+      "role": "advertiser",
+      "contributes": ["campaign_exposure_log"]
+    },
+    {
+      "org": "retailer_b",
+      "role": "retailer",
+      "contributes": ["transaction_basket"]
+    },
+    {
+      "org": "publisher_c",
+      "role": "media_network",
+      "contributes": ["impression_log"]
+    },
+    {
+      "org": "identity_partner_d",
+      "role": "identity_resolution",
+      "contributes": ["approved_identity_spine"]
+    }
+  ],
+  "governed_actions": {
+    "allowed": ["campaign_lift", "audience_overlap", "activation_segment_export"],
+    "blocked": ["row_level_export", "unapproved_freeform_join"],
+    "consent_filter_required": true
+  }
+}
+```
+
+这条案例的落地含义是：clean room 的治理对象已经不只是“查询模板”，还包括多方角色、激活出口、身份解析边界和自然语言/agentic 辅助操作的审批。
+
+### 18B.54 Apple Intelligence aggregate trends：端侧匹配 + DP 聚合用于合成数据策展
+
+Apple Machine Learning Research 的 `Understanding Aggregate Trends for Apple Intelligence Using Differential Privacy` 是一个很适合引用的落地案例。它不是把用户邮件或文本上传给 Apple，而是先生成候选 synthetic messages，把 embedding 发到 opt-in 设备；设备在本地把真实样本 embedding 和 synthetic embedding 做匹配，再用 DP 聚合出最常被选中的 synthetic variants。
+
+一个简化 mock data flow 可以这样写：
+
+```json
+{
+  "server_generated_candidate": {
+    "synthetic_message_id": "syn_email_0421",
+    "synthetic_text": "Can we move tomorrow's tennis game to 11:30?",
+    "embedding": "server_candidate_embedding"
+  },
+  "device_side_matching": {
+    "real_user_email_text_leaves_device": false,
+    "local_sample_count": 8,
+    "nearest_synthetic_message_id": "syn_email_0421"
+  },
+  "dp_aggregate_release": {
+    "metric": "top_synthetic_message_variants",
+    "noise_added": true,
+    "reported_to_server": {
+      "synthetic_message_id": "syn_email_0421",
+      "noisy_selection_count": 18420
+    }
+  }
+}
+```
+
+这条案例说明：AI 训练数据改进不一定只能走“收集更多真实文本”。一种更隐私友好的路线是 `public/synthetic candidate -> on-device matching -> DP aggregate trends -> curated synthetic dataset`。
+
+### 18B.55 Google Privacy Sandbox DP analysis：广告测量 API 的隐私保证开始被形式化分析
+
+Google Research 的 `On the Differential Privacy and Interactivity of Privacy Sandbox Reports` 把 Private Aggregation API 和 Attribution Reporting API 放进形式化 DP 分析框架里，讨论在查询和数据库会根据前序响应交互变化时，如何理解这些 API 的 DP 保证。
+
+这类案例很适合作为广告测量落地引用，因为它说明浏览器侧 PET 不只是“加噪声报表”，而是把 aggregation、noise、encryption、API guardrails 和 interactivity 一起纳入隐私模型。
+
+一个广告 API 输出的 mock data 可以这样看：
+
+```json
+{
+  "privacy_sandbox_measurement": {
+    "api": "attribution_reporting_or_private_aggregation",
+    "campaign_id": "cmp_2026_q2_77",
+    "source_event_level_user_id_visible": false,
+    "aggregation_service_required": true
+  },
+  "summary_report": {
+    "bucket": "campaign_region_device",
+    "noisy_conversion_count": 932,
+    "privacy_controls": {
+      "dp_noise": true,
+      "contribution_bounding": true,
+      "interactive_query_model_reviewed": true
+    }
+  }
+}
+```
+
+这条落地信号的重点是：广告系统里的 DP 要放在协议和 API 行为里看，而不是只在 dashboard 最后一层“加一点噪声”。
+
+### 18B.56 DPSynth / Google：DP 合成表数据正在进入生产工程化阶段
+
+USENIX PEPR 2026 的 `DPSynth: From Research to Production` 很适合作为落地引用。它明确把 DP synthetic tabular data 从研究机制推进到生产系统：基于 marginal-based mechanisms，建立在 PipelineDP 和 mbi 之上，并强调 Apache Beam、Spark、大规模数据、真实 schema 约束、合理默认值和非 DP 专家可用性。
+
+一个生产 synthetic release ticket 可以这样写：
+
+```json
+{
+  "release_ticket": "dp_synth_customer_support_2026_q2",
+  "owner": "analytics_privacy_platform",
+  "source": {
+    "table": "support_cases",
+    "privacy_unit": "customer_account",
+    "direct_identifier_removed_before_dp": true
+  },
+  "dp_synthesis": {
+    "library": "dpsynth_style_pipeline",
+    "mechanism": "marginal_based",
+    "distributed_backend": "apache_beam_or_spark",
+    "epsilon": 1.0,
+    "budget_ledger_entry": "dp_ledger_2026_05_22_004"
+  },
+  "release_checks": {
+    "schema_constraints_passed": true,
+    "rare_combination_reviewed": true,
+    "utility_report_attached": true,
+    "consumer_training_required": true
+  }
+}
+```
+
+这条案例的价值是让读者看到：DP 合成数据落地不是“点一下生成”，而是一个有 owner、budget ledger、distributed backend、quality gates 和 release policy 的平台能力。
+
+### 18B.57 医疗合成数据框架：隐私发布需要把伦理审批、容器化和领域 QC 放进流程
+
+npj Digital Medicine 2026-05-02 的健康数据与 biomarker 合成框架提供了一个强落地感案例。论文描述了一个端到端框架：开源、容器化、支持敏感健康数据合成与可视化，并把正式 DP 训练、经验性隐私风险评估、数据充分性分析、领域质量控制和伦理/法律审批过程放在同一条流程里。
+
+一个医疗 synthetic data release 的治理记录可以这样写：
+
+```json
+{
+  "health_synthetic_data_release": {
+    "project": "biobank_biomarker_research",
+    "ethics_review_completed": true,
+    "gdpr_basis_documented": true,
+    "containerized_pipeline": true
+  },
+  "privacy_and_quality": {
+    "formal_dp_training_for_selected_models": true,
+    "empirical_privacy_risk_evaluation": true,
+    "data_sufficiency_analysis": true,
+    "clinical_plausibility_rules": [
+      "valid_lab_ranges",
+      "diagnosis_demographic_consistency",
+      "missingness_pattern_review"
+    ]
+  },
+  "release_boundary": {
+    "real_patient_rows_exported": false,
+    "visualization_outputs_thresholded": true,
+    "approved_users": ["research_collaborator", "clinical_statistician"]
+  }
+}
+```
+
+这条案例说明：在医疗场景里，privacy tech 必须和机构审批、可复现部署、领域质量规则、可视化边界和后续访问控制绑定，单个算法无法独立承担全部治理责任。
+
+### 18B.58 IETF DAP draft-18：隐私测量开始具备可采购、可互操作的协议形态
+
+IETF DAP draft-18 的存在本身就是落地信号。很多隐私技术难落地，不是因为算法不存在，而是因为缺少跨厂商、跨实现、跨组织能对齐的协议边界。DAP 把 task、report、aggregation job、collection job、VDAF 和角色分工写成协议对象，降低了“每家公司自研一套私密遥测”的成本。
+
+对企业采购或平台建设来说，这意味着可以把 DAP 能力拆成更具体的问题：
+
+- 是否支持所需 VDAF 类型
+- 是否支持 task provisioning 和 key rotation
+- aggregator 是否真正独立运营
+- collector 能否只拿到达到阈值的 batch output
+- schema 变更、失败重试和 replay 防护如何审计
+
+这条案例的重点不是某个单一产品，而是标准化让 PET 从“专家项目”更接近“平台能力”。
+
+### 18B.59 MIT Lincoln Laboratory：端侧 FL 研究正在直面设备资源约束
+
+MIT Lincoln Laboratory 2026-05 发布的联邦学习研究说明了一个非常实际的落地问题：要让手机、IoT 和边缘设备参与训练，不能只看隐私协议，还要减少训练时间和资源消耗。否则系统很容易只从高端、在线、充电中的设备采样，模型代表性和用户体验都会受影响。
+
+一个端侧 FL production dashboard 可以这样写：
+
+```json
+{
+  "edge_fl_dashboard": {
+    "round_id": "voice_keyword_2026_05_24_r42",
+    "eligible_clients": 1200000,
+    "selected_clients": 60000,
+    "completed_clients": 47210
+  },
+  "resource_metrics": {
+    "median_training_seconds": 18.4,
+    "p95_training_seconds": 61.2,
+    "battery_drop_p50_percent": 1.1,
+    "wifi_only": true
+  },
+  "privacy_and_quality": {
+    "secure_aggregation_success_rate": 0.982,
+    "dp_budget_spent_this_week": 0.18,
+    "underrepresented_device_classes": ["low_memory_android"],
+    "next_round_sampling_adjustment_required": true
+  }
+}
+```
+
+这条案例的价值在于把 FL 从“隐私概念”拉回生产控制面：如果没有资源观测、参与频率限制和设备类别平衡，端侧训练可能在隐私上看起来正确，但在产品和模型质量上不可持续。
+
+### 18B.60 Red Hat Research：匿名化需要管线化和可部署工具链
+
+Red Hat Research 对隐私工具链的总结适合作为去标识化/匿名化落地引用。它强调的不是一个神奇算法，而是面向真实数据处理的数据管线：识别敏感字段、处理结构化和非结构化信息、支持研究或分析使用，同时降低重新识别风险。
+
+一个匿名化 pipeline record 可以这样写：
+
+```json
+{
+  "anonymization_pipeline": {
+    "source_system": "regulated_operational_records",
+    "data_types": ["structured_table", "free_text_note", "event_log"],
+    "intended_use": "secondary_research_or_internal_analytics"
+  },
+  "processing_steps": [
+    "direct_identifier_removal",
+    "entity_detection_for_free_text",
+    "date_shift_or_time_bucket",
+    "rare_category_grouping",
+    "risk_scoring_before_release"
+  ],
+  "release_controls": {
+    "real_rows_exported": true,
+    "dp_guarantee": false,
+    "access_contract_required": true,
+    "linkage_risk_review_required": true
+  }
+}
+```
+
+这条案例也能帮助读者理解一个边界：匿名化管线很实用，但如果输出仍是真实行，它和 DP synthetic data 的风险模型不同，不能把两者混为一谈。
+
+### 18B.61 ORNL / IEEE IoT Journal：client-level heterogeneous DP 已进入可引用研究产出
+
+Oak Ridge National Laboratory 页面记录的 `Optimal Client Sampling in Federated Learning With Client-Level Heterogeneous Differential Privacy` 已在 IEEE Internet of Things Journal 2026-05-01 发表。它适合作为“FL 平台如何处理不同 client 隐私要求”的可引用研究案例。
+
+一个 cross-silo IoT / edge FL 控制面可以这样写：
+
+```json
+{
+  "heterogeneous_dp_fl_control_plane": {
+    "publication_anchor": "ieee_iot_journal_2026_05_01",
+    "training_job": "regional_energy_forecast_fl",
+    "privacy_unit": "client_site",
+    "client_groups": ["strict_privacy", "standard_privacy", "low_risk_large_sample"]
+  },
+  "sampling_policy": {
+    "group_based_dp": true,
+    "sampling_ratio_optimized_per_group": true,
+    "sparsification_enabled": true,
+    "strictest_group_not_forced_on_all_clients": true
+  },
+  "production_questions": {
+    "can_clients_choose_or_change_privacy_level": true,
+    "does_budget_change_require_reconsent": true,
+    "is_group_membership_itself_sensitive": true
+  }
+}
+```
+
+这条案例的价值在于把 DP-FL 的工程问题讲得更具体：不是所有 client 都必须被同一个 epsilon 和同一个采样概率处理；但一旦分组，分组规则、迁移规则和组成员身份本身也要进入隐私评审。
+
+### 18B.62 Salesforce Data 360 Clean Rooms：零拷贝架构把 clean room 拉回数据驻留与治理问题
+
+Salesforce Engineering 2026-05-11 对 Data 360 Clean Rooms 的工程说明，是一个很好的落地引用。它强调的不是某个单一密码学协议，而是零拷贝 federation：查询尽量在数据所在环境执行，provider-side operations 留在 provider security context，consumer-side logic 留在 consumer environment，跨边界移动的是聚合、匿名化后的结果。
+
+这对初学者很有价值，因为它展示了 clean room 的真实工程重心：
+
+- raw data 不一定要搬到一个中心仓库
+- metadata、query template、privacy policy 和 collaboration context 需要跨环境同步
+- provider 和 consumer 都要看到可审计记录
+- aggregation threshold、query limit、frequency cap、approved attribute 和 approved SQL pattern 是产品控制面的一部分
+- 一对多协作时，每个 collaboration context 要独立隔离，避免一个伙伴的策略或故障影响其他伙伴
+
+一个零拷贝 clean room execution record 可以这样写：
+
+```json
+{
+  "zero_copy_clean_room_run": {
+    "collaboration_id": "sf_d360_retail_media_2026_05",
+    "provider_execution_context": "provider_owned_security_boundary",
+    "consumer_execution_context": "consumer_owned_security_boundary",
+    "raw_data_moved": false
+  },
+  "governance_controls": {
+    "approved_query_template": "audience_overlap_by_region",
+    "approved_attributes": ["region", "campaign_id", "cohort_bucket"],
+    "aggregation_threshold": 100,
+    "frequency_cap_per_day": 20,
+    "immutable_audit_log_shared": true
+  },
+  "output": {
+    "result_type": "aggregated_insight",
+    "row_level_export": false,
+    "activation_destination_review_required": true
+  }
+}
+```
+
+这条案例说明：clean room 落地不是简单“把双方表 join 一下”。更重要的是数据驻留、执行位置、查询模板、阈值、审计、撤销访问和多协作隔离。
+
+### 18B.63 Comscore / AWS Clean Rooms：媒体测量的落地需求是少搬数据、可协作、可审计
+
+Comscore 的 AWS Clean Rooms 案例已经很适合作为媒体测量落地引用：它把 panel data 与第三方数据源交叉分析，目标不是把所有数据迁移进 Comscore 内部系统，而是在可控环境里让多方匹配、分析、协作，同时避免直接暴露 underlying data。
+
+这个案例对导论的补充价值在于，它把 clean room 的商业动机讲得很清楚：
+
+- 媒体测量需要跨多来源数据得到更完整洞察
+- 传统 server-to-server 数据搬运增加成本、风险和治理复杂度
+- clean room 把 join key、pre-encrypted data、privacy controls 和 BI dashboard 串起来
+- double-blind collaboration 更适合 cookie、first-party ID、IP address 这类敏感标识参与的测量场景
+
+一个媒体测量 clean room record 可以这样写：
+
+```json
+{
+  "media_measurement_collaboration": {
+    "measurement_provider": "comscore_like_panel_provider",
+    "collaborators": ["publisher_a", "advertiser_b", "data_partner_c"],
+    "clean_room_platform": "aws_clean_rooms",
+    "max_collaborators": 5
+  },
+  "data_flow": {
+    "pre_encrypted_tables_from_s3": true,
+    "mutually_agreed_join_key": true,
+    "raw_cookie_or_first_party_id_exported": false,
+    "double_blind_analysis": true
+  },
+  "business_output": {
+    "audience_trend_dashboard": "quicksight_or_bi_layer",
+    "row_level_records_returned": false,
+    "insight_used_for": ["campaign_effectiveness", "audience_planning"]
+  }
+}
+```
+
+这条案例的重点是：clean room 的价值常常不是“数学上最强隐私”，而是让真实企业少复制数据、少搬运数据、把协作查询放进可治理的产品流程。
+
+### 18B.64 Google / PEPR 2026：AI 使用洞察开始采用 TEE + DP 的可验证组合
+
+PEPR 2026 的 `Toward Provably Private Insights into AI Use` 是一个很值得放进 primer 的生产信号。它讨论的不是传统表格分析，而是 GenAI 产品里的真实使用洞察：开发者希望知道功能如何被使用、失败在哪里、哪些场景需要改进，但原始输入可能是录音、会议、prompt、总结和用户上下文。
+
+这个案例的关键是组合边界：
+
+- TEE 让敏感输入在可证明的执行环境里被解释和标注
+- data expert LLM 在 enclave 内处理非结构化内容
+- DP 用于最终聚合发布，避免单个用户的使用记录被结果反推出
+- attestation 和开源系统架构让外部能验证“服务端处理被限制在隐私计算路径里”
+
+一个生产 dashboard record 可以这样写：
+
+```json
+{
+  "ai_usage_insight_dashboard": {
+    "product": "recorder_or_ai_assistant",
+    "raw_prompt_exported": false,
+    "raw_transcript_exported": false,
+    "analysis_boundary": "attested_tee"
+  },
+  "private_aggregation": {
+    "dp_release_enabled": true,
+    "privacy_unit": "user",
+    "min_batch_size": 500,
+    "published_metric": "noisy_count_by_feature_and_intent"
+  },
+  "audit_surface": {
+    "enclave_measurement_logged": true,
+    "code_version_pinned": true,
+    "budget_ledger_available": true
+  }
+}
+```
+
+这条落地信号对初学者很重要：AI privacy analytics 不应只靠“内部员工不会看日志”。更成熟的路线是把明文处理边界、外部可验证性和输出 DP 保证拆成三个独立控制面。
+
+### 18B.65 PEPR 2026：embedding obfuscation 不能当成隐私保证
+
+PEPR 2026 的 `The Emperor's New Embeddings: Obfuscating ML Inputs Doesn't Provide Privacy` 适合放在导论里作为反例型落地信号。很多团队会把“上传 embedding 而不是原文”理解成隐私保护，但如果 embedding 还能支持高质量推理，它通常也保留了大量语义信息。
+
+工程上应当把这条信号翻译成几条规则：
+
+- embedding 是敏感派生数据，不是匿名数据
+- 隐私评估要包含 reconstruction、attribute inference、membership inference 和 cross-context linkability
+- 产品文案不能把“raw text not uploaded”写成“private by design”的完整证明
+- 如果输入很敏感，应考虑 TEE 推理、零保留、访问隔离、端侧推理、MPC/HE 子任务或 DP 输出，而不是单独依赖向量混淆
+
+一个最小风险登记可以这样写：
+
+```json
+{
+  "embedding_risk_register": {
+    "system": "cloud_semantic_router",
+    "raw_input_uploaded": false,
+    "embedding_uploaded": true,
+    "embedding_classification": "sensitive_derived_data"
+  },
+  "required_tests": [
+    "nearest_neighbor_leakage",
+    "attribute_inference",
+    "membership_inference",
+    "tenant_linkability"
+  ],
+  "approved_controls": {
+    "retention_days": 0,
+    "debug_logging": false,
+    "third_party_reuse": false,
+    "tee_required_for_high_sensitivity": true
+  }
+}
+```
+
+这条案例的价值在于纠偏：隐私技术导论不能只介绍强技术，也要明确哪些“看起来像隐私”的做法没有正式保证。
+
+### 18B.66 Vault / Tatari：TV advertising clean room 正在服务医疗、金融与保险投放测量
+
+Vault 2026-05-28 的公告是一个很新的落地信号：TV / CTV 广告测量也在从 pixel-based tracking 转向 tokenized data clean room。它的重点不是“做一个通用数据库 join”，而是把电视广告曝光、publisher attribution、advertiser first-party event、ROAS measurement 和 regulated vertical compliance 放到一个可治理的协作环境里。
+
+对 primer 来说，这个案例有三个价值：
+
+- clean room 正在从 web / mobile attribution 扩展到 CTV 和线性电视测量
+- 医疗、fintech、insurance 这类 regulated vertical 的需求会推动 tokenization、SOC 2、HIPAA-compatible workflow、single integration across publishers
+- 隐私增强不只服务“数据不能泄露”，也服务“能不能把 measurement 业务跑起来”
+
+一个 TV clean room measurement record 可以这样写：
+
+```json
+{
+  "tv_clean_room_measurement": {
+    "clean_room": "vault_like_tv_dcr",
+    "advertiser_vertical": "healthcare",
+    "publishers": ["nbcu", "disney", "netflix", "paramount", "amazon"],
+    "single_integration": true
+  },
+  "identity_and_event_flow": {
+    "first_party_events_tokenized": true,
+    "pixel_based_tracking": false,
+    "raw_pii_exposed_to_publishers": false,
+    "publisher_attribution_credit": true
+  },
+  "measurement_output": {
+    "full_funnel_roas_visible": true,
+    "row_level_export": false,
+    "regulated_vertical_review_required": true
+  }
+}
+```
+
+这条落地信号能帮助初学者理解：clean room 的产品价值常常来自“把敏感身份流、商业协作流、测量输出流拆开治理”，而不是单纯把 ID hash 一下。
+
+### 18B.67 Massive Bio / BeeKeeperAI：federated confidential computing 用于肿瘤临床试验匹配
+
+Massive Bio 和 BeeKeeperAI 2026-05-21 公布的 oncology trial matching 是一个很适合作为医疗 AI 落地引用的案例：AI pre-screening model 不要求医院把 PHI/PII 传出医疗环境，而是通过 BeeKeeperAI EscrowAI 的 TEE / confidential computing 让模型在受保护环境里接近数据执行，输出 pre-screening report。
+
+这个案例把 confidential computing 的价值讲得很具体：
+
+- 患者数据留在 provider environment，降低 PHI/PII 外流压力
+- 模型也受到保护，适合算法供应商不想暴露 proprietary model 的场景
+- 适用目标不是泛泛“医疗 AI”，而是 clinical trial eligibility screening 这种规则复杂、数据敏感、时效性强的 workflow
+- 它体现了“bring model to data”，而不是“bring data to model”
+
+一个 clinical trial matching execution record 可以这样写：
+
+```json
+{
+  "federated_confidential_clinical_matching": {
+    "workflow": "oncology_trial_pre_screening",
+    "provider_environment": "hospital_controlled_boundary",
+    "model_provider": "massive_bio_like_matching_model",
+    "confidential_platform": "escrowai_like_tee"
+  },
+  "privacy_and_ip_controls": {
+    "phi_leaves_provider": false,
+    "pii_leaves_provider": false,
+    "model_weights_visible_to_hospital_admin": false,
+    "remote_attestation_required": true
+  },
+  "output": {
+    "candidate_trial_matches": [
+      {
+        "trial_id": "nct_mock_042",
+        "eligibility_score_bucket": "likely_candidate",
+        "requires_clinician_review": true
+      }
+    ],
+    "raw_patient_record_exported": false
+  }
+}
+```
+
+这条案例也说明 TEE 的一个重要定位：它不自动解决最终输出是否泄露的问题，但非常适合把敏感数据驻留、模型 IP 保护和受控执行边界放在同一个工程架构里。
+
+### 18B.68 PEPR 2026：agent tool call 正在成为新的隐私泄漏面
+
+PEPR 2026 的 `Shadow Data in Tool Calls` 很适合补进“AI agent 已落地前夜”的风险案例。它讨论的不是传统数据库泄漏，而是 agent 调用外部工具时产生的影子数据：外部 API 可能看不到完整 prompt，却能从 tool name、query 参数、时间、地点、账号、recipient 和调用顺序推断用户意图。
+
+这个案例对初学者有三个启发：
+
+- agent privacy 不能只保护 prompt 和模型输出，还要保护 tool-call trace
+- “不把原文发给模型”不等于“不把敏感意图发给工具”
+- 产品层应该有 tool policy、参数最小化、敏感工具确认、trace retention 和第三方 processor 审计
+
+一个落地风险登记可以这样写：
+
+```json
+{
+  "agent_tool_shadow_data_register": {
+    "feature": "personal_assistant_tool_router",
+    "sensitive_tool_classes": [
+      "calendar",
+      "maps",
+      "health",
+      "finance",
+      "crm"
+    ],
+    "tool_trace_contains_user_intent": true
+  },
+  "required_controls": {
+    "pre_tool_redaction": true,
+    "purpose_scoped_tool_tokens": true,
+    "third_party_query_coarsening": true,
+    "zero_retention_for_sensitive_traces": true,
+    "user_confirmation_for_high_risk_tools": true
+  }
+}
+```
+
+这条落地信号说明：agentic AI 的 privacy architecture 需要把 tool boundary 当成一等数据边界，而不是把所有隐私控制都压在 LLM prompt 上。
+
+### 18B.69 PEPR 2026：AI provenance 要避免从透明度滑向监控
+
+PEPR 2026 的 `Provenance Without Surveillance` 把 AI 内容透明度放进了隐私工程语境。随着 EU AI Act、California SB 942 和 C2PA 这类 provenance / labeling 机制推进，产品需要披露内容是否由 AI 生成或编辑；但 provenance metadata 如果包含稳定用户标识、设备信息、精细位置、完整编辑链和跨平台可关联 ID，就可能变成新的 tracking surface。
+
+工程上可以把这条案例转成四个设计问题：
+
+- 透明义务到底要求披露什么？
+- 哪些 metadata 只给 auditor，不给普通 viewer？
+- 是否存在跨平台稳定 identifier？
+- provenance record 的 retention、撤销和访问策略是什么？
+
+一个可落地的 provenance policy 可以这样写：
+
+```json
+{
+  "ai_provenance_policy": {
+    "public_metadata": [
+      "ai_assisted_label",
+      "tool_provider",
+      "coarse_generation_category"
+    ],
+    "withheld_by_default": [
+      "creator_account_id",
+      "device_identifier",
+      "precise_location",
+      "full_edit_history"
+    ],
+    "auditor_access": "policy_bound_and_logged",
+    "cross_context_linkability_review_required": true
+  }
+}
+```
+
+这条案例补齐了 primer 的一个空白：privacy tech 不只保护数据分析和模型训练，也要保护透明度、审计和合规基础设施本身。
+
+### 18B.70 PEPR 2026：开发者隐私评估开始工具化
+
+PEPR 2026 的 `Turning Privacy Risk Assessment Into 20 Questions for Developers` 是一个很务实的落地信号。它的核心不是发明新的 PET，而是降低开发者在早期识别隐私风险的门槛：用结构化、多选式问题把数据类型、用途、recipient、保留、用户预期和高风险处理先问清楚，再把结果转成可执行的 review gate 和 control plan。
+
+对工程团队来说，这类工具的价值在于：
+
+- 在架构早期发现是否需要 DP、TEE、clean room、端侧处理或数据最小化
+- 把隐私评估从“专家临时判断”变成可复用、可审计的 intake artifact
+- 让 privacy review 更关注高影响决策，而不是反复收集基础背景
+
+一个落地输出可以这样理解：
+
+```json
+{
+  "developer_privacy_intake": {
+    "feature": "ai_customer_support_summary",
+    "questions_answered": 20,
+    "risk_dimensions": [
+      "customer_content",
+      "third_party_llm",
+      "support_agent_monitoring",
+      "retention"
+    ],
+    "suggested_pet_or_control": [
+      "redaction_before_llm",
+      "tee_for_high_sensitivity_accounts",
+      "dp_for_quality_metrics",
+      "raw_transcript_retention_cap"
+    ],
+    "launch_gate": "requires_privacy_review"
+  }
+}
+```
+
+这条案例适合放在落地部分，因为真正可运行的 privacy program 不是只靠专家救火，而是要把隐私判断嵌进开发流程。
+
+### 18B.71 FedRAG：跨机构知识协作开始进入系统级 RAG 隐私
+
+2026-05-25 的 `An Efficient and Privacy-Preserving Architecture for Cross-Institutional Collaborative RAG` 是一个值得补进导论的前沿信号。它不是又一个“本地向量库加权限控制”的方案，而是把跨机构 RAG 的推理过程本身作为隐私对象：文档留在各机构，推理时通过 scrambled distributed attention 一类机制降低明文中间状态暴露。
+
+对落地架构的启发是：
+
+- 医疗、法律、金融研究协作里，RAG 的核心矛盾是“知识要协同，原文不能集中”
+- 只保护 document store 不够，KV cache、attention state、retrieval score 和 answer citation 都可能成为泄漏面
+- 如果方案不依赖专用硬件和模型重训，工程落地门槛会明显低于纯密码学 secure inference
+- 生产系统仍要补 access control、审计、答案发布控制和跨机构责任边界
+
+一个落地审计记录可以这样写：
+
+```json
+{
+  "cross_institutional_rag_audit": {
+    "scenario": "hospital_trial_matching",
+    "plaintext_document_centralization": false,
+    "distributed_inference_privacy_reviewed": true,
+    "intermediate_state_inversion_tested": true,
+    "answer_contains_foreign_raw_chunks": false,
+    "site_level_citation_required": true
+  }
+}
+```
+
+这条案例适合提醒初学者：Private AI 不只是“数据不训练模型”，还包括“推理过程中的中间表示是否泄露”。
+
+### 18B.72 Multi-agent privacy：长期社交环境会放大秘密泄露
+
+`Got a Secret? LLM Agents Can't Keep It` 给 agent privacy 增加了一个非常实用的评估维度：很多 agent 在单轮对话里能遵守隐私指令，但放到多 agent、长期互动、有社交压力的环境后，泄露率会明显上升。它说明 agent 隐私风险不是静态 prompt compliance，而是 runtime、memory、tool、角色和社交上下文共同产生的系统行为。
+
+对产品团队来说，这条研究可转成几个 review gate：
+
+- 是否存在长期 memory，memory 里是否有 secret label
+- agent 是否会把其他 agent 的披露当成继续披露的理由
+- recipient policy 是否按人、agent、工具和组织边界区分
+- 是否能审计“秘密从 memory 到对话再到工具调用”的路径
+- 是否有多轮、多 agent 的 privacy regression test，而不只是单轮红队提示
+
+一个可落地的 regression test 可以这样写：
+
+```json
+{
+  "agent_privacy_regression": {
+    "test_type": "multi_agent_long_horizon",
+    "secret_labels_seeded": 120,
+    "social_pressure_prompts": true,
+    "tool_call_exfiltration_checked": true,
+    "pass_condition": {
+      "raw_secret_disclosure_rate": 0,
+      "unauthorized_summary_rate_max": 0.01
+    }
+  }
+}
+```
+
+这条案例补齐了传统 PET 之外的一个空白：agentic AI 的隐私工程需要行为评测和运行时控制一起做。
+
+### 18B.73 TrustDS：data space 和 clean room 正在走向策略编译与证据包
+
+`TrustDS` 的价值不在于发明一个新的密码学原语，而在于把 data marketplace / clean room / cross-cloud analytics 的治理问题工程化：把人类可读的 policy 编译成受控执行 DAG，并在关键边界输出 evidence bundle。它把很多团队真实遇到的问题讲清楚了：consent、purpose、license、residency、privacy budget 和 revoke 如果只停留在文档或工单里，很难支撑持续协作。
+
+这类系统对落地有四个启发：
+
+- policy 应该在执行前影响数据放置、PET 选择和输出规则
+- revoke 应该有 fail-closed 语义，而不是等下次人工审计发现
+- evidence bundle 应该能回答“这次运行用了什么数据、什么权限、什么预算、什么后端”
+- clean room 不应被看作单点产品，而应成为 policy DAG 里的一个执行节点
+
+一个 evidence bundle 可以这样写：
+
+```json
+{
+  "privacy_evidence_bundle": {
+    "run_id": "cross_cloud_lift_2026_05_30",
+    "policy_hash": "sha256:mock_policy_hash",
+    "consent_snapshot": "consent_ledger_2026_05_30T10",
+    "pet_nodes": ["consent_filter", "private_join", "dp_release"],
+    "residency_check": "eu_only_passed",
+    "privacy_budget_after_run": {
+      "epsilon_remaining": 0.85
+    },
+    "revocation_window_ms_p95": 190
+  }
+}
+```
+
+这条案例适合放进导论，因为它把“隐私技术怎么落地到组织流程”说得很具体：不是只证明协议安全，而是让每次数据协作都能被复现、解释和审计。
+
 ## 18. 一页式总结
 
 - `去标识化`：先把明显敏感信息拿掉，但不等于绝对安全。
@@ -6446,6 +8758,31 @@ Snowflake 2026-05-14 的 Data Clean Rooms 更新提供了一个很具体的生�
 60. AWS Solutions, Audience Uploader from AWS Clean Rooms implementation guide
 61. AWS Architecture Center, Datavant Switchboard with AWS Clean Rooms
 62. Snowflake Data Clean Rooms updates, May 14 2026
+63. Snowflake, Data Clean Rooms Enable Privacy-First Multiparty Collaboration
+64. Apple Machine Learning Research, Understanding Aggregate Trends for Apple Intelligence Using Differential Privacy
+65. Google Research, On the Differential Privacy and Interactivity of Privacy Sandbox Reports
+66. USENIX PEPR 2026, Production Multi-Party Computation via the Distributed Aggregation Protocol
+67. USENIX PEPR 2026, DPSynth: From Research to Production
+68. npj Digital Medicine, Anonymization and visualization of health data and biomarkers
+69. IETF PPM Working Group, Distributed Aggregation Protocol draft-18
+70. MIT Lincoln Laboratory, Enabling privacy-preserving AI training on everyday devices
+71. Red Hat Research, Protecting data privacy: a look in our current toolkit
+72. Oak Ridge National Laboratory, Optimal Client Sampling in Federated Learning With Client-Level Heterogeneous Differential Privacy
+73. Salesforce Engineering, Building Data 360 Clean Rooms: Zero-Copy Architecture
+74. AWS, Comscore Maintains Privacy while Cross-Analyzing Data Using AWS Clean Rooms
+75. USENIX PEPR 2026, Toward Provably Private Insights into AI Use
+76. USENIX PEPR 2026, The Emperor's New Embeddings
+77. USENIX Security 2026, Distributed Synthesis of Differentially Private Tabular Datasets
+78. Vault / GlobeNewswire, TV advertising data clean room for regulated verticals
+79. Massive Bio / BeeKeeperAI, federated confidential computing for oncology trial matching
+80. Hugging Face Papers / arXiv, It Takes Two: Contextual Integrity in LLMs
+81. USENIX PEPR 2026, Shadow Data in Tool Calls
+82. USENIX PEPR 2026, Provenance Without Surveillance
+83. USENIX PEPR 2026, Turning Privacy Risk Assessment Into 20 Questions for Developers
+84. arXiv, FedRAG: Efficient and Privacy-Preserving Cross-Institutional Collaborative RAG
+85. arXiv, Got a Secret? Evaluating Privacy in Multi-Agent Systems
+86. Scientific Reports, TrustDS policy-compiled governance for cross-cloud marketplace analytics
+87. arXiv, Agyn zero-trust agent runtime and agent definition as code
 
 ### 论文与研究资料
 
@@ -6505,6 +8842,38 @@ Snowflake 2026-05-14 的 Data Clean Rooms 更新提供了一个很具体的生�
 54. arXiv, SoK: Privacy-Enhancing Technologies in Artificial Intelligence
 55. Scientific Reports, Dual asymmetric momentum improves federated class unlearning in edge systems
 56. USENIX PEPR 2026, Privacy in Theory, Bugs in Practice: Grey-Box Testing for Differential Privacy Libraries
+57. arXiv, Privacy Preserving Machine Learning Workflow: from Anonymization to Personalized Differential Privacy Budgets in Federated Learning
+58. arXiv, PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation
+59. arXiv, Differentially Private Retrieval-Augmented Generation
+60. arXiv, Confidential LLM Inference: Performance and Cost Across CPU and GPU TEEs
+61. npj Digital Medicine, Anonymization and visualization of health data and biomarkers
+62. arXiv, Privacy-Preserving Distributed Optimization Under Time Constraints Using Secure Multi-Party Computation and Evolutionary Algorithms
+63. arXiv, FedAttr: Towards Privacy-preserving Client-Level Attribution in Federated LLM Fine-tuning
+64. Apple Machine Learning Research, Workshop on Privacy-Preserving Machine Learning & AI 2026
+65. arXiv, MemPrivacy: Privacy-Preserving Personalized Memory Management for Edge-Cloud Agents
+66. arXiv, Secure and Privacy-Preserving Vertical Federated Learning
+67. arXiv, Differentially Private Clustered Federated Learning with Privacy-Preserving Initialization and Normality-Driven Aggregation
+68. arXiv, When Agents Handle Secrets: A Survey of Confidential Computing for Agentic AI
+69. arXiv, AgenTEE: Confidential LLM Agent Execution on Edge Devices
+70. arXiv, Hybrid Inspection and Task-Based Access Control in Zero-Trust Agentic AI
+71. arXiv, Differential Privacy in Generative AI Agents: Analysis and Optimal Tradeoffs
+72. IEEE Internet of Things Journal, Optimal Client Sampling in Federated Learning With Client-Level Heterogeneous Differential Privacy
+73. arXiv, Auditing Privacy in Multi-Tenant RAG under Account Collusion
+74. Data in Brief, Homomorphic Encryption for Privacy-Preserving Data Aggregation in Data Spaces
+75. Cybersecurity, AP-PPFL: an anti-poisoning privacy-preserving federated learning method
+76. USENIX PEPR 2026, Toward Provably Private Insights into AI Use
+77. USENIX PEPR 2026, The Emperor's New Embeddings: Obfuscating ML Inputs Doesn't Provide Privacy
+78. USENIX Security 2026, Distributed Synthesis of Differentially Private Tabular Datasets
+79. Future Generation Computer Systems, Privacy-preserving federated learning system under malicious collaborators and aggregators
+80. arXiv, It Takes Two: Complementary Self-Distillation for Contextual Integrity in LLMs
+81. arXiv, Privacy Preserving Machine Learning Workflow: personalized DP budgets in federated learning
+82. USENIX PEPR 2026, Shadow Data in Tool Calls: The Privacy Leak Hiding in Plain Sight
+83. USENIX PEPR 2026, Provenance Without Surveillance: Privacy Engineering for AI Content Transparency
+84. USENIX PEPR 2026, Turning Privacy Risk Assessment Into 20 Questions for Developers
+85. arXiv, An Efficient and Privacy-Preserving Architecture for Cross-Institutional Collaborative RAG
+86. arXiv, Got a Secret? LLM Agents Can't Keep It: Evaluating Privacy in Multi-Agent Systems
+87. Scientific Reports, TrustDS: policy-compiled governance and verifiable evidence for cross-cloud marketplace analytics
+88. arXiv, Agyn: An Open-Source Platform for AI Agents with Scalable On-Demand Execution, Agent Definition as a Code, and Zero-Trust Access
 
 ## 20. 参考链接
 
@@ -6604,7 +8973,6 @@ Snowflake 2026-05-14 的 Data Clean Rooms 更新提供了一个很具体的生�
 - IETF, Distributed Aggregation Protocol for Privacy Preserving Measurement draft-16: https://www.ietf.org/archive/id/draft-ietf-ppm-dap-16.html
 - IETF, Distributed Aggregation Protocol Extensions for the Attribution API draft: https://www.ietf.org/ietf-ftp/internet-drafts/draft-thomson-ppm-dap-attribution-01.html
 - Divvi Up, Writing DAP standards: https://divviup.org/blog/writing-dap-standards/
-- Divvi Up, Firefox privacy-preserving metrics deployment: https://divviup.org/blog/divvi-up-in-firefox/
 - Divvi Up, About Divvi Up: https://divviup.org/about/
 - USENIX PEPR 2026, Conference Program: https://www.usenix.org/conference/pepr26/program
 - USENIX PEPR 2026, Production Multi-Party Computation via the Distributed Aggregation Protocol: https://www.usenix.org/conference/pepr26/presentation/geoghegan
@@ -6659,3 +9027,49 @@ Snowflake 2026-05-14 的 Data Clean Rooms 更新提供了一个很具体的生�
 - Springer Nature, PrivCQ: Trading multi-dimensional conditional queries under personalised local differential privacy: https://link.springer.com/article/10.1007/s00521-026-11988-2
 - arXiv, SoK: Privacy-Enhancing Technologies in Artificial Intelligence: https://arxiv.org/abs/2506.14576
 - Scientific Reports, Dual asymmetric momentum improves federated class unlearning in edge systems: https://www.nature.com/articles/s41598-026-45631-w
+- arXiv, Privacy Preserving Machine Learning Workflow: from Anonymization to Personalized Differential Privacy Budgets in Federated Learning: https://arxiv.org/abs/2605.02372
+- arXiv, Differentially Private Retrieval-Augmented Generation: https://arxiv.org/abs/2602.14374
+- arXiv, Confidential LLM Inference: Performance and Cost Across CPU and GPU TEEs: https://arxiv.org/abs/2509.18886
+- Google Research, On the Differential Privacy and Interactivity of Privacy Sandbox Reports: https://research.google/pubs/on-the-differential-privacy-and-interactivity-of-privacy-sandbox-reports/
+- NVIDIA Technical Blog, Building a Zero-Trust Architecture for Confidential AI Factories: https://developer.nvidia.com/blog/building-a-zero-trust-architecture-for-confidential-ai-factories/
+- TEE.fail, Breaking Trusted Execution Environments via DDR5 Memory Bus Interposition: https://tee.fail/
+- arXiv, PRAG: End-to-End Privacy-Preserving Retrieval-Augmented Generation: https://arxiv.org/abs/2604.26525
+- arXiv, p2RAG: Privacy-Preserving RAG Service Supporting Arbitrary Top-k Retrieval: https://arxiv.org/abs/2603.14778
+- Apple Machine Learning Research, Understanding Aggregate Trends for Apple Intelligence Using Differential Privacy: https://machinelearning.apple.com/research/differential-privacy-aggregate-trends
+- Apple, Differential Privacy Overview: https://www.apple.com/privacy/docs/Differential_Privacy_Overview.pdf?lang=en-US
+- npj Digital Medicine, Anonymization and visualization of health data and biomarkers: https://www.nature.com/articles/s41746-026-02662-x
+- arXiv, Privacy-Preserving Distributed Optimization Under Time Constraints Using Secure Multi-Party Computation and Evolutionary Algorithms: https://arxiv.org/abs/2605.20944
+- arXiv, FedAttr: Towards Privacy-preserving Client-Level Attribution in Federated LLM Fine-tuning: https://arxiv.org/abs/2605.06596
+- arXiv, MemPrivacy: Privacy-Preserving Personalized Memory Management for Edge-Cloud Agents: https://arxiv.org/abs/2605.09530
+- arXiv, Secure and Privacy-Preserving Vertical Federated Learning: https://arxiv.org/abs/2604.13474
+- arXiv, Differentially Private Clustered Federated Learning with Privacy-Preserving Initialization and Normality-Driven Aggregation: https://arxiv.org/abs/2604.20596
+- IETF Datatracker, Distributed Aggregation Protocol draft-18: https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/
+- IETF PPM Working Group, Distributed Aggregation Protocol latest draft: https://ietf-wg-ppm.github.io/draft-ietf-ppm-dap/draft-ietf-ppm-dap.html
+- Divvi Up, Firefox privacy-preserving metrics deployment: https://divviup.org/blog/divvi-up-in-firefox/
+- USENIX PEPR 2026, Production Multi-Party Computation via the Distributed Aggregation Protocol: https://www.usenix.org/conference/pepr26/presentation/geoghegan
+- MIT Lincoln Laboratory, Enabling privacy-preserving AI training on everyday devices: https://www.ll.mit.edu/news/enabling-privacy-preserving-ai-training-everyday-devices
+- arXiv, When Agents Handle Secrets: A Survey of Confidential Computing for Agentic AI: https://arxiv.org/abs/2605.03213
+- arXiv, AgenTEE: Confidential LLM Agent Execution on Edge Devices: https://arxiv.org/abs/2604.18231
+- arXiv, Hybrid Inspection and Task-Based Access Control in Zero-Trust Agentic AI: https://arxiv.org/abs/2605.02682
+- Red Hat Research, Protecting data privacy: a look in our current toolkit: https://research.redhat.com/blog/article/protecting-data-privacy-a-look-in-our-current-toolkit/
+- arXiv, Differential Privacy in Generative AI Agents: Analysis and Optimal Tradeoffs: https://arxiv.org/abs/2603.17902
+- Oak Ridge National Laboratory, Optimal Client Sampling in Federated Learning With Client-Level Heterogeneous Differential Privacy: https://impact.ornl.gov/en/publications/optimal-client-sampling-in-federated-learning-with-client-level-h/
+- arXiv, Auditing Privacy in Multi-Tenant RAG under Account Collusion: https://arxiv.org/abs/2605.19847
+- Data in Brief, Homomorphic Encryption for Privacy-Preserving Data Aggregation in Data Spaces: https://www.sciencedirect.com/science/article/pii/S2352340926004348
+- Salesforce Engineering, Building Data 360 Clean Rooms: Zero-Copy Architecture for Privacy-Safe Data Collaboration: https://engineering.salesforce.com/building-data-360-clean-rooms-zero-copy-architecture-for-privacy-safe-data-collaboration/
+- Cybersecurity, AP-PPFL: an anti-poisoning privacy-preserving federated learning method: https://link.springer.com/article/10.1186/s42400-026-00583-6
+- USENIX PEPR 2026, Toward Provably Private Insights into AI Use: https://www.usenix.org/conference/pepr26/presentation/tandon
+- USENIX PEPR 2026, The Emperor's New Embeddings: Obfuscating ML Inputs Doesn't Provide Privacy: https://www.usenix.org/conference/pepr26/presentation/fitzsimons
+- USENIX Security 2026, Distributed Synthesis of Differentially Private Tabular Datasets: https://www.usenix.org/conference/usenixsecurity26/presentation/fu
+- Future Generation Computer Systems, Privacy-preserving federated learning system under malicious collaborators and aggregators: https://www.sciencedirect.com/science/article/pii/S0167739X26001640
+- Hugging Face Papers, It Takes Two: Complementary Self-Distillation for Contextual Integrity in LLMs: https://huggingface.co/papers/2605.20258
+- arXiv, Privacy Preserving Machine Learning Workflow: from Anonymization to Personalized Differential Privacy Budgets in Federated Learning: https://arxiv.org/abs/2605.02372
+- Vault / GlobeNewswire, First Data Clean Room Built for TV Advertising Wins Industry Recognition: https://www.globenewswire.com/news-release/2026/05/28/3302919/0/en/First-Data-Clean-Room-Built-for-TV-Advertising-Wins-Industry-Recognition-as-Demand-Grows-Across-Regulated-Verticals.html
+- Massive Bio / BeeKeeperAI, Federated Confidential Computing for Oncology Trial Access: https://massivebio.com/massive-bio-beekeeperai-collaboration/
+- USENIX PEPR 2026, Shadow Data in Tool Calls: The Privacy Leak Hiding in Plain Sight: https://www.usenix.org/conference/pepr26/presentation/shabista
+- USENIX PEPR 2026, Provenance Without Surveillance: Privacy Engineering for AI Content Transparency: https://www.usenix.org/conference/pepr26/program
+- USENIX PEPR 2026, Turning Privacy Risk Assessment Into 20 Questions for Developers: https://www.usenix.org/conference/pepr26/presentation/li
+- arXiv, An Efficient and Privacy-Preserving Architecture for Cross-Institutional Collaborative RAG: https://arxiv.org/abs/2605.25716
+- arXiv, Got a Secret? LLM Agents Can't Keep It: Evaluating Privacy in Multi-Agent Systems: https://arxiv.org/abs/2605.27766
+- Scientific Reports, TrustDS: policy-compiled governance and verifiable evidence for cross-cloud marketplace analytics: https://www.nature.com/articles/s41598-026-48740-8
+- arXiv, Agyn: An Open-Source Platform for AI Agents with Scalable On-Demand Execution, Agent Definition as a Code, and Zero-Trust Access: https://arxiv.org/abs/2605.27575
