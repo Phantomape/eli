@@ -50,11 +50,13 @@ Web2App 常见断点主要有四段：
 - Snap 在 2025 年推出 `App Power Pack`，把 Playable App Ads、App End Cards、tCPA 等能力打包进 App 增长前台；它更像“广告内轻体验与安装转化增强”，而不是完整 Web2App 中台。
 - X Ads 公开资料继续以 App installs、获批 MMP、SKAN/AMM 和 App Conversions measurement 为主；对非 App 目标 campaign，它更强调 app 转化的 halo effect 测量，而不是 Web 中间页闭环。
 - Singular、Branch 等平台开始强调桌面 Web 到 App 的 QR code 路径，把 Web2App 从移动网页扩展到桌面网页、PC/Console 增长和跨设备归因。
+- App Store 与 Google Play 的商店页也正在成为 Web2App 链路里的可控节点。Apple Custom Product Pages 可为不同广告或受众提供专属商店页，并可配置 deep link；Google Play Custom Store Listings 也支持通过唯一 URL 或 Google Ads campaign 展示定制商店页。它们能提高商店承接一致性，但不能替代首开 deferred deep link。
+- Branch 在 2025 年底发布、2026 年更新的 SAN API-Driven Deferred Deep Linking，把 Google、Meta 等自归因网络的新安装 / 重装数据转成 App 首开可消费的 deep link data。这说明 SAN 流量的首开恢复正在被单独产品化，但仍需要 App 路由和业务 session 兜底。
 - Adjust 的 ODDL、LinkMe 等能力说明 iOS 侧 deferred deep link 的核心矛盾已经变成“隐私合规 + 首开及时恢复 + 归因不阻塞路由”。
 - Apple 的 AdAttributionKit 进一步确认了 iOS 侧的大方向：广告归因会更多依赖隐私阈值、延迟 postback、转化值和已注册广告网络，而不是用户级确定性追踪。Apple Ads 已在 2025 年 4 月 10 日纳入 AdAttributionKit 口径，但这仍是归因层变化，不等同于首开路由能力。
 - Firebase Dynamic Links 已在 `2025-08-25` 关闭。历史链接和历史 SDK 不是“待升级项”，而是需要从主链路中移除的风险项。
 
-### 2.5 截至 2026-05-08 的公开资料校准
+### 2.5 公开资料校准后的稳定判断
 
 本次补充复核后，可以把行业变化压缩成三个判断：
 
@@ -87,124 +89,113 @@ Web2App 常见断点主要有四段：
 
 一个成熟方案通常三层都要有：媒体层解决“平台能不能学到信号”，路由层解决“用户能不能到正确入口”，首开上下文层解决“安装后意图是否还在”。如果预算或开发资源有限，优先级应是 `路由层 + 首开上下文层`，再补媒体优化信号；否则容易出现报表变好、体验仍断的假闭环。
 
-### 2.8 2026-05-09 补充校准
+### 2.8 近期资料复核后的执行口径
 
-本轮复核没有改变主结论，但让三个边界更清晰：
+截至 2026-05-24，公开资料没有出现可以替代 `Web session + smart link + App 内路由 + 事件回传` 的单一平台能力。本轮核验中，Google 的 Web to App Acquisition Measurement、TikTok 2025 年底更新的非 App 推广广告 app activity measurement、Branch 2026-03 更新的 SAN API-Driven DDL、AppsFlyer Smart Script V2、Adjust Web-to-app / LinkMe、Firebase Dynamic Links 关闭 FAQ 仍指向同一结论：媒体平台增强 Web 后续 App 结果的可见性，MMP / deep link 平台增强第二跳与首开恢复，Apple / Android / Firebase 则继续定义系统边界和迁移风险。
 
-1. `Web2App` 的原生产品化仍主要集中在 Google 与 TikTok。Google 明确把 web campaign 的间接安装和首个 app 内转化产品化；TikTok 明确支持非 App 推广广告在 Web 落地后继续绑定 app event measurement。二者解决的是媒体可见性，不是自动完成首开页面恢复。
-2. 长尾广告网络更多是 `App Install` 与 `Web Conversion` 两套能力并存。Reddit 公开强调 App Install objective、MMP 与 SKAN 报表；Quora 要求接入 Adjust、AppsFlyer、Branch、Kochava 或 Singular，并建议 iOS / Android 拆 ad set。它们能做 App 增长，但 Web2App 闭环仍要靠 MMP / deep link / 自建 Web session 串联。
-3. MMP / deep link 平台的竞争点正在从“能否跳商店”转向“第二跳参数是否可控”。AppsFlyer Smart Script V2、Singular Web-to-App Forwarding、Branch Journeys / QR、Adjust ODDL 都在处理同一件事：把首跳媒体上下文和 Web 业务意图带到商店交接与 App 首开，而不是只记录一次网页点击。
+1. `Google / TikTok / X / Snap / Meta` 应优先按“媒体测量与优化信号”理解。Google 的 `indirect installs` 与 `Web to app first conv.`、TikTok 非 App 推广广告的 app activity measurement、X 非 App campaign 的 App Conversions halo measurement、Snap App Power Pack、Meta CAPI / app event 回传，都能改善平台看到 App 结果的能力；它们不自动生成 Web CTA 第二跳，也不保证安装后进入指定 App 页面。
+2. `AppsFlyer / Branch / Adjust / Singular` 应优先按“跨端会话与路由系统”理解。AppsFlyer Smart Script 负责把 `gclid / fbclid / ttclid / twclid / ScCid`、UTM、Web 页面状态和 `deep_link_value` 转成第二跳 OneLink；Branch Journeys / Deepviews / SAN DDL / NativeLink 负责体验编排、SAN 首开数据和 iOS 受限场景补强；Adjust ODDL / LinkMe 负责把 deferred deep link 交付从慢归因响应中拆出；Singular Web-to-App Forwarding / Links 负责 `_dl / _ddl / passthrough`、参数转发和 Conversion API 回流。
+3. `Apple AdAttributionKit / SKAN / ATT` 属于归因层，不属于路由层。它们影响报表粒度、延迟、隐私阈值和 re-engagement 归因，但不能替代 Universal Links、App Links、App 内路由解析或首开 session 载荷。App 首开应先消费 deep link、`session_id`、`content_id` 等业务载荷，再等待归因结果补齐媒体归属。
+4. `Firebase Dynamic Links` 已是历史断链风险。存量项目要扫描历史广告、邮件、二维码、活动页、社媒入口和短链域名，并重新设计已安装唤起、未安装 fallback、首开恢复和事件回传；只替换短链域名不足以完成迁移。
+5. 桌面 Web、QR、CTV、PC / Console 到移动 App 的路径正在进入同一套 acquisition 闭环，但不能照搬移动点击归因。跨设备场景更依赖 QR token、S2S session、曝光窗口、partner 权限和 post-install event 去重。
+6. `Apple Custom Product Pages / Google Play Custom Store Listings` 是商店承接层，不是归因或路由层。Apple 文档强调 CPP 可通过专属链接触达并可在 App Store Connect 中配置 deep link；Google Play 文档强调 CSL 可通过唯一 URL 或 Google Ads campaign 呈现。它们解决安装前一致性，首开恢复仍要由 smart link / deferred deep link / App 路由承担。
 
-因此，后续评估新增平台或供应商时，可以先问四个问题：是否支持 App 事件回传，是否支持 iOS / Android 独立配置，Web CTA 是否能动态生成带参 deep link，首开恢复是否独立于归因响应。四项缺一项，就不能把它当完整 Web2App 方案。
+因此，完整 Web2App 方案至少要分别证明六件事：`媒体能看到结果`、`Web 第二跳能动态带参`、`Universal Links / App Links 真实生效`、`首开恢复不等待归因响应`、`post-install event 可回传且可去重`、`动态参数覆盖有白名单和审计`。任何平台只覆盖其中一两项时，都应作为补强件接入现有架构，而不是被当成端到端闭环。
 
-### 2.9 2026-05-10 资料复核后的边界补充
+### 2.9 2026-05-24 复核后的新增执行判断
 
-本轮新增资料没有推翻既有判断，但进一步强化了“测量、路由、首开恢复必须分层验收”的结论：
+本轮复核没有改变主结论，但让执行边界更清晰：`Web2App` 不是把 Web 广告“算成”App 安装，而是把 Web 会话、商店承接和 App 首开恢复拆成可验证的工程状态。
 
-1. Google 的 deferred deep linking 与 Web to App Acquisition Measurement 是两套不同能力。前者更偏 App campaign 场景下的安装后落页，且公开文档对 Android、YouTube / AdMob、24 小时窗口、深链类型有明确限制；后者解决 web campaign 对 app install / first in-app conversion 的可见性。不能把 Google 的测量列或 DDL 配置当成通用 Web 中间页首开恢复方案。
-2. Meta 生态的 deferred deep linking 更依赖 MMP / SDK / SAN 口径协同。Branch、AppsFlyer、Airbridge 等公开资料都把 Meta 相关能力描述为需要额外接入、且在 iOS ATT、AEM、in-app browser、Facebook App Links 等条件下存在明显限制。实操上，Meta 更适合做高质量前台流量和创意承接，首开恢复仍应由 MMP deep link 或自建 session 兜底。
-3. MMP 平台正在把“第二跳参数”产品化。AppsFlyer Smart Script V2、Singular Web-to-App Forwarding、Adjust ODDL、Branch SAN API-Driven DDL 都在处理同一个问题：用户从广告到 Web 后，Web CTA 到商店 / App 的第二跳必须重新携带媒体上下文和业务上下文，且首开路由不能等待慢归因响应。
-4. 选型时要把权限和适用范围写进验收清单。Singular 的部分 Web / PC / Console / CTV postback 能力、Adjust ODDL、Branch SAN API-Driven DDL 等都有账号、早期访问、SAN、ATT 或时间窗口限制。供应商声称“支持 Web2App”不等于当前账号、当前媒体、当前 OS 都能稳定使用。
+- `Google Ads` 的 Web to App Acquisition Measurement 继续强调 `indirect installs` 与 `Web to app first conv.`，并要求导入 first_open / in-app event；这说明 Google 正在补 web campaign 的 app 结果可见性，而不是替广告主托管 H5 CTA 的首开路由。
+- `TikTok Ads` 的非 App 推广广告 app activity measurement 仍适合“内容先教育、App 后转化”的路径，但没有 MMP 或 App Events SDK 时只能看到商店流量；跨 iOS / Android 也不应共用同一条广告链路。
+- `Meta` 侧公开叙述仍偏 App Promotion、Advantage+ App Campaigns、CAPI 和 app event 优化。MMP 文档显示 App Promotion / Install 可接 direct deep link 与 deferred deep link 字段，但 Meta 流量的首开恢复仍要依赖 MMP link、SAN 数据、AEM / SDK 配置和 App 内路由，不应被理解成 Meta 原生 Web2App 中台。
+- `AppsFlyer / Branch / Adjust / Singular` 的差异进一步体现为四类职责：AppsFlyer 强在首跳到第二跳 OneLink 动态生成；Branch 强在 Journeys、Deepviews、SAN DDL 与 NativeLink 等体验恢复；Adjust 强在 ODDL / LinkMe 把路由交付从慢归因中拆出；Singular 强在 Web / PC / Console / CTV 参数转发和 Conversion API 回流。
+- `Firebase Dynamic Links` 已经是生产风险，不是技术债清单里的普通升级项。凡是历史广告、二维码、邮件、活动页和社媒入口仍指向 FDL，都应按断链处理并重新验收 fallback、deferred restore 和事件回传。
 
-### 2.10 2026-05-11 资料复核后的校准
+因此，后续方案评审建议只问三个问题：`第二跳是否动态生成`、`首开是否能独立恢复业务上下文`、`首个关键事件是否能带着媒体与 Web 上下文回传并去重`。如果答案不完整，就不是完整 Web2App，只是“Web 到商店跳转”或“媒体结果补报”。
 
-本轮复核主要补强了两个判断：
+### 2.10 2026-05-25 增量复核后的边界修正
 
-1. `TikTok` 非 App 推广广告的 app activity measurement 公开文档仍明确支持“Web 落地页之后继续测量 App 安装和 App 内事件”，且文档口径强调每条广告只能选择一个 Android 或 iOS app。它适合做内容承接后的 App 结果可见性，但 Web CTA、商店 fallback 和首开恢复仍要由 MMP deep link 或自建 session 承担。
-2. `Apple Web AdAttributionKit` 解决的是隐私保护下的 Web 转化测量，尤其是 iOS / iPadOS App 内广告点击跳到网站后的转化归因；`App AdAttributionKit` 解决的是 App 安装 / re-engagement 的聚合归因。两者都不等同于 Web2App 的首开路由能力，不能替代 Universal Links、App Links、MMP deferred deep link 或服务端 session 载荷。
+本次增量复核没有发现能替代现有链路架构的单点产品，但有四个边界需要写进方案评审：
 
-因此，Apple、Google、TikTok 这类平台越是把“Web 与 App 之间的结果可见性”产品化，落地时越要把验收项拆开：`是否能归因`、`是否能跳转`、`是否能首开恢复`、`是否能把首个关键事件带回媒体优化`。四者都成立，才是完整 Web2App；只有归因或报表可见，只能算测量补强。
+1. `Google / TikTok` 的最新公开文档继续强化“Web campaign 后续 App 结果可见性”。Google 要求导入 `first_open` 与 app 内事件，TikTok 要求接入 MMP、App Events SDK 或 App Events API，并且一条广告只绑定一个 OS app。这类能力能改善媒体学习信号，但不能自动生成第二跳 smart link 或首开业务路由。
+2. `Branch SAN API-Driven DDL` 已把 Google、Meta 等 SAN 的新安装 / 重装数据转成 deep link data，但 iOS 侧仍受 ATT 授权与 SAN 数据延迟影响；它是 SAN 首开恢复补强，不是对所有 Web2App 场景的通用替代。
+3. `Apple Custom Product Pages` 的 deep link 能力有明确系统边界：CPP 可创建最多 70 个定制商店页，且只有 iOS 18 / iPadOS 18 及以上用户从页面点击 Open 时，配置的 deep link 才能把用户带到 App 内指定内容。因此 CPP 应被当成商店承接与已安装打开增强，而不是安装后 deferred deep link 的替代。
+4. `Singular` 的 Web-to-App / PC / Console / CTV 文档进一步说明，跨端增长正在并入同一套 Web acquisition 口径；但这些能力的核心仍是 partner click ID、Conversion API、post-install / in-game event 回传和曝光窗口建模。跨设备场景必须保留 `session_id / QR token / placement_id`，否则无法区分移动 Web 点击、桌面扫码和 CTV 曝光贡献。
 
-### 2.11 2026-05-12 资料复核后的校准
+因此，当前最稳妥的执行口径是：媒体平台负责让 App 结果回到优化系统，MMP / deep link 平台负责让第二跳和首开载荷不断，商店页负责降低安装前叙事断层，自建业务 session 负责最终去重与路由兜底。
 
-本轮复核没有推翻既有结论，但进一步压实了“媒体可见性、SAN 数据回流、首开路由”三者不能混用的边界：
+### 2.11 2026-05-26 增量校准：把“可测量”与“可恢复”分开验收
 
-1. `Google Web to App Acquisition Measurement` 的公开口径仍是测量 web campaigns 对 app installs 和首个 app 内转化的贡献。它要求导入 first_open 和 app 内事件，并且适用范围限定在 Search、Performance Max、Shopping、Hotel 等 web campaign；若 web campaign 直接把用户导向 App Store / Google Play，该能力并不适用。因此它是 web campaign 价值识别能力，不是 H5 到 App 的通用路由方案。
-2. `TikTok` 非 App 推广广告 app activity measurement 文档最近仍强调“web conversion / traffic campaign 可先导向 Web 落地页，再测量 app installs / in-app events”，但前提是通过 MMP、App Events SDK 或 App Events API 接入 App 数据，且每条广告只能绑定一个 OS app。它适合把内容页后的 App 结果纳入投放视野，不负责第二跳参数生成和安装后页面恢复。
-3. `Branch SAN API-Driven Deferred Deep Linking` 已把 Google、Meta 等 SAN 来源的数据返回到新安装 / 重装的 deep link data 中，但公开文档同时强调 iOS 侧依赖 ATT opt-in，且可能因第二次 install event 和付费归因判断产生延迟。这个能力能补 SAN 场景下的 DDL 缺口，但不能替代自有落地页上的 link_id / content_id / session 兜底。
-4. `Adjust ODDL` 与 `AppsFlyer Smart Script V2` 的方向形成互补：前者把 DDL 交付从归因响应拆到更快的 session response，后者把 Web 页第二跳动态生成带参 OneLink。它们共同说明 Web2App 的关键不只是“首跳归因”，而是让 Web CTA 到商店 / App 的第二跳持续携带媒体参数和业务意图。
-5. `Firebase Dynamic Links` 在 2025-08-25 后已经不是“待迁移风险”，而是“线上断链风险”。所有仍在邮件、社媒、广告、二维码、历史活动页中使用 `page.link` 或 Firebase custom domain 的入口，都应进入断链扫描和替换清单。
+本次复核的新增信息没有推翻前述结论，但进一步确认了一个执行原则：广告平台越强调 Web campaign 后续 App 结果，越要把“媒体可测量”与“用户可恢复”分开验收。
 
-因此，2026 年的 Web2App 验收口径应从“供应商支持 DDL 吗”升级为“第二跳是否动态带参、首开是否不等归因即可恢复、SAN / SKAN / AdAttributionKit 报表是否只作为归因补充、历史短链是否已清理”。这四个问题比单纯比较深链品牌更能决定真实转化损耗。
+1. `Google Ads` 的 Web to App Acquisition Measurement 明确服务于 web campaign 对 app install / first in-app conversion 的贡献识别，且适用范围集中在 Search、Performance Max、Shopping、Hotel 等 web campaign。它的前提是把 Android / iOS 的 `first_open` 与 app 内动作导入承载 web campaign 的 Google Ads 账号；因此它解决的是报告与优化信号，不是 Web CTA 第二跳生成。
+2. `TikTok Ads` 对非 App Promotion campaign 的 app activity measurement 继续采用“Web/Traffic/Conversion 广告先到落地页，再绑定 app event tracking”的口径。公开文档强调必须接入 MMP、App Events SDK 或 App Events API，并且每条广告只能选择一个 Android 或 iOS app；这意味着 TikTok Web2App 放量前应把 OS 拆分、事件源、CTA smart link 和首开路由写入同一份 link spec。
+3. `AppsFlyer Smart Script V2` 与 `OneLink Smart Banner V2` 的价值在第二跳：把首跳 URL、广告点击 ID、UTM、页面上下文和 `deep_link_value` 动态转成 outgoing OneLink。它们不能替代 App 侧 Unified Deep Linking 回调处理；如果 App 不消费 `deep_link_value / deep_link_sub*`，页面脚本生成正确链接也只能把用户带到商店或首页。
+4. `Branch SAN API-Driven DDL` 的公开文档已把 SAN 流量的 deferred deep linking 独立成首开数据通道，尤其覆盖 Google、Meta 等自归因网络的新安装 / 重装。但它返回的是 SAN API 能提供的广告数据，不等于普通 Branch Link 的完整控制参数；业务上下文仍建议由 Web 侧 `session_id / content_id / link_id` 兜底。
+5. `Adjust LinkMe / ODDL` 与 `Singular Web-to-App / Conversion APIs` 代表两类补强方向：前者优先解决 iOS 侧首开恢复及时性，后者优先解决 Web、PC、Console、CTV 到 App 后续事件的媒体回流。二者都不是“单独接入即可闭环”，仍要与 Universal Links / App Links、App 内路由和事件去重一起验收。
+6. `Firebase Dynamic Links` 在 2025-08-25 关闭后，官方迁移文档也明确 App Links / Universal Links 不能完整复刻 FDL 的商店分流、deferred deep link、短链和点击分析能力。迁移方案不能只补系统深链文件，还要重建短链域名、fallback、首开恢复和历史入口审计。
 
-### 2.12 2026-05-13 资料复核后的校准
+落地上，建议把每条 Web2App 链路拆成四张验收表：`media measurement`、`web routing`、`store handoff`、`first-open restore`。媒体后台看到 `indirect install`、`app install` 或 `mobile conversion` 只能证明第一张表部分成立；只有第二跳带参、商店页一致、首开路由命中、首个关键事件回传并去重同时成立，才算完整 Web2App。
 
-本轮公开资料复核继续支持既有判断，但有三点值得写入长期口径：
+### 2.12 2026-05-27 增量校准：端到端能力要按“证据链”验收
 
-1. `TikTok` 非 App 推广广告的 app activity measurement 文档仍显示 2025 年 11 月更新，且清楚写明 Web Conversion / Traffic campaign 可先导向 Web landing page，再测量 install 与 in-app event。它强化的是媒体侧可见性，仍不负责 Web CTA 的第二跳带参和 App 首开恢复。
-2. `Branch SAN API-Driven DDL` 与 `NativeLink` 代表了两条不同补洞路径：前者把 Google / Meta 等 SAN 数据返回为新安装或重装时可消费的 deep link data，但 iOS 依赖 ATT opt-in 且可能延迟；后者面向 iOS Private Relay 等限制，用用户可选择的剪贴板机制补 deferred deep linking，但会受系统权限提示和用户授权影响。两者都不是“无条件确定性恢复”，上线时要单独监控覆盖率与成功率。
-3. `X Ads` 的公开口径确认，非 App 目标 campaign 可开启 App Conversions measurement 来观察品牌或触达 campaign 的 app install / in-app conversion halo effect；但其移动 App 测量仍依赖获批 MMP 和归因窗口配置，不提供完整 Web 中间页上下文恢复。
+本次增量复核继续指向同一判断：行业没有出现可以单独替代 `广告点击 -> Web session -> smart link -> store handoff -> first_open restore -> post-install event` 的平台能力。新增价值主要在于把验收证据链收紧：
 
-因此，Web2App 的最新落地判断可以再压缩为一句话：媒体越来越能看到 Web 后的 App 结果，MMP 越来越能补第二跳和首开上下文，但任何方案都必须把 `媒体测量`、`第二跳带参`、`首开恢复`、`事件回传与去重` 拆成四个独立验收项。
+1. `Google Ads` 与 `TikTok Ads` 都在强化“Web campaign 后续 App 结果可见”。Google 的 Web to App Acquisition Measurement 关注 indirect installs 与 web-to-app first conversion；TikTok 的非 App Promotion app activity measurement 要求接入 MMP、App Events SDK 或 App Events API，并且每条广告只能绑定一个 Android 或 iOS app。这类能力的验收证据是媒体报表和优化事件，不是用户首开页面。
+2. `Branch SAN API-Driven DDL` 说明 SAN 流量的首开恢复正在被产品化，但其输入仍来自 Google、Meta 等 SAN API 可返回的数据。它可以补 SAN 新安装 / 重装的 deferred deep link data，不应替代 Web 侧自有 `session_id / content_id / link_id`。
+3. `Apple Custom Product Pages` 的 deep link 是商店承接层增强，而不是安装后恢复层。公开文档显示，CPP deep link 随页面提审，并在 iOS 18 / iPadOS 18 及以上用户从 CPP 点击 Open 时生效；低版本、安装后从桌面图标打开、或用户未从 CPP Open 进入时，仍要依赖 deferred deep link / session response / App 内路由兜底。
+4. `AppsFlyer Smart Script / Branch Journeys / Adjust ODDL / Singular Web-to-App` 的共同方向不是“替广告主多放一个按钮”，而是把第二跳、首开恢复和事件回流做成可审计状态。供应商能力再强，也必须落到 App 侧 SDK 回调、业务路由映射和事件去重。
 
-### 2.13 2026-05-14 资料复核后的校准
+因此，2026 年的 Web2App 方案评审应要求每条链路提交 6 类证据：`首跳参数已捕获`、`第二跳链接动态生成`、`商店页版本可追踪`、`首开路由命中`、`首个关键事件带上下文`、`媒体 / MMP / 内部报表可去重对账`。缺少其中任一项，都只能称为局部 Web-to-store 或 app result measurement，不能称为完整 Web2App 闭环。
 
-本轮复核没有发现主结论反转，但进一步确认了三个更细的边界：
+### 2.13 2026-05-28 增量校准：不要让“平台可见”掩盖“业务不可恢复”
 
-1. `Google Web to App Acquisition Measurement` 与 `TikTok` 非 App 推广广告 app activity measurement 仍是“web campaign 后续 App 结果可见性”产品，而不是 Web CTA 到商店再到首开的完整路由系统。Google 仍要求导入 first_open / in-app event，且适用 campaign、inventory、ATT 条件和“不得直接导向 app store”的限制要单独核对；TikTok 仍要求每条广告只绑定一个 Android 或 iOS app，跨 OS 应拆 ad group。
-2. `Adjust ODDL`、`Branch SAN API-Driven DDL`、`Singular Web-to-App Forwarding` 的公开口径继续把 Web2App 拆成不同问题：ODDL 加速最近点击对应的 DDL 交付，但有 Early Access、15 分钟窗口和 SAN 不加速限制；Branch SAN DDL 能把 Google / Meta 等 SAN 数据返回为安装或重装时的 deep link data，但 iOS 依赖 ATT opt-in 且可能延迟；Singular forwarding 负责把 Web campaign 参数带入移动归因，但仍需要 `_dl / _ddl / passthrough` 或自建 session 承载 App 内目标页。
-3. `Apple AdAttributionKit` 对 re-engagement 的支持强化了一个重要原则：Apple 可在已安装时通过注册过的 Universal Link 打开 re-engagement URL，并在归因层生成相应信号；但如果 URL 不是广告 App 注册的 Universal Link，系统会忽略该 URL 或按普通打开处理。这说明 iOS 侧的归因框架也在要求路由基建先正确，不能把 AAK 当作深链修复工具。
+本次复核没有发现新的端到端替代方案，但进一步确认了一个风险：媒体平台和 MMP 正在让 Web 后续 App 结果更可见，团队容易因此低估 App 首开恢复和内部去重的工程工作量。
 
-因此，最新验收口径应从“四项拆分”再细化为“五项独立证明”：`媒体能看到结果`、`Web 第二跳能动态带参`、`iOS / Android 路由基建真实生效`、`首开恢复不等待归因响应`、`post-install event 可回传且可去重`。缺少任一项，都只能算局部 Web2App 能力。
+1. `Google Ads` 的 Web to App Acquisition Measurement 仍应理解为 web campaign 结果补全。它依赖 `first_open` 和 app 内事件导入，并把 indirect install、web-to-app first conversion 暴露给 Google Ads / AAP；但 Web CTA 链接如何动态带参、用户安装后进哪个 App 页面，仍要由 smart link、deferred deep link 和 App 路由解决。
+2. `TikTok Ads` 的非 App Promotion app activity measurement 适合验证“内容落地页是否带来后续 App 行为”，但其约束很硬：每条广告只能绑定一个 Android 或 iOS app，且需要 MMP、App Events SDK 或 App Events API。灰度测试时不应把 iOS / Android、Web conversion 和 app event 放在同一条混合链路里一起判断。
+3. `Branch SAN API-Driven DDL` 说明 SAN 流量首开数据正在被补强，但 iOS 侧仍受 ATT opt-in 与 SAN 数据延迟影响，并且返回的是 SAN API 能给出的广告数据。它可以增强 Google / Meta 新安装或重装后的 deep link data，不应替代 Web 侧自有 `session_id / content_id / link_id`。
+4. `Apple Custom Product Pages` 的 deep link 应作为已安装打开和商店承接增强，而不是未安装后的首开恢复方案。只有符合系统版本、用户从 CPP 点击 Open、App 路由可解析等条件时，deep link 才能发挥作用；安装完成后从桌面图标首次打开仍需要 deferred restore 兜底。
+5. `AppsFlyer / Adjust / Singular` 等供应商能力更像链路零件库：Smart Script / Smart Banner 解决第二跳与 Web 入口，ODDL / LinkMe 解决 iOS 首开恢复及时性，Web-to-App / Conversion APIs 解决事件回流。它们只有和 App SDK 回调、业务路由表、事件去重表一起验收，才构成闭环。
 
-### 2.14 2026-05-15 资料复核后的校准
+因此，5 月 28 日后的方案评审建议增加一条硬规则：任何 Web2App 链路只要不能在测试设备上复现 `首跳参数 -> 第二跳链接 -> 商店页版本 -> 首开路由 -> 首个关键事件 -> 媒体回传` 的完整证据链，就不应进入跨媒体放量。
 
-本轮公开资料没有推翻前述判断，但把“Web 侧环境约束”和“参数转发治理”两件事进一步前置：
+### 2.14 2026-05-29 增量校准：把第二跳当成独立产品面验收
 
-1. `AppsFlyer Smart Banner V2` 文档已把 Web SDK 集成、PBA 组合、Advanced SDK Verification 与 iOS 26 / Safari storage mode 写入同一套落地说明。这说明 Smart Banner 不再只是一个前端入口组件，还要同时处理 Web SDK 安全、浏览器存储策略、隐私披露和跨页状态保留。若 Web2App 依赖 banner 或 web SDK 保存上下文，必须把 Safari 存储限制、cookie consent 和 CMP 文案纳入验收。
-2. `Singular Links` 近期 FAQ 更明确地说明，`_dl`、`_ddl`、fallback redirect、iOS / Android redirect 等参数可在点击时动态覆盖；`_forward_params=1/2` 可控制参数是否转发到 App Store、Web fallback 或 deep link 目标。这强化了一个实践原则：第二跳带参要有白名单和锁定策略，不能让任意 appended 参数覆盖生产短链配置。
-3. `Adjust ODDL`、`Branch NativeLink` 与 `Apple AdAttributionKit re-engagement URL` 继续指向同一个边界：iOS 侧可以用 session response、用户授权剪贴板或 Universal Link re-engagement 改善体验，但这些方案都依赖前置配置、权限或窗口条件。它们是首开恢复的补强层，不是替代 Universal Links / App Links 与 App 内路由解析的底座。
+本次增量复核没有发现新的端到端替代方案，但更清楚地确认了一个执行重点：Web2App 的关键风险正在从“有没有中间页”转向“中间页上的第二跳是否可控”。公开资料中，Google 与 TikTok 继续强化 web campaign 后续 app install / in-app event 的可见性；AppsFlyer、Branch、Adjust、Singular 则继续把第二跳链接、首开恢复、跨设备事件回流拆成独立能力。
 
-因此，Web2App 的 2026 验收清单需要再增加两项：`Web SDK / banner 在目标浏览器中的存储与同意机制可用`，`动态参数覆盖和转发有明确白名单、锁定与审计规则`。前者决定上下文是否能留住，后者决定上下文是否会被错误覆盖或污染。
+1. `Google Ads` 的 Web to App Acquisition Measurement 仍以 `indirect installs`、`Web to app first conv.` 和 app event 导入为核心，适用 Search、Performance Max、Shopping、Hotel 等 web campaign。它能证明 web campaign 对 App 结果有贡献，但不负责生成落地页 CTA 的 OneLink / Branch Link / Adjust Link / Singular Link。
+2. `TikTok Ads` 的非 App Promotion app activity measurement 明确允许 web / traffic / conversion campaign 先到落地页，再测量 app installs 与 in-app events；但仍要求 MMP、App Events SDK 或 App Events API，并且每条广告只绑定一个 Android 或 iOS app。它的验收点是事件源和 OS 拆分，不是首开业务路由。
+3. `AppsFlyer OneLink Smart Script V2` 把首跳 URL、click ID、UTM、referrer、页面状态和 `deep_link_value` 转成第二跳 OneLink；这说明 Web CTA 已经是一个需要配置、审计和测试的产品面，而不是前端随手放置的下载按钮。
+4. `Branch SAN API-Driven DDL` 可以把 Google、Meta 等 SAN 的新安装 / 重装广告数据转成首开 deep link data，但返回范围受 SAN API 可提供字段约束。业务上下文仍应由 Web 侧 `session_id / content_id / link_id` 独立保存。
+5. `Adjust LinkMe / ODDL` 与 `Singular Web-to-App / CTV-to-mobile` 的共同信号是：iOS 恢复及时性、跨设备曝光归因和 post-install event 回流都在被产品化，但它们仍分别属于路由补强、归因补强和优化信号补强，不能互相替代。
 
-### 2.15 2026-05-16 资料复核后的校准
+因此，5 月 29 日后的文档口径建议收紧为：`Web2App = 第二跳动态生成 + 首开上下文恢复 + 首个关键事件回传`。媒体后台能看到安装只是必要条件；如果 Web CTA 不是动态生成、首开不能恢复业务上下文、事件不能带链路 ID 去重，就不能算完整闭环。
 
-本轮复核没有发现主结论反转，公开资料继续强化一个方向：广告平台把 Web 后续 App 结果纳入可见性，MMP / deep link 平台把第二跳、首开和跨端上下文继续产品化，但两者仍不能互相替代。
+### 2.15 2026-05-30 增量校准：把 Web CTA 纳入投放资产管理
 
-1. `Google Web to App Acquisition Measurement` 的最新公开口径仍围绕 web campaign 的 `indirect installs` 与 `Web to app first conv.`。它要求导入 first_open 与 app 内事件，并明确有 campaign、inventory、OS / ATT 和“web campaign 不直接导向应用商店”等适用边界。因此它应被归类为测量增强，不应被当成 H5 到 App 的首开恢复方案。
-2. `TikTok` 非 App 推广广告 app activity measurement 仍明确支持 Web Conversion / Traffic campaign 先导向 Web landing page，再测量 install 与 in-app event；但前提仍是 MMP、App Events SDK 或 App Events API 接入，并且每条广告只绑定一个 iOS 或 Android app。它解决“媒体能否看见 App 结果”，不解决“Web CTA 如何带参”和“安装后如何回到目标页”。
-3. `Singular Links` 近期文档把 `_dl / _ddl / fallback / OS redirect` 动态覆盖、`_forward_params=1/2` 参数转发和短链参数锁定讲得更明确。实践上应把“可动态覆盖”拆成两件事验收：投放需要的参数能否传递，以及非白名单参数是否不能覆盖生产短链配置。
-4. `Branch NativeLink`、`Branch SAN API-Driven DDL` 与 `Adjust ODDL` 继续说明 iOS deferred deep link 没有单一银弹：NativeLink 依赖用户剪贴板授权，SAN DDL 依赖 ATT opt-in 或 SAN 返回节奏，ODDL 依赖近期 Adjust link click 与窗口条件。它们都能补首开恢复，但都需要独立监控覆盖率、成功率和异常回落。
-5. `Apple AdAttributionKit` 的 re-engagement URL 口径再次说明，归因框架要求路由基建先成立：已安装场景要依赖广告 App 注册并可验证的 Universal Link，App 侧再通过参数识别 re-engagement。AAK 可以提供归因信号，不能替代 Universal Links / App Links、App 内路由解析或首开 session 载荷。
+本次公开资料复核继续支持前述判断：近期新增能力主要在补“Web 后续 App 结果可见性”和“受限场景首开恢复”，没有出现能单独覆盖广告点击、Web 会话、商店交接、首开路由与事件回传的端到端平台。因此，5 月 30 日后的执行重点应从“是否有落地页”进一步收紧到“Web CTA 是否像广告素材一样被管理”。
 
-因此，当前最稳妥的长期口径是：Web2App 方案要按 `媒体测量`、`第二跳带参`、`路由基建`、`首开恢复`、`事件回传与去重`、`参数治理` 六项分别证明。任何供应商或广告平台只覆盖其中一两项时，都只能算局部能力，不能直接定义为端到端 Web2App 闭环。
+1. `Google Ads` 的 Web to App Acquisition Measurement 与 Web to App Connect 应继续按媒体测量和优化能力使用。它能把 web campaign 带来的 `indirect installs`、`Web to app first conv.` 暴露到 Google Ads / AAP 口径中，但前提仍是导入 `first_open` 和 app 内事件；它不负责保存落地页上的业务上下文。
+2. `TikTok Ads` 对非 App Promotion campaign 的 app activity measurement 已明确覆盖“广告到 Web 落地页，再测量 App 安装和应用内事件”的路径。灰度时应把每条广告绑定的 OS app、MMP / App Events SDK / API 事件源、CTA 链接模板和首开路由表放在同一个验收单里，否则很容易把“平台能计数”误判为“用户能恢复”。
+3. `AppsFlyer Smart Script / Smart Banner`、`Branch Journeys / Deepviews / SAN DDL`、`Adjust ODDL / LinkMe`、`Singular Web-to-App / Conversion APIs` 的共同价值，是把第二跳、首开恢复和后续事件回流拆成可配置、可观测、可审计的环节。它们不是互斥选项，而是分别补不同断点。
+4. `Apple Custom Product Pages`、`Google Play Custom Store Listings`、`Smart App Banner` 等商店或系统入口能力，应被纳入 Web2App 方案，但只负责降低安装前或已安装打开时的叙事断层。安装后首次从桌面图标打开、归因延迟、ATT 未授权、Private Relay、受限内置浏览器等路径，仍需要 deferred deep link 或自建 session response 兜底。
+5. `Firebase Dynamic Links` 关闭后的迁移风险仍应作为生产风险处理。迁移不是把短链域名换成 Universal Links / App Links 即可，而是要逐项重建广告入口、二维码、邮件、社媒入口、fallback、首开恢复、点击分析和历史链接归档。
 
-### 2.16 2026-05-17 资料复核后的校准
+因此，Web CTA 应成为独立投放资产：每个按钮或 banner 都应有 `link_id`、来源白名单、参数映射、商店 fallback、首开路由、事件去重键和回滚策略。若 CTA 只是静态商店链接，即使媒体后台能看到部分安装，也只能算 Web-to-store，不应纳入完整 Web2App 闭环统计。
 
-本轮复核继续确认：行业新增能力主要发生在“可见性补强”和“首开恢复补强”，不是出现了能一键替代 Web session、Universal Links / App Links 和 App 内路由的单一方案。
+### 2.16 2026-05-31 增量校准：把链路验收收敛到“可观测状态机”
 
-1. `TikTok` 非 App 推广广告 app activity measurement 的公开说明仍很直接：Web conversion / traffic campaign 可以先导向 Web landing page，再测量 installs 和 in-app events；但前提是 MMP、App Events SDK 或 App Events API 已接入，且单条广告只能绑定一个 iOS 或 Android app。它适合把内容承接后的 App 结果纳入投放视野，但不应承担第二跳链接生成或首开恢复。
-2. `Google Web to App Acquisition Measurement` 的核心仍是识别 web campaign 带来的 indirect installs 与首个 app 内转化，并要求导入 first_open / in-app event。尤其要注意其不覆盖“web campaign 直接把用户送到 App Store / Google Play”的场景；这再次说明它是 web campaign 价值识别能力，不是 H5 CTA 的通用路由层。
-3. `Branch SAN API-Driven DDL` 的边界更值得写进验收：SAN 返回的数据不会天然包含普通 Branch Link 的控制参数或归因字段，因为这条路径没有 Branch Link 参与。也就是说，SAN DDL 能补一部分自归因网络首开数据，但不能替代自有落地页上的 `link_id / content_id / session_id` 兜底。
-4. `Adjust ODDL` 明确把 deferred deep link 从归因响应中拆出来，通过更快的 session response 交付，但它仍有 Early Access、最近点击窗口、概率匹配和 SAN 不加速等限制。落地时应把 ODDL 当“首开体验加速层”，而不是把它当完整归因或跨媒体路由方案。
-5. `Singular` 近期资料把移动 Web、PC、Console、CTV 的 install / post-install event 回流到 partner Conversion APIs 放在同一套优化框架下。这说明 Web2App 正在扩展成更广义的跨端 acquisition 闭环；但 CTV、PC、Console 的归因更依赖曝光窗口、QR / link token、S2S session 和 partner 权限，不能照搬移动 Web 的点击归因口径。
+本次复核没有发现新的端到端替代方案，但进一步确认：Web2App 的成熟度不取决于供应商名单，而取决于链路里每个状态是否可观测、可回滚、可对账。
 
-因此，后续新增平台或供应商评估可以先问一个更硬的问题：它到底增强了 `媒体可见性`、`第二跳带参`、`首开恢复`、`跨端匹配` 还是 `事件回传`。如果答案只落在其中一项，就应把它接入现有 Web2App 架构，而不是让它重定义整条链路。
+1. `Google Ads` 的 Web to App Acquisition Measurement 仍是广告平台侧最清晰的 web campaign 后续 App 结果补全能力。它要求导入 `first_open` 与 app 内事件，并把 `indirect installs`、`Web to app first conv.` 暴露给 Google Ads / AAP；这能改善投放学习，但不能替 Web 页面生成第二跳链接，也不能替 App 首开恢复业务上下文。
+2. `TikTok Ads` 的非 App Promotion app activity measurement 与 app attribution 配置继续说明，同一条广告只应绑定一个 OS app，且没有 MMP、App Events SDK 或 App Events API 时只能看到商店流量。实操中，TikTok 的 Web2App 灰度应把 `campaign objective`、`OS app`、`CTA smart link`、`first_open`、`首个关键事件` 作为一组配置发布。
+3. `Branch SAN API-Driven DDL`、`Adjust ODDL / LinkMe`、`AppsFlyer Smart Script V2`、`Singular Web-to-App / Conversion APIs` 分别补强 SAN 首开数据、iOS 恢复及时性、第二跳动态生成和跨端事件回流。它们的共同边界是：都需要 App 内路由、业务 session 与事件去重承接，不能只靠 SDK 接入自动形成闭环。
+4. `Snap App Power Pack`、Playable、App End Card、Meta Advantage+ App Campaigns、X app measurement 等前台能力更适合提升安装意图或回传可见性，不应被包装成 Web 中间页中台。若广告先落 Web，第二跳仍必须由 smart link 或自建路由承载点击参数和业务意图。
+5. `Firebase Dynamic Links` 关闭后的风险已经进入历史入口治理阶段。任何仍散落在广告、邮件、短信、二维码、社媒 profile、活动页、客服脚本里的 FDL，都应视为断链入口；治理清单要记录替代 URL、fallback、首开恢复策略和旧链接归档，而不是只替换 SDK。
 
-### 2.17 2026-05-18 资料复核后的整合口径
-
-截至本轮复核，主结论没有反转，但原有多轮日期校准可以收束为一个长期判断：Web2App 的竞争点已经从“能不能跳商店”转为“第二跳、首开、回传是否都可控”。广告平台正在补 Web 后续 App 结果的可见性，MMP / deep link 平台正在补跨 Web、商店、App 的上下文连续性；两者协同，但不能互相替代。
-
-可用于后续评估的稳定口径如下：
-
-1. `Google / TikTok / X / Snap / Meta` 这类媒体能力首先按“媒体测量与优化信号”理解。Google 的 indirect installs 与 Web to app first conversion、TikTok 非 App 推广广告的 app activity measurement、X 的 App Conversions、Snap 的 App Power Pack、Meta 的 CAPI / app event 回传，都能改善平台看到 App 结果的能力，但不自动解决安装后进入哪个 App 页面。
-2. `AppsFlyer / Branch / Adjust / Singular` 这类平台首先按“跨端会话与路由系统”理解。AppsFlyer Smart Script 解决第二跳 OneLink 动态生成，Branch Journeys / Deepviews / SAN DDL 解决体验与 SAN 首开数据，Adjust ODDL / LinkMe 解决 iOS 首开恢复时效，Singular Web-to-App Forwarding 解决 Web 参数到移动归因和 Conversion API 的延续。
-3. `Apple AdAttributionKit / SKAN / ATT` 应被放在归因层，而不是路由层。它们影响报表粒度、延迟和可观测性，但不应阻塞首开页面恢复。App 首开应先消费 deep link、session_id、content_id 或等价载荷，再等待归因结果补齐媒体归属。
-4. `Firebase Dynamic Links` 已是历史风险项，不再是待升级方案。存量项目要扫描历史广告、邮件、二维码、活动页和社媒入口中的 Dynamic Links 域名，并把“已安装唤起、未安装 fallback、首开恢复、事件回传”四件事重新设计，而不是只替换短链域名。
-5. 桌面 Web、QR、CTV、PC / Console 到移动 App 的路径正在被纳入同一套 acquisition 闭环，但归因口径不能照搬移动点击链路。跨设备场景要依赖 QR token、S2S session、曝光窗口、partner 权限和 post-install event 去重。
-
-因此，完整 Web2App 方案至少要分别证明六件事：`媒体能看到结果`、`Web 第二跳能动态带参`、`Universal Links / App Links 真实生效`、`首开恢复不等待归因响应`、`post-install event 可回传且可去重`、`动态参数覆盖有白名单和审计`。任何平台只覆盖其中一两项时，都应被接入现有架构，而不是被当成端到端闭环。
-
-### 2.18 2026-05-19 资料复核后的执行口径
-
-本轮复核继续确认：公开资料没有出现可以替代 `Web session + smart link + App 内路由 + 事件回传` 的单一平台能力，但几个细节更适合前置到执行口径里。
-
-1. `TikTok` 非 App 推广广告 app activity measurement 文档已更新到 2025 年 11 月，仍明确支持 Web Conversion / Traffic campaign 先导向 Web landing page，再测量 install 和 in-app event；但它要求 MMP、App Events SDK 或 App Events API 接入，且每条广告只能绑定一个 iOS 或 Android app。TikTok App attribution 文档也说明，没有第三方测量或 SDK 时只能测到应用商店流量，不能测转化数据。
-2. `AppsFlyer OneLink Smart Script V2` 已把 `gclid`、`fbclid`、`ttclid`、`twclid`、`ScCid` 等 click ID 透传写入公开说明。这使第二跳动态生成 OneLink 的价值更明确：它不只是把 UTM 带到商店，而是把首跳媒体点击 ID、Web 页面状态和 `deep_link_value` 一起转成 App 可消费的安装与首开上下文。
-3. `Apple AdAttributionKit` re-engagement 文档强调，已安装唤起必须依赖广告 App 已注册且可验证的 Universal Link；系统还可能在传递给 App 前剥离已知 tracking 参数。因此 iOS 侧不能把归因框架当作任意参数搬运通道，业务路由字段应通过受控 deep link / session 载荷承载。
-4. `Meta / Snap / X` 的公开资料仍更偏 App 安装优化、广告内试玩、CAPI / MMP 事件回传和非 App campaign 的 app conversion halo measurement。它们可以增强前台流量和优化信号，但 Web 中间页的第二跳、首开恢复和内部去重仍应由 MMP 或自建会话系统兜底。
-
-因此，后续不再建议继续按日期堆叠同类校准，而应把新资料直接归入对应模块：媒体平台写入“可见性与限制”，MMP 写入“第二跳与首开恢复”，Apple / Firebase / Android 写入“系统边界与迁移风险”。这样能降低重复度，也能让报告更接近可执行方案。
+因此，后续评审建议把 Web2App 抽象成 6 个状态：`ad_click_captured`、`web_session_bound`、`cta_link_generated`、`store_handoff_tracked`、`first_open_restored`、`post_install_event_deduped`。每个状态都要有日志、失败原因和 owner；缺少任一状态，链路就只能算局部 Web-to-store 或 app result measurement。
 
 ## 3. 标准链路与职责拆解
 
@@ -319,6 +310,20 @@ AAK 的 re-engagement URL 也应按路由基建看待，而不是按归因字段
 
 因此更稳妥的架构是：`首开路由优先保证体验`，`归因回传随后补齐优化信号`。Adjust ODDL、LinkMe 这类能力，本质上也是在解决“不要等归因完成才交付 deferred deep link”的问题。
 
+### 4.6 商店页连续性：CPP / CSL 是承接层，不是路由层
+
+Web2App 不应把应用商店视为不可控黑盒。iOS 侧的 `Custom Product Pages`、Android 侧的 `Google Play Custom Store Listings`，都可以让不同广告、内容、地区或受众进入更匹配的商店页，减少从 H5 到商店之间的叙事断裂。
+
+但商店页定制解决的是“安装前说服一致性”，不是“安装后上下文恢复”。落地时应把它放在链路中间层：
+
+- Web CTA 根据 OS、campaign、content_id 选择对应 CPP / CSL URL，而不是所有流量共用默认商店页。
+- CPP / CSL 的素材、文案和 Web 落地页承诺保持一致，避免用户到商店后看到完全不同的价值主张。
+- 商店页 ID 要写入 `link_id / landing_variant / store_variant`，用于后续分析商店承接效率。
+- 安装后仍要依赖 deferred deep link、session response 或 App 内路由恢复内容；不能因为用了 CPP / CSL 就省略首开载荷。
+- Apple CPP 侧要额外注意 deep link 的系统门槛：公开文档显示，CPP 可创建最多 70 个页面，页面有唯一 URL；deep link 需要随 CPP 提审，并且只在 iOS 18 / iPadOS 18 及以上用户从 CPP 点击 Open 时生效。低版本、首次安装后的恢复和非 App Store Open 场景，仍要回到 smart link / deferred deep link 方案。
+
+因此，2026 年更完整的链路应从 `Web -> Store -> App` 改成 `Web -> 定制商店页 -> 首开恢复`。前者优化安装前转化，后者保证安装后意图不丢。
+
 ## 5. 广告平台能力梳理
 
 ### 5.1 Google Ads：原生产品化最完整
@@ -372,6 +377,8 @@ Meta 没有像 Google 一样单独推出完整的 Web2App 总产品名，但具�
 近期 MMP 公开资料也进一步说明了 Meta 链路的边界：
 
 - 付费 App install / re-engagement 场景可配置 direct deep link，但 deferred deep link 常依赖 MMP、Meta SDK、AEM / SAN 数据或广告目标限制，不是所有 Meta 入口都天然支持。
+- AppsFlyer 的 Meta 集成文档显示，App Promotion / Install 目标下 direct deep link 与 deferred deep link 均可支持，常见做法是在广告层级的 Destination 中填写 DDL URL；这证明 Meta 可以承接深链字段，但字段能否在首开稳定变成 App 内页面，仍取决于 MMP、SDK 初始化和 App 路由解析。
+- Branch 的 Facebook Ads DDL 文档则给出另一个边界：Facebook deferred deep linking 常需要 Branch Ad Link 和 passive deep view，而不是像部分 SAN 那样完全由 Branch 从 partner API 直接取回普通 Branch Link 数据。因此，Meta Web2App 更应按“广告配置 + MMP 接力 + App 路由”验收。
 - iOS 侧受 ATT、AEM 和 in-app browser 影响更明显。部分 MMP 文档会要求在 Meta 归因优先、AEM payload 存在或用户未授权时调整 deep link 处理逻辑。
 - Facebook App Links 更像 Meta 生态内的网页元数据标准，不等同于 iOS Universal Links / Android App Links，也不能替代跨媒体的 delayed / deferred context restore。
 
@@ -390,6 +397,7 @@ TikTok 还明确给出实操限制：
 - 一个广告仅能选择一个 app，即 Android 或 iOS 二选一
 - 如混投双系统，部分数据可能丢失
 - 建议拆分 iOS / Android ad group
+- 若不接第三方 MMP 或 TikTok App Events SDK，TikTok Ads Manager 通常只能测到进入商店的流量，不能稳定把 install / in-app event 作为优化结果回传
 - 公开帮助文档在 2025 年底仍沿用这一口径，说明 TikTok 的 Web2App 测量重点是“非 App 目标广告也可挂接 app event tracking”，而不是自动接管 Web CTA、商店 fallback 或安装后页面恢复
 
 这意味着 TikTok 很适合“先种草、再转安装”的链路，但也要求更严格的 OS 拆分和测量配置。
@@ -507,6 +515,7 @@ AppsFlyer 在 Web2App 上的产品定义非常标准：
 - Smart Script V2 已公开支持常见 click ID 透传：`gclid`、`fbclid`、`ttclid`、`twclid`、`ScCid` 等字段可以从首跳进入第二跳 OneLink；这让 Web2App 的第二跳不再只是 UTM 继承，而是媒体点击 ID、Web 内容状态和 App 首开载荷的合并点
 - 如果要分析网页来源，Smart Script V2 可把 `document.referrer` 映射到 `af_channel` 或 `af_sub1-5` 等字段；如果要把 Web 页面状态带到首开，可从 local storage 读取值并写入 outgoing OneLink 参数
 - Smart Banner V2 的公开文档把 Web SDK、PBA snippet、Advanced SDK Verification 和 iOS 26 / Safari storage mode 放在同一集成路径下，说明 Web2App 前端入口也要验收 SDK 加载安全、浏览器存储策略和 cookie consent，而不只是看 banner 是否展示
+- AppsFlyer 的 Unified Deep Linking 口径也说明，安装后恢复依赖 SDK 回调拿到 OneLink 参数；因此 Smart Script 只是生成第二跳链接，App 侧仍要处理 `deep_link_value`、`deep_link_sub*` 和业务路由，不应把网页脚本接入等同于首开恢复完成
 - 因此，Web2App 的第二跳不要写成静态商店 URL。更稳妥的做法是从首跳 URL 中抽取 `pid`、`c`、`af_siteid`、UTM 或点击 ID，再动态生成 OneLink / attribution link，把媒体上下文带到安装和首开
 
 它最适合拥有大量自有站、SEO、内容页、CRM 回流流量的团队，把 owned media 也纳入 App 增长漏斗。
@@ -526,7 +535,7 @@ Branch 的 `Journeys + Deepviews + deep linking` 组合，本质上是在解决�
 
 Branch 近期资料还把 SAN deferred deep linking 单独产品化，说明 Google、Meta 等自归因网络的 deferred deep link 数据需要通过专门 API / MMP 口径进入 App 首开回调，而不是天然包含在普通 Branch Link 中。该能力对新安装 / 重装更有价值，但 iOS 侧仍可能受 ATT 授权、SAN 数据延迟和归因窗口影响。因此，Branch 在 SAN 流量上的价值不是“绕开隐私限制”，而是在合规前提下把广告网络数据尽量转成 App 可消费的 deep link data。
 
-需要特别注意的是，SAN API-Driven DDL 返回的是 SAN 能给回的数据，不会天然带上普通 Branch Link 的 `$ios_url`、`$android_deeplink_path`、`~campaign`、`~channel` 等控制或归因字段。只要链路里没有 Branch Link，落地页侧仍要用自有 `link_id / content_id / session_id` 保存业务上下文，避免首开只能依赖 SAN 返回结果。
+需要特别注意的是，SAN API-Driven DDL 当前公开支持重点是 Google 与 Meta，面向新安装 / 重装时把 SAN 广告数据作为 deep link data 返回。它返回的是 SAN 能给回的数据，不会天然带上普通 Branch Link 的 `$ios_url`、`$android_deeplink_path`、`~campaign`、`~channel` 等控制或归因字段。只要链路里没有 Branch Link，落地页侧仍要用自有 `link_id / content_id / session_id` 保存业务上下文，避免首开只能依赖 SAN 返回结果。
 
 Branch 的 `NativeLink` 则是另一类 iOS 侧补偿方案：它不依赖 IP 地址做 deferred deep linking，而是利用用户可选择的复制 / 粘贴机制在首次打开时恢复深链内容。这个能力适合受 Private Relay、跨浏览器跳转或 iOS 归因延迟影响较大的场景，但要把剪贴板权限提示、用户拒绝、系统版本差异纳入测试矩阵，不能把它当成静默且 100% 覆盖的路由通道。
 
@@ -571,6 +580,7 @@ Singular 的典型优势不是前端交互组件，而是把 Web 参数保留下
 - 支持把 Web、PC、Console、CTV campaign 的 install 与 post-install / in-game events 通过 partner Conversion APIs 回流给媒体，用于 web campaign 优化；但部分 web / PC / console / CTV postback 能力面向特定客户开放，选型时要确认账号权限
 - Conversion Postbacks for Web / PC / Console 可把非移动端事件通过 partner cAPI 或其他 S2S endpoint 回传，用于媒体优化、内部同步或下游系统触发；但这属于优化信号层，不自动解决 App 首开页面恢复
 - CTV-to-mobile attribution 更适合被看作“曝光到移动安装”的测量补强，常见前提是 partner 支持、曝光窗口、设备匹配和移动端 install / event 回传；如果同时使用 QR code，应把 QR token、CTV placement、移动端 first_open 串到同一链路 ID，避免把大屏曝光和移动 Web 点击混在一个归因口径里
+- 2026 年更新的 CTV 文档说明，Singular 已支持 CTV-to-mobile app attribution；这会让大屏曝光进入移动 App acquisition 报表，但仍属于测量与归因扩展。若广告素材同时给出 QR code 或短链，应把扫码事件、CTV impression、移动 first_open 和首个关键事件分别入库，再由内部规则做贡献拆分
 - 文档明确提醒 Facebook、Instagram、TikTok 等 in-app browser 到系统浏览器的上下文切换会造成归因损耗，应使用对应广告网络的 tracking link 格式先捕获点击
 
 这类能力尤其适合多平台买量、归因体系复杂、希望把 Web 来源继续喂给媒体优化模型的团队。
@@ -772,11 +782,15 @@ MVP 的验收标准不是“能跳到商店”，而是至少能回答三件事�
 | 未安装用户安装后恢复 | 安装并首次打开后能进入指定内容、活动或 onboarding 分支 |
 | 参数继承 | `utm_*`、点击 ID、内容 ID、落地页版本和路由参数能进入 MMP / App 首开事件 |
 | 商店跳转 | iOS / Android 分别进入正确商店，跨 OS 广告不会混用同一 app 配置 |
+| 定制商店页 | Apple CPP / Google Play CSL 与广告创意、Web 落地页和 App 首开目标一致，`store_variant` 可回传分析 |
 | 事件回传 | `first_open` 与首个关键事件能回传给 MMP 和对应媒体平台 |
 | 报表去重 | web conversion、install、first_open、first key event 的口径清楚，不重复计算 |
 | 受限环境 | Facebook/Instagram/TikTok 内置浏览器、Safari、Chrome、桌面 QR code 至少各测一轮 |
 | Web SDK 与存储 | Smart Banner / Web SDK 在 Safari、Chrome 和主要 in-app browser 中能保留必要状态；如启用 cookie mode，CMP 与隐私披露已覆盖 |
 | 参数覆盖治理 | 动态追加的 `_dl`、`_ddl`、fallback、UTM、click id 有白名单和锁定规则，生产短链不会被任意 URL 参数覆盖 |
+| 平台口径版本 | Google、TikTok、Meta、Snap、X、MMP 的文档日期、账号权限、适用 campaign 类型和 OS 限制已写入上线说明 |
+| MMP SDK 回调 | AppsFlyer UDL、Branch init、Adjust session response、Singular SDK 等首开回调能在冷启动、重装、首次授权弹窗前后稳定返回业务载荷 |
+| 媒体配置字段 | Meta DDL URL、TikTok app tracking、Google first_open 导入、X MMP event tag 等广告层配置与 MMP 后台一致 |
 
 如果只能完成其中一部分，优先级应是：直达和首开恢复 > 参数继承 > 事件回传 > 页面转化优化。
 
@@ -871,11 +885,30 @@ Web2App 真正上线时，最容易出问题的不是单点能力，而是三方
 | --- | --- | --- |
 | 广告点击到 Web | click id、UTM、campaign、creative、placement 由谁捕获，是否先经过 MMP / 媒体 tracking link | Web 页有访问，但安装归因可能掉到 organic 或错误来源 |
 | Web CTA 到商店 / App | CTA 是动态 smart link 还是静态 store URL，是否按 OS、浏览器、已安装状态分流 | 页面点击率正常，但商店打开率、首开恢复率低 |
+| 第二跳链接生成 | 首跳 click id、UTM、referrer、landing_variant、content_id 如何映射到 OneLink / Branch Link / Adjust Link / Singular Link，覆盖规则是否白名单化 | 媒体能看到部分安装，但业务上下文、创意版本或内容页在首开丢失 |
+| Web / 广告到定制商店页 | 是否使用 Apple CPP / Google Play CSL，商店页版本如何映射到 campaign、content_id 和 App 首开目标 | 广告与 Web 已完成教育，但商店页承诺不一致，安装前流失或安装后意图断层 |
 | Web session 到首开 | `link_id / session_id`、`deep_link_value`、`content_id` 存在哪里，App 首开如何拉取 | 安装后只能落首页，Web 说服内容无法延续 |
 | 首开到媒体回传 | first_open、注册、订阅、购买等事件通过 MMP、SDK、S2S 还是 Conversion API 回传 | 媒体无法用 post-install event 优化，预算学习慢 |
+| MMP 回调到 App 路由 | SDK 回调字段如何映射到 App 内页面、onboarding 分支和业务实验组，失败时如何 fallback | MMP 已归因但用户仍进首页，投放和体验口径割裂 |
+| iOS 补强能力 | NativeLink、LinkMe、ODDL、AAK re-engagement URL 是否需要剪贴板授权、ATT、窗口期、Universal Link 或账号白名单 | 灰度测试可用，正式放量后因权限、窗口或系统剥参导致恢复率波动 |
 | 报表去重 | web conversion、install、first_open、first key event 谁是主口径，谁是诊断口径 | 同一用户被多次计入增长贡献，ROI 被高估 |
+| 文档版本 | 使用的广告平台、MMP、商店页、隐私归因文档发布日期或更新时间是什么 | 平台能力变更后，团队仍按旧规则投放或验收，导致“配置正确但口径已失效” |
 
-实操建议是为每次 Web2App campaign 生成一个 `link spec`，至少包含：目标 OS、广告平台、落地页模板、MMP link 模板、fallback URL、App 内目标路由、首个关键事件、媒体回传事件和验收负责人。没有这份交接清单时，团队通常会把问题归咎于“归因不准”，但真实原因往往是第二跳链接、首开载荷或事件回传口径没有被统一设计。
+实操建议是为每次 Web2App campaign 生成一个 `link spec`，至少包含：目标 OS、广告平台、落地页模板、MMP link 模板、fallback URL、CPP / CSL 商店页版本、App 内目标路由、首个关键事件、媒体回传事件、资料版本和验收负责人。没有这份交接清单时，团队通常会把问题归咎于“归因不准”，但真实原因往往是第二跳链接、商店页版本、首开载荷或事件回传口径没有被统一设计。
+
+### 8.12 灰度放量门槛
+
+Web2App 不适合“配置完成即全量”。建议把首批流量限制在单一平台、单一 OS、单一落地页模板和单一首开目标，先验证证据链，再扩展渠道与页面版本。这里的证据链不是媒体后台看到安装，而是测试设备和三方报表都能串起 `首跳参数 -> 第二跳链接 -> 商店页版本 -> 首开路由 -> 首个关键事件 -> 媒体回传`。
+
+| 阶段 | 放量门槛 | 失败时先停什么 |
+| --- | --- | --- |
+| 技术灰度 | 已安装直达、未安装首开恢复、fallback、首个事件回传和链路参数都能在测试设备复现 | 停页面和媒体扩量，先修路由 |
+| 第二跳灰度 | 首跳参数能动态生成第二跳 smart link，且覆盖规则、fallback、商店页版本和首开载荷都有日志 | 停静态下载按钮和新创意扩量，先修 link spec |
+| 小预算实投 | 媒体后台、MMP、内部看板三方都能看到同一批 first_open / first_key_event，差异可解释 | 停优化事件出价，先校准归因和去重 |
+| 跨 OS 扩展 | iOS / Android 分别有独立 link spec、商店页、fallback 和测试记录 | 停双端混投，先拆 ad group / campaign |
+| 多媒体扩展 | 新媒体只新增 click id 和回传映射，不改业务路由主链路，且保留同一套证据链归档 | 停供应商切换，先复用已验证会话模型 |
+
+灰度期最重要的不是 CPI 是否最低，而是 `deferred_restore_success_rate` 和 `first_key_event_with_context_rate` 是否稳定。若这两个指标不稳定，继续扩量只会把链路断点放大，并让媒体学习到低质量或错误归因的信号。
 
 ## 9. 平台对比结论
 
@@ -928,10 +961,11 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
 3. `Meta / Snap / X` 更适合做流量与创意前台，完整链路通常要靠外部中台补齐。
 4. `AppsFlyer / Branch / Adjust / Singular` 才是把 Web2App 真正做成完整系统的核心层，其中第二跳带参、首开 session response、SAN DDL 与 Web SDK forwarding 是 2026 年选型重点。
 5. 新项目不应继续把 `Firebase Dynamic Links` 当主链路；存量项目还需要主动扫描历史广告、二维码、邮件和活动页中的 FDL 入口，避免 2025-08-25 之后形成断链。
+6. `Apple Custom Product Pages / Google Play Custom Store Listings` 应作为商店承接层纳入方案，但它们只改善安装前一致性；首开恢复仍要靠 smart link、deferred deep link、session response 和 App 内路由完成。
 
 最终验收不应停在“能否跳转”或“能否归因”，而要逐项确认：第二跳是否动态带参，首开恢复是否不等待归因响应，iOS 侧是否有 ATT / Private Relay / 剪贴板权限等异常路径兜底，首个关键事件是否能带着 Web 与媒体上下文回传并完成内部去重。
 
-一句话压缩：Web2App 的真实资产不是中间页，而是能跨广告、Web、商店、App 和媒体回传持续保存意图的会话系统。广告平台负责让结果被看见，MMP / deep link / 自建 session 负责让意图不断线，App 内路由和事件体系负责把首开后的价值兑现出来。
+一句话压缩：Web2App 的真实资产不是中间页，而是能跨广告、Web、商店、App 和媒体回传持续保存意图的会话系统。广告平台负责让结果被看见，MMP / deep link / 自建 session 负责让意图不断线，App 内路由和事件体系负责把首开后的价值兑现出来；其中 Web CTA 本身也要像广告素材一样纳入版本、参数、fallback 和回滚管理。
 
 ## 12. 参考资料
 
@@ -1086,3 +1120,37 @@ Web2App 不是附属跳转能力，而是移动增长中的一层中间系统。
     https://support.google.com/google-ads/answer/14885959?hl=en
 73. Singular, PC & Console - API Endpoint Reference
     https://support.singular.net/hc/en-us/articles/17499952586779-Singular-PC-Console-Server-to-Server-S2S-API-Endpoint-Reference
+74. Singular, Clipboard-Based DDL FAQ
+    https://support.singular.net/hc/en-us/articles/5626161387419-Clipboard-Based-DDL-FAQ
+75. Apple Developer Documentation, Identifying conversion values with conversion tags
+    https://developer.apple.com/documentation/adattributionkit/conversion-tags
+76. Branch, In-App Routing
+    https://help.branch.io/developer-hub/docs/in-app-routing
+77. Adjust, Web-to-app
+    https://help.adjust.com/en/article/web-to-app
+78. X Business, Mobile app measurement and attribution
+    https://business.x.com/en/help/campaign-setup/create-an-app-installs-campaign/mobile-app-measurement-and-attribution
+79. Apple Developer, Custom Product Pages
+    https://developer.apple.com/app-store/custom-product-pages/
+80. Google Play Console Help, Create custom store listings to target specific user segments
+    https://support.google.com/googleplay/android-developer/answer/9867158
+81. AppsFlyer, Meta ads integration setup
+    https://support.appsflyer.com/hc/en-us/articles/207033826-Meta-ads-integration-setup
+82. X Ads API, Mobile Conversions
+    https://docs.x.com/x-ads-api/measurement/mobile-conversions
+83. Apple Developer Help, Configure multiple product page versions
+    https://developer.apple.com/help/app-store-connect/create-custom-product-pages/configure-multiple-product-page-versions/
+84. Apple Developer, Custom Product Pages on the App Store
+    https://developer.apple.com/app-store/custom-product-pages/
+85. Singular, Web, Web-to-App, PC, & Console Campaign Optimization
+    https://support.singular.net/hc/en-us/articles/30577283058459-Web-Web-to-App-PC-Console-Campaign-Optimization
+86. Singular, Conversion Postbacks for Web, PC, and Console FAQ
+    https://support.singular.net/hc/en-us/articles/19017155637403-Conversion-Postbacks-for-Web-PC-and-Console-FAQ
+87. AppsFlyer, Deep Linking Suite
+    https://www.appsflyer.com/products/deep-linking/
+88. AppsFlyer Developer Hub, iOS Unified Deep Linking
+    https://dev.appsflyer.com/hc/docs/dl_ios_unified_deep_linking
+89. Singular, Mobile Attribution for Connected TV (CTV) FAQ
+    https://support.singular.net/hc/en-us/articles/13581281810331-Mobile-Attribution-for-Connected-TV-CTV-FAQ
+90. Google Ads Help, New features to connect your web and app advertising in Google Ads
+    https://support.google.com/google-ads/answer/16501674?hl=en
