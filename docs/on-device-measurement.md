@@ -1,7 +1,7 @@
 # On-Device Measurement RFC：端侧广告归因与优化闭环
 
 状态: Draft<br>
-最后更新: 2026-05-19 UTC<br>
+最后更新: 2026-05-23 UTC<br>
 适用对象: Ad Network, Advertiser App, MMP/AAP, Privacy Infra, SDK, Data Infra, ML Platform
 
 ## 1. 摘要
@@ -42,6 +42,12 @@
 2026-05-17 的复查没有发现需要推翻主链路的新证据。新增的 RFC 化要求是：不能只定义 message schema，还要定义 implementation conformance。W3C TR 索引仍显示 `Attribution Level 1` 最新公开草案日期为 `2026-05-14`；Google ICM 官方文档继续强调它经由第三方 AAP interface 提供更实时、事件级的 reporting，并且 S2S 集成要把 on-device measurement `info` string 传给 AAP；AppsFlyer / Adjust 等 AAP 文档也继续把 ICM 写成 partner integration，而不是通用平台 API。研究侧，CHI 2026 的 Android fingerprinting developer study 说明平台限制并不会自动消灭 SDK 指纹风险，开发者更关心合规与 enforcement。因此本文新增 `MeasurementConformanceProfile`：把 Profile A/B/C/D、第三方库选择、MMP/SRN 合同、敏感信号 policy、request-level optimization、aggregate DP、fallback 与上线门禁写成一个可审计对象，避免每个团队口头声明“我们实现了 RFC”，但实际只实现了其中一小段。
 
 2026-05-19 的复查把隐私边界从“单个子协议安全”推进到“端到端 composition 可解释”。PoPETs 2026 的 private advertising 系统化研究提醒：targeting、engagement、attribution、reporting 各自合理的 privacy notion 并不会自动组合成一个自然的端到端隐私保证，而且有用的广告系统本身会通过 market research 泄露一些信息。W3C Attribution Level 1 `2026-05-14` Working Draft 也明确把 side-channel 风险、privacy budget store、aggregation service 和 DP release 写进核心流程。产品侧，Google ICM 继续要求 S2S 集成把 on-device measurement `info` string 传给 AAP；Adjust ODM 文档进一步把“尽早捕获 app launch time”写成 attribution 准确性的关键要求。本文因此新增 `LaunchClockEvidenceRecord` 与 `EcosystemPrivacyCompositionRecord`：前者把 boot time / launch time 从“可疑指纹材料”约束成短期、可派生、可审计的 clock evidence；后者把 MMP Ask/Claim/Confirm、AAP event-level reporting、Ad Network request-level optimization 和 aggregate release 放在同一张 composition 风险表里，避免把局部隐私声明误读为端到端 DP。
+2026-05-20 的复查没有发现需要改变主链路的新证据；最新 W3C Attribution cover page 仍显示 `2026-05-14` Working Draft。新增的是一个更容易在生产里被漏掉的控制点：**如果 aggregate plane 声称 DP，端侧预算消耗和 exhaustion 行为也要成为协议对象**。W3C DP guidance 提醒，`epsilon` 不是唯一评审维度，trust model、collection period、multi-dimensional leakage 和 consent/agency 都会影响 DP 声明是否成立；Cookie Monster 则把 on-device budgeting for DP ad measurement 工程化为可集成组件，并用 individual DP 提高预算利用率；DPack 进一步把 privacy budget 建模为不可再生的调度资源；Precio 说明 layered histogram / sum 类广告测量可以用现成 Rust 实现做 private aggregate measurement。本文因此新增 `DeviceDpBudgetReceipt`：它记录设备侧某个 privacy epoch 的预算请求、扣减、跳过或耗尽状态，但不把 exact remaining budget 泄露给 MMP、AAP、普通日志或 trainer。Phase 1 可以继续不上 DP；但一旦对外宣称 DP aggregate reporting，就必须同时有 server-side `AggregateBudgetSchedulerPolicy` 和 device-side budget receipt / exhaustion policy。
+2026-05-21 的复查继续没有改变 `MMP Ask -> Ad Network Claim -> MMP Confirm` 主链路，但修正了端侧 DP budget receipt 的字段语义。IETF DAP 最新为 `draft-ietf-ppm-dap-18`，最近更新时间是 `2026-05-11`，并继续把 report、aggregation job、collection job、task configuration 和 extension 排序当作正式协议对象；`DAP Extensions for the Attribution API -01` 进一步要求 attribution report 绑定客户端消耗的 privacy budget，但同时说明：如果实际少扣预算的原因依赖私有信息，外发扩展应报告 requested / upper-bound expenditure，而不是真实扣减值。本文因此把 `DeviceDpBudgetReceipt` 从 `deducted_epsilon_micros` 修正为 `reported_epsilon_micros + actual_deduction_bucket`：聚合器可以据此加足噪声并校验预算，MMP / AAP / 普通日志仍不能观察“这台设备实际有没有相关事件、扣了多少预算、还剩多少预算”。
+
+2026-05-22 的复查修正了上一轮对 W3C 最新状态的判断：`Attribution Level 1` 已在 `2026-05-21` 发布新的 Working Draft。新草案没有推翻 SRN 主链路，但把 aggregate plane 的端侧状态写得更细：conversion report 在 no matching impression 或 privacy budget exhausted 时仍应构造全零 histogram，调用方仍收到有效 report；privacy budget store、impression site quota store、attribution budget lock、API activation、history clearing 和 clock epoch 都是协议状态，而不是实现细节。本文因此扩展 `DeviceDpBudgetReceipt` 与 `13.2C`：`budget_exhausted`、`no_match`、`user_disabled`、`unconfigured` 等路径必须合并成 constant-shape / all-zero report 语义；budget lock、quota epoch 和 clock policy 要可审计，但不能把 raw clock / boot time 变成优化训练特征。
+
+2026-05-23 的复查没有发现新的标准或产品资料推翻 `MMP Ask -> Ad Network Claim -> MMP Confirm -> server_request_id label release` 主链路；W3C Attribution Level 1 最新仍是 `2026-05-21` Working Draft，DAP 最新仍是 `draft-ietf-ppm-dap-18`。本次真正值得补进 RFC 的是 RTB 场景的 attribution selection bias：2026-03/04 的 `When Attribution Fails` 研究用 impression-level 数据和 cross-fitted double machine learning 构造 Selection-Adjusted Benchmark，说明点击与转化的表面关系可能主要来自用户意图和动态定向，甚至在调整后变成负信号。本文因此新增 `SelectionAdjustedOptimizationRecord`：`RequestScopedOptimizationLabel` 仍负责“这次谁赢”，`IncrementalityCalibrationRecord` 负责“长期因果权重”，而 `SelectionAdjustedOptimizationRecord` 负责“这个 winner label 在当前 support / targeting state 下是否应进入训练、下调权重或进入实验池”。这能避免 personalized optimization 把强选择偏差当成真实广告效果。
 
 本文刻意兼顾生产实用性：
 
@@ -58,9 +64,9 @@
 - 如果你要评审架构，重点读 `6-8`、`10-14`、`17B`。
 - 如果你关心 legal / privacy risk，重点读 `10`、`11`、`17C-17D`、`19`。
 - 如果你要实现或调 SDK，重点读 `7.4`、`8`、`9`、`17A`、`17B`。
-- 如果你要做优化训练，重点读 `8.8`、`8.14-8.17A`、`9.14`、`9.17`、`12`。
+- 如果你要做优化训练，重点读 `8.8`、`8.14-8.17A`、`8.22-8.22A`、`9.14-9.17A`、`12`。
 - 如果你要追端侧敏感 PII 如何变成可用优化信号，重点读 `8.2A-8.2B`、`9.1B-9.1C`、`10`。
-- 如果你要评估上线 trade-off，重点读 `8.2A`、`8.26-8.29`、`9.18-9.21`、`15.4-15.6`。
+- 如果你要评估上线 trade-off，重点读 `8.2A`、`8.18A-8.18B`、`8.26-8.29`、`9.18-9.21`、`13.2B-13.2C`、`15.4-15.6`。
 
 第一次阅读时可以先跳过大段 schema。schema 的作用是把边界写死，不是让人从字段定义开始理解系统。
 
@@ -177,11 +183,14 @@ MMP SDK Ask
 | touchpoint 质量需要 request-scoped device / supply-path attestation，但不能变成 user join key | OM SDK device attestation 把 Privacy Pass 风格证明带入广告 measurement；它适合反伪造和样本质量治理，不适合替代 attribution token | 附录 20.17、14.6 |
 | FHE 作为 hardened profile，而不是默认主链路 | FHE 能隐藏被计算的输入，但不能自动解决输出泄露、重放、MMP confirm 和 request-level optimization join；适合私密候选评分、aggregate 加固和小模型加密推理 | 17E、20.16 |
 | attribution label 必须与 incrementality calibration 分开 | 2026-04 修订的 PIE 研究说明 attribution / last-click / exposure rate 等 post-determined aggregate features 可以预测因果增量，但它们本身不是因果真值；优化面应把 claim label、calibration weight、experiment provenance 拆开 | 9.15、12.8、20.18 |
+| request-level label 进入训练前还要做 selection-adjusted gate | RTB 里的点击和转化都受动态定向与用户意图影响；`When Attribution Fails` 用 cross-fitted double ML 说明表面 click-conversion 关系可能在调整后显著改变，甚至改变 campaign 优先级。因此 `is_attributed=true` 不能直接等价于“应升权训练”，还要记录 support、residualized signal、placebo test 和 follow-up experiment 策略 | 8.22A、9.17A、12.8、16.3、20.34 |
 | clean-room / PET matching 可以做后端对账和跨方测量，但不替代 SRN Ask-Claim-Confirm | ADMaP v1.0 已把 DCR 内两方 matching、attribution computation、report generation 标准化；本 RFC 用它加固 settlement / aggregate verification，而不是让 MMP 前台 claim API 暴露更多字段 | 13、17B、20.18 |
 | consent / deletion / jurisdiction signal 是协议状态，不是 legal 备注 | GPP 与 DDRF V2 说明隐私选择、删除请求、传播状态、签名和错误码需要机器可读；on-device measurement 必须能把这些信号映射到 artifact、token、feature release 和 retention policy | 8.23、9.15、10、20.18 |
 | 多标识符私密匹配必须有 task-scoped policy，而不是先合成一个万能 ID | PrivacyGo 把 multi-identifier ad measurement 建模为 reversed OPRF + blind key rotation + DP-obfuscated intersection size；这支持本 RFC 把 identifier bundle、key epoch、linkage guardrail 写成正式对象 | 8.24、9.16、20.19 |
 | 实时报表 DP 不能只写一个 epsilon | Differentially Private Ad Conversion Measurement 要求归因规则、DP 邻接、贡献裁剪 scope 和 enforcement point 一起 operationally valid；AdsBPC 则说明流式广告报表需要 per-user DP、release slot 和非同分布噪声计划 | 8.25、13.2A、20.19 |
-| privacy budget 需要 scheduler policy，而不是报表作业参数 | W3C Attribution Level 1 `2026-05-14` 草案继续把 aggregation service、anti-replay 和 privacy budget 放进核心对象；Big Bird 说明 per-querier budget 在自适应查询下不够，生产上要记录 global budget、quota、batch scheduling 和 DoS resilience | 8.18A、9.2C、13.2B、20.26 |
+| privacy budget 需要 scheduler policy，而不是报表作业参数 | W3C Attribution Level 1 `2026-05-21` 草案继续把 aggregation service、anti-replay、privacy budget store、impression site quota store 和 budget lock 放进核心对象；Big Bird 说明 per-querier budget 在自适应查询下不够，生产上要记录 global budget、quota、batch scheduling 和 DoS resilience | 8.18A、9.2C、13.2B、20.26、20.33 |
+| device-side DP budget 需要 receipt，而不是只看 server ledger | W3C DP guidance 提醒 `epsilon` 之外还要评审 trust model、collection period 和多维泄露；Cookie Monster 说明 on-device DP budgeting 可以成为广告测量系统组件；DPack 说明 privacy budget 是不可再生资源；DAP attribution extension 又要求 report 绑定预算，同时避免泄露依赖私有信息的真实扣减。对本 RFC 的影响是：aggregate plane 声称 DP 时，设备侧预算请求、外发上界、粗粒度扣减状态、耗尽和 side-channel 策略都必须可审计 | 8.18B、9.2D、13.2C、20.31-20.32 |
+| all-zero / constant report 是隐私边界，不是错误兜底 | W3C Attribution Level 1 `2026-05-21` 明确 no matching impression 或 budget exhausted 时仍构造全零 histogram，调用方仍拿到有效 conversion report；因此 MMP/AAP/站点不能通过错误码、空响应、耗时或 retry 差异区分 no match、disabled、budget exhausted 和 policy blocked | 8.18B、9.2D、13.2C、20.33 |
 | 端侧敏感信号要有 release policy，而不是靠字段名约定 | 2026 的移动位置 / 传感器 / TCF 研究共同说明，`ip`、boot time、location-like signal、AAID 这类字段的业务价值与隐私风险都强依赖采集点、consent、cold-start 阶段和 release surface；因此需要把 raw TTL、bucketization、MMP 可见性和 trainer 可见性写成协议对象 | 8.2A、9.1B、10、20.27 |
 | 敏感信号还需要逐事件 derivation record，而不只是全局 policy | Google Ads ODM 文档明确 event-data 路径会使用从 IP / timestamp 等设备信号派生的临时数据；AAP 文档又要求 consent 先于 conversion/referrer 发送。生产上必须记录每次事件实际用了哪些 policy、输出了哪些派生桶、是否允许 MMP / trainer 可见 | 8.2B、9.1C、10、20.28 |
 | 隐私增强方案必须量化 utility / latency / adoption trade-off | 2026-05 PNAS field experiment 和 Privacy-Enhanced Retargeting 实验说明，Privacy Sandbox 类方案的广告效果不是常数，受 adoption、latency、供应侧覆盖和成本分母影响；RFC 需要记录实验设计和业务指标，而不是只记录 privacy profile | 8.26、9.18、15.4、20.27 |
@@ -1231,6 +1240,9 @@ message OptimizationTrainingRow {
   int64 feedback_snapshot_ts_ms = 22;
   string training_privacy_policy_id = 23;
   string feature_sensitivity_manifest_id = 24;
+  string selection_adjustment_id = 25;
+  int32 selection_adjusted_sample_weight_micros = 26;
+  string causal_signal_tier = 27; // attributed_only, selection_adjusted, experiment_calibrated
 }
 ```
 
@@ -1338,6 +1350,59 @@ message AggregateBudgetSchedulerPolicy {
 - `scheduler_type` 与 `batch_window_seconds` 会改变报表时效和隐私语义；它们必须进入审计日志，不能只保存在 Airflow / Spark 参数里。
 - `correction_release_policy_id` 必须声明 correction release 是否重复扣预算；不能把修正报表包装成“同一次 release 的补发”来绕过 ledger。
 
+### 8.18B DeviceDpBudgetReceipt
+
+`AggregateBudgetSchedulerPolicy` 是服务端 collector 的预算调度对象；`DeviceDpBudgetReceipt` 是设备侧对某个 privacy epoch 的预算动作记录。它只在 aggregate plane 声称 DP 时成为 `MUST`；如果当前 profile 明确是 `NO_DP_BASELINE` 或 `per_collector_quota_only`，这个对象可以不存在，但实现不能把这种状态宣传成 device-epoch DP。
+
+这个对象的核心不是把“剩余预算”报给服务端。恰恰相反，exact remaining budget 本身会泄露用户设备上是否有相关 impression / conversion，因此只允许暴露粗粒度状态桶，且默认只进入 SDK local audit 或 confidential plane。
+
+```proto
+message DeviceDpBudgetReceipt {
+  string receipt_id = 1;
+  string measurement_task_id = 2;
+  string sdk_instance_id = 3; // rotated, app-scoped, not a user id
+  string privacy_unit = 4; // app_instance_epoch, device_scoped_epoch, advertiser_user_epoch
+  string budget_model = 5; // not_applicable, individual_dp, hybrid_device_plus_global
+  int32 privacy_budget_epoch_id = 6;
+  int64 epoch_start_ts_ms = 7;
+  int64 epoch_end_ts_ms = 8;
+  string report_nonce_hash = 9;
+  string local_event_window_hash = 10;
+  int64 requested_epsilon_micros = 11;
+  int64 reported_epsilon_micros = 12; // wire/audit upper bound, not necessarily actual spend
+  string actual_deduction_bucket = 13; // none, partial, full, hidden
+  string remaining_budget_bucket = 14; // sufficient, low, exhausted, unknown
+  string budget_action = 15; // deducted, skipped_no_relevant_event, exhausted_rejected, deferred
+  bool contributed_report = 16;
+  string no_contribution_reason = 17; // none, no_matching_impression, policy_blocked, budget_exhausted
+  string exhaustion_response_mode = 18; // constant_shape_response, silent_defer, local_only_error
+  string side_channel_policy_id = 19;
+  string export_visibility = 20; // device_only, confidential_plane, aggregate_audit_bucket
+  string budget_binding_mode = 21; // requested_upper_bound, exact_local_only, not_applicable
+  int64 created_ts_ms = 22;
+  string sdk_signature = 23;
+  string budget_store_scope = 24; // app_instance_store, user_agent_global_store, sdk_confidential_ledger
+  string budget_lock_scope = 25; // attribution_budget_lock, task_budget_lock, none
+  string activation_state = 26; // enabled, user_disabled, unconfigured, policy_disabled
+  string contribution_shape = 27; // non_zero_histogram, all_zero_histogram, encrypted_constant_shape
+  string zero_contribution_reason_bucket = 28; // none, no_match_or_budget_or_disabled, policy_blocked, hidden
+  int64 impression_site_quota_epoch_id = 29;
+  string history_clear_state = 30; // unaffected, state_cleared, epoch_reset, unknown
+  string clock_epoch_policy_id = 31;
+}
+```
+
+约束：
+
+- `reported_epsilon_micros` 是给 aggregate collector / audit 使用的外发预算上界；如果真实少扣预算的原因依赖私有信息，必须按 requested / upper-bound 口径外发，不能外发真实扣减值。
+- `remaining_budget_bucket` 与 `actual_deduction_bucket` 只能是粗桶；`remaining_epsilon_micros`、`deducted_epsilon_micros` 这类 exact 字段禁止出现在 MMP payload、AAP payload、普通日志和 trainer raw feature。
+- `skipped_no_relevant_event` 不等于“免费查询”。它必须由 formal budget model 明确允许，否则会给自适应查询留下 probing 空间。
+- `budget_exhausted` 不能通过更快失败、更长日志、更特殊错误码或不同网络请求形状暴露给 MMP / AAP；`exhaustion_response_mode` 必须说明如何做 constant-shape 或 local-only 处理。
+- `contribution_shape=all_zero_histogram` 只能说明外部 report 形态，不得作为“没有 match”或“预算耗尽”的明文标签传播；`zero_contribution_reason_bucket` 必须把 no match、budget exhausted、user disabled、unconfigured 等私有状态合并到粗桶。
+- `budget_lock_scope`、`budget_store_scope`、`impression_site_quota_epoch_id` 和 `clock_epoch_policy_id` 必须进入 confidential audit；否则无法复盘一次 report 是被哪个 budget epoch、quota epoch 和 clock policy 放行或折叠成 zero contribution。
+- 如果 `privacy_unit=advertiser_user_epoch`，必须有 `advertiser_user_id` 的合法来源与 consent dependency；默认推荐 `app_instance_epoch` 或 `device_scoped_epoch`，避免把端侧预算系统变成长期用户 join key。
+- `DeviceDpBudgetReceipt` 不能替代 `AggregateBudgetSchedulerPolicy`。前者说明设备侧是否允许贡献，后者说明 collector / batch / report 是否允许发布。
+
 ### 8.19 SdkMeasurementRuntimeTrace
 
 这个对象描述 MMP SDK、AdNetwork adapter、ODM SDK 在广告主 App 内的运行态。它不是归因结果，也不是训练特征；它的作用是让 `Ask` 为什么发出、为什么跳过、为什么超时可以被复盘。
@@ -1388,7 +1453,7 @@ message SdkMeasurementRuntimeTrace {
   bool apple_adattributionkit_conversion_tag_present = 42;
   string apple_adattributionkit_attribution_rule_profile_id = 43;
   string apple_adattributionkit_geo_scope = 44; // country_region_postback, unavailable, unknown
-  string w3c_attribution_draft_date = 45; // latest checked: 2026-05-14
+  string w3c_attribution_draft_date = 45; // latest checked: 2026-05-21
   string aggregate_api_dependency_state = 46; // active_standard_track, platform_deprecated, partner_managed
 }
 ```
@@ -1557,6 +1622,49 @@ message IncrementalityCalibrationRecord {
 - `post_determined_feature_snapshot_id` 只能指向 aggregate feature snapshot，不能指向 user-level 明细。
 - `incrementality_weight_micros` 是 sample weighting / budget prior，不得反向改写 `is_attributed`。
 - 如果 `experiment_provenance=PIE_MODEL`，必须保留训练该 calibration model 的 RCT / holdout provenance；否则它会退化成“看起来像因果”的普通预测模型。
+
+### 8.22A SelectionAdjustedOptimizationRecord
+
+这个对象回答一个比 incrementality 更贴近日常投放的问题：`is_attributed=true` 的样本在当前 RTB targeting / support state 下，是否适合作为训练正样本、是否应该降权、是否应该只进入实验池。它不是新的归因裁决，也不是替代 RCT 的因果估计；它是 optimization plane 的 selection-bias gate。
+
+```proto
+message SelectionAdjustedOptimizationRecord {
+  string selection_adjustment_id = 1;
+  string measurement_task_id = 2;
+  int64 advertiser_id = 3;
+  int64 campaign_id = 4;
+  int64 creative_family_id = 5;
+  string adjustment_level = 6; // campaign_day, campaign_week, source_campaign_week
+  string treatment_definition = 7; // clicked_impression, viewed_impression, bid_win
+  string outcome_definition = 8; // purchase_7d, retention_d1, revenue_7d
+  string estimator_family = 9; // DML, DR_LEARNER, SAB, SACS
+  string estimator_library_profile = 10; // econml, dowhy, doubleml, lightgbm_xgboost
+  string covariate_snapshot_id = 11;
+  string support_policy_id = 12;
+  string eligible_support_bucket = 13; // in_support, thin_support, out_of_support, unknown
+  string residualized_signal_bucket = 14; // strong_positive, weak_positive, neutral, negative, unstable
+  string selection_bias_direction = 15; // positive, negative, mixed, unknown
+  int32 selection_adjusted_score_micros = 16;
+  int32 lower_confidence_bound_micros = 17;
+  int32 upper_confidence_bound_micros = 18;
+  string placebo_test_status = 19; // passed, failed_backward_test, not_run, inconclusive
+  string recommended_training_action = 20; // use, downweight, experiment_required, aggregate_only, exclude
+  int32 recommended_sample_weight_micros = 21;
+  string followup_experiment_policy_id = 22;
+  string calibration_id = 23;
+  string release_scope = 24; // optimization_gate_only, aggregate_reporting_only
+  int64 valid_from_ts_ms = 25;
+  int64 expires_ts_ms = 26;
+}
+```
+
+关键约束：
+
+- `SelectionAdjustedOptimizationRecord` 只能改变 `sample_weight`、`recommended_training_action` 或实验优先级；不得反向改写 `AttributionDecisionRecord.final_decision`。
+- `covariate_snapshot_id` 应指向 cohort / campaign / source 粒度的状态快照；raw user state、raw click path、MMP loser 明细不进入 trainer。
+- 如果 `eligible_support_bucket=thin_support` 或 `placebo_test_status=failed_backward_test`，训练系统默认应降权或要求 follow-up experiment，而不是继续把 click winner 当高质量正样本。
+- `estimator_library_profile` 应优先使用成熟因果库或 GBDT 库，例如 EconML、DoWhy、DoubleML、LightGBM、XGBoost；不要自研一个只输出 uplift 分数、没有 cross-fitting / refutation / support audit 的 toy 模型。
+- 这个对象与 `IncrementalityCalibrationRecord` 互补：前者控制“这个观测样本是否可信”，后者控制“这个 campaign / creative 的因果增量权重是多少”。
 
 ### 8.23 PrivacyControlPropagationRecord
 
@@ -1737,18 +1845,20 @@ message MeasurementConformanceProfile {
   string training_privacy_policy_id = 18;
   string aggregate_budget_scheduler_policy_id = 19;
   string streaming_dp_plan_id = 20;
-  string utility_experiment_id = 21;
-  repeated string approved_library_profiles = 22; // protobuf_buf, circl_voprf, lightgbm, opendp, jax_privacy, openfhe
-  string crypto_suite_policy_id = 23;
-  string runtime_trace_requirement = 24; // required, sampled, disabled
-  string derivation_record_requirement = 25; // required, sampled, disabled
-  string fallback_policy_id = 26;
-  string rollout_gate = 27; // partner_beta, region_allowlist, sdk_version_gate, broad_rollout
-  string break_glass_policy_id = 28;
-  string conformance_test_suite_id = 29;
-  string audit_manifest_digest = 30;
-  int64 effective_from_ts_ms = 31;
-  int64 expires_ts_ms = 32;
+  string device_dp_budget_profile = 21; // not_supported, receipt_required, local_only_receipt
+  bool requires_device_dp_budget_receipt = 22;
+  string utility_experiment_id = 23;
+  repeated string approved_library_profiles = 24; // protobuf_buf, circl_voprf, lightgbm, opendp, jax_privacy, openfhe
+  string crypto_suite_policy_id = 25;
+  string runtime_trace_requirement = 26; // required, sampled, disabled
+  string derivation_record_requirement = 27; // required, sampled, disabled
+  string fallback_policy_id = 28;
+  string rollout_gate = 29; // partner_beta, region_allowlist, sdk_version_gate, broad_rollout
+  string break_glass_policy_id = 30;
+  string conformance_test_suite_id = 31;
+  string audit_manifest_digest = 32;
+  int64 effective_from_ts_ms = 33;
+  int64 expires_ts_ms = 34;
 }
 ```
 
@@ -1757,6 +1867,7 @@ message MeasurementConformanceProfile {
 - `profile_level=PROFILE_A_MINIMUM` 也必须包含 `claim_token` replay gate、`mmp_touch_token -> server_request_id` 内部 join、`TrainingPrivacyPolicy`、thresholded aggregate reporting 和 prohibited field manifest。否则它不是 minimum production。
 - `request_level_optimization_enabled=true` 时，`request_level_join_mode` 必须是 `server_request_id_internal_only`，且 `prohibited_field_names` 至少包含 `raw_ip`、`boot_time_ms`、`device_fp_hash`、`odm_info`、`claim_token`。
 - `public_reporting_privacy_mode=aggregate_dp` 或 `dap_vdaf_aligned` 时，必须引用 `aggregate_budget_scheduler_policy_id` 或 `streaming_dp_plan_id`；不能只写 `dp=true`。
+- `requires_device_dp_budget_receipt=true` 只应在 device/app-epoch DP profile 中启用；一旦启用，就必须能把每个 aggregate contribution 追到 `DeviceDpBudgetReceipt`。
 - `optimization_privacy_mode=no_dp_confidential` 可以用于 Phase 1，但 conformance profile 必须显式声明，不得把它包装成 full DP。
 - `runtime_trace_requirement=disabled` 只适用于离线研究或不可上线 profile；生产 ICM / ODM / AAP integration 至少应为 `sampled`，推荐 `required`。
 - `approved_library_profiles` 是工程约束，不是宣传材料。OPRF / VOPRF、DP、FHE、GBDT、causal calibration 都应优先使用成熟库或 audited implementation，不应自研 toy primitive。
@@ -2060,6 +2171,86 @@ message EcosystemPrivacyCompositionRecord {
 }
 ```
 
+### 9.2D device DP budget receipt
+
+下面这条 mock 发生在设备侧。它表达的是：SDK 在 `20260429` 这个 privacy epoch 内对一次 aggregate contribution 做了预算检查，最终允许贡献报告，但只把粗粒度预算状态暴露给 confidential audit。MMP / AAP 不应看到这个对象。
+
+```json
+{
+  "receipt_id": "dbgr_01JVAVM8K7ZJQ7N2E4V9PX5K9C",
+  "measurement_task_id": "agg_install_geo_day_v4",
+  "sdk_instance_id": "sdkrot_7f2b1c_epoch_202604",
+  "privacy_unit": "app_instance_epoch",
+  "budget_model": "individual_dp",
+  "privacy_budget_epoch_id": 20260429,
+  "epoch_start_ts_ms": 1777420800000,
+  "epoch_end_ts_ms": 1778025600000,
+  "report_nonce_hash": "sha256:0c7f4b8a9e31...",
+  "local_event_window_hash": "sha256:9fd3a16be210...",
+  "requested_epsilon_micros": 25000,
+  "reported_epsilon_micros": 25000,
+  "actual_deduction_bucket": "full",
+  "remaining_budget_bucket": "sufficient",
+  "budget_action": "deducted",
+  "contributed_report": true,
+  "no_contribution_reason": "none",
+  "exhaustion_response_mode": "constant_shape_response",
+  "side_channel_policy_id": "constant_time_budget_check_v1",
+  "export_visibility": "confidential_plane",
+  "budget_binding_mode": "requested_upper_bound",
+  "created_ts_ms": 1777503600456,
+  "sdk_signature": "sig_sdk_budget_01",
+  "budget_store_scope": "sdk_confidential_ledger",
+  "budget_lock_scope": "attribution_budget_lock",
+  "activation_state": "enabled",
+  "contribution_shape": "non_zero_histogram",
+  "zero_contribution_reason_bucket": "none",
+  "impression_site_quota_epoch_id": 20260429,
+  "history_clear_state": "unaffected",
+  "clock_epoch_policy_id": "wall_clock_epoch_with_large_correction_guard_v1"
+}
+```
+
+如果预算耗尽，推荐仍保持对外请求形状稳定：
+
+```json
+{
+  "receipt_id": "dbgr_01JVAVQC4QWDH36SZ0T9V2CA8S",
+  "measurement_task_id": "agg_install_geo_day_v4",
+  "sdk_instance_id": "sdkrot_7f2b1c_epoch_202604",
+  "privacy_unit": "app_instance_epoch",
+  "budget_model": "individual_dp",
+  "privacy_budget_epoch_id": 20260429,
+  "requested_epsilon_micros": 25000,
+  "reported_epsilon_micros": 0,
+  "actual_deduction_bucket": "none",
+  "remaining_budget_bucket": "exhausted",
+  "budget_action": "exhausted_rejected",
+  "contributed_report": false,
+  "no_contribution_reason": "budget_exhausted",
+  "exhaustion_response_mode": "constant_shape_response",
+  "side_channel_policy_id": "constant_time_budget_check_v1",
+  "export_visibility": "device_only",
+  "budget_binding_mode": "not_applicable",
+  "created_ts_ms": 1777503900123,
+  "sdk_signature": "sig_sdk_budget_02",
+  "budget_store_scope": "sdk_confidential_ledger",
+  "budget_lock_scope": "attribution_budget_lock",
+  "activation_state": "enabled",
+  "contribution_shape": "all_zero_histogram",
+  "zero_contribution_reason_bucket": "no_match_or_budget_or_disabled",
+  "impression_site_quota_epoch_id": 20260429,
+  "history_clear_state": "unaffected",
+  "clock_epoch_policy_id": "wall_clock_epoch_with_large_correction_guard_v1"
+}
+```
+
+注意：
+
+- 第一条 receipt 即使内部实际扣减可能小于 `25000`，只要这个差异依赖“设备上是否有相关事件”这类私有信息，外发给 aggregate collector 的也应是 requested / upper-bound 口径。
+- 第二条 receipt 不能变成 MMP 可见的 “why no claim” reason。它只说明 aggregate contribution 没有被设备侧 DP budget 放行；归因主链路仍按 `ClaimResponse` / `MmpConfirmRequest` 的语义执行。
+- `contribution_shape=all_zero_histogram` 是对外 report shape，不是对外错误原因。生产实现应让 no matching impression、budget exhausted、user disabled、unconfigured 等路径在 MMP / AAP / site 可见层面无法稳定区分。
+
 ### 9.3 advertiser app / server 缓存的 `odm_info`
 
 这是 Google ICM / AAP 类接口的兼容对象。v3.1 主链路不要求 MMP 用 `odm_info` 作为 matching material。
@@ -2230,7 +2421,7 @@ MMP SDK 在调用某个 ad network Ask 前，应先在本地得到类似下面�
   "apple_adattributionkit_conversion_tag_present": false,
   "apple_adattributionkit_attribution_rule_profile_id": "",
   "apple_adattributionkit_geo_scope": "unavailable",
-  "w3c_attribution_draft_date": "2026-05-14",
+  "w3c_attribution_draft_date": "2026-05-21",
   "aggregate_api_dependency_state": "partner_managed"
 }
 ```
@@ -2283,7 +2474,7 @@ MMP SDK 在调用某个 ad network Ask 前，应先在本地得到类似下面�
   "apple_adattributionkit_conversion_tag_present": false,
   "apple_adattributionkit_attribution_rule_profile_id": "",
   "apple_adattributionkit_geo_scope": "unavailable",
-  "w3c_attribution_draft_date": "2026-05-14",
+  "w3c_attribution_draft_date": "2026-05-21",
   "aggregate_api_dependency_state": "partner_managed"
 }
 ```
@@ -2850,7 +3041,10 @@ def handle_confirm(req):
   "srn_partner_id": "appsflyer",
   "feedback_snapshot_ts_ms": "1761795105123",
   "training_privacy_policy_id": "tpp_semi_sensitive_ads_v1",
-  "feature_sensitivity_manifest_id": "fsm_20260511_request_opt_v1"
+  "feature_sensitivity_manifest_id": "fsm_20260511_request_opt_v1",
+  "selection_adjustment_id": "seladj_20260523_cmp_20014501_wk21",
+  "selection_adjusted_sample_weight_micros": 420000,
+  "causal_signal_tier": "selection_adjusted"
 }
 ```
 
@@ -3096,6 +3290,58 @@ def handle_confirm(req):
 - 它允许 Phase 1 继续使用 `LightGBM` / `XGBoost` 做 request-level baseline，但明确标注 `NO_DP_BASELINE`，不伪装成 DP。
 - 它为 Phase 2 的 DP 训练留出可执行升级路径：先把 feature sensitivity manifest 固定，再选择 `LABEL_DP`、`SEMI_SENSITIVE_DP` 或 `FULL_USER_LEVEL_DP`，最后用现成库和审计栈跑 shadow / online gate。
 
+### 9.17A selection-adjusted optimization gate
+
+下面这个 mock 展示 attribution label 在进入训练前如何被 selection gate 降权。它保留 request-level 优化需要的 join key，但把 selection adjustment 放在 campaign / source cohort 粒度，不把 raw user state 或 MMP loser 明细放进训练行。
+
+```json
+{
+  "schema_version": "selection_adjusted_optimization_record.v1",
+  "selection_adjustment_id": "seladj_20260523_cmp_20014501_wk21",
+  "measurement_task_id": "icm_purchase_7d_v3",
+  "advertiser_id": 120045,
+  "campaign_id": 20014501,
+  "creative_family_id": 30077,
+  "adjustment_level": "source_campaign_week",
+  "treatment_definition": "clicked_impression",
+  "outcome_definition": "purchase_7d",
+  "estimator_family": "DML",
+  "estimator_library_profile": "econml_lightgbm_crossfit_v1",
+  "covariate_snapshot_id": "covar://rtb-state/2026-w21/source-campaign/20014501",
+  "support_policy_id": "support_min_overlap_0p05_v2",
+  "eligible_support_bucket": "thin_support",
+  "residualized_signal_bucket": "weak_positive",
+  "selection_bias_direction": "positive",
+  "selection_adjusted_score_micros": 410000,
+  "lower_confidence_bound_micros": 120000,
+  "upper_confidence_bound_micros": 690000,
+  "placebo_test_status": "inconclusive",
+  "recommended_training_action": "downweight",
+  "recommended_sample_weight_micros": 420000,
+  "followup_experiment_policy_id": "geo_holdout_required_for_scale_v1",
+  "calibration_id": "cal_20260509_cmp_74012091_d7",
+  "release_scope": "optimization_gate_only",
+  "valid_from_ts_ms": 1779494400000,
+  "expires_ts_ms": 1780099200000
+}
+```
+
+训练样本消费时只引用 gate 结果：
+
+```json
+{
+  "server_request_id": 91833720368540001,
+  "is_attributed": true,
+  "credit_fraction_micros": 1000000,
+  "selection_adjustment_id": "seladj_20260523_cmp_20014501_wk21",
+  "selection_adjusted_sample_weight_micros": 420000,
+  "recommended_training_action": "downweight",
+  "causal_signal_tier": "selection_adjusted"
+}
+```
+
+这条记录的工程含义是：即使 SRN Confirm 证明某个 network 赢了 attribution，也不意味着 bidder 应按 1.0 权重学习。若 campaign 处于 thin support、backward placebo 未通过，或 residualized signal 不稳定，优化面应自动降权、转入 shadow 或要求实验校准。
+
 ### 9.18 measurement utility experiment
 
 下面这条 mock 不是 attribution row，而是隐私 profile 的上线评估记录。它用于回答一个生产问题：更隐私的路径是否在当前 partner / SDK / region / supply 覆盖下足够可用，以及是否需要 fallback。
@@ -3191,6 +3437,8 @@ def handle_confirm(req):
   "training_privacy_policy_id": "tpp_no_dp_baseline_block_raw_pii_v1",
   "aggregate_budget_scheduler_policy_id": "budget_sched_w3c_attr_v1",
   "streaming_dp_plan_id": "sdp_20260510_install_daily_v1",
+  "device_dp_budget_profile": "receipt_required",
+  "requires_device_dp_budget_receipt": true,
   "utility_experiment_id": "mue_20260514_icm_odm_coldstart_us_ios_v1",
   "approved_library_profiles": [
     "protobuf_buf_schema_v2",
@@ -3216,7 +3464,7 @@ def handle_confirm(req):
 
 - request-level optimization 已启用，但 join key 只在 Ad Network 内部。
 - optimization plane 目前是 `no_dp_confidential`，不是严格 DP。
-- 对外 aggregate reporting 已要求 budget scheduler / streaming DP plan。
+- 对外 aggregate reporting 已要求 budget scheduler / streaming DP plan；如声明 device/app-epoch DP，还要求 device-side budget receipt。
 - iOS ICM / ODM 的 SDK、runtime trace、`odm_info` 缺失原因和 fallback 都被纳入审计。
 - 禁止字段列表可被 conformance test 自动扫描，避免 raw PII 通过日志、训练样本或 partner compat 表外流。
 
@@ -4091,6 +4339,29 @@ DP aggregate reporting 不能只靠 `epsilon` 字段和离线任务命名来治�
 
 实际落地建议是：Phase 1 用 `AggregateCollectorBudgetState` 先把 report / batch / collector / replay / budget 状态打通；Phase 2 再启用 `AggregateBudgetSchedulerPolicy`，把 per-collector quota 和 global device/user epoch budget 合并到同一个 privacy ledger。
 
+### 13.2C device-side DP budget 与 exhaustion 策略
+
+如果 aggregate plane 宣称的是 device-epoch / app-instance-epoch DP，那么只在服务端记录 budget ledger 还不够。设备侧是否有相关 impression、conversion、budget 是否耗尽，本身都可能通过请求形状、异常、耗时、日志量或 retry 行为泄露。W3C DP guidance 的提醒是：评审 DP 系统时不能只看 `epsilon`；Cookie Monster 的启发是：on-device ad-measurement budget 可以被实现成独立组件，并用 individual DP 提高可用性。
+
+本 RFC 的要求是：
+
+- `DeviceDpBudgetReceipt` `SHOULD` 与 `AggregateBudgetSchedulerPolicy` 使用同一个 `measurement_task_id` 和可映射的 `privacy_budget_epoch_id`。
+- 设备侧预算检查 `MUST NOT` 把 exact remaining budget、exact deducted budget、hit/miss、no relevant event、budget exhausted 以明文 reason 交给 MMP / AAP。
+- 对会离开设备并进入 DAP-like aggregate collector 的 report，`reported_epsilon_micros` `SHOULD` 使用 requested / reserved upper bound；真实少扣预算如果依赖私有事件状态，只能进入 local/confidential audit 的粗桶。
+- budget exhausted、policy blocked、no relevant event 的外部网络路径 `SHOULD` 使用 constant-shape response，至少保证 response code、payload class、retry policy 和可观测耗时不形成稳定 side-channel。
+- 如果平台 surface 要求调用方总是收到有效 conversion report，no matching impression、budget exhausted、user disabled、unconfigured 和 policy blocked `SHOULD` 折叠为 `all_zero_histogram` 或等价 encrypted dummy contribution；MMP / AAP / site 不应收到可区分的 reason。
+- 设备侧预算实现 `SHOULD` 把 privacy budget store、impression site quota store、budget lock scope、activation state、history-clear behavior 和 clock epoch policy 作为可审计状态，但这些字段默认只进 confidential audit，不进 trainer raw feature。
+- 如果系统采用类似 Cookie Monster 的“无相关事件少扣或不扣预算”优化，必须在 `formal_budget_model` 中声明，并把 `skipped_no_relevant_event` 的条件写入审计；否则自适应查询可以利用该优化推断设备侧是否有相关触点。
+- 如果当前实现只是 `per_collector_quota_only` 或 `NO_DP_BASELINE`，`DeviceDpBudgetReceipt` 可以不生成；但 `MeasurementConformanceProfile` 必须把它标成 `not_supported`，且对外文档不能说是 device-level DP。
+- 端侧 DP budget 不替代 consent。若 `privacy_unit` 或 query key 依赖 `advertiser_user_id:int64`、登录邮箱、手机号或其他 first-party identifier，仍必须经过 `PrivacyControlPropagationRecord` 和 `DeviceSensitiveSignalPolicy`。
+
+推荐 rollout：
+
+1. Phase 1: no-DP request-level optimization + thresholded aggregate report；明确 `budget_model=not_applicable`。
+2. Phase 2: aggregate plane 启用 `AggregateCollectorBudgetState` 和 per-collector quota；不宣称 global / device DP。
+3. Phase 3: 启用 `DeviceDpBudgetReceipt` + `AggregateBudgetSchedulerPolicy`，把 device epoch、collector budget、anti-replay 和 batch release 接到统一 privacy ledger。
+4. Phase 4: 对高敏感 partner-facing aggregate，可评估 DAP/VDAF、Precio 或 TEE/MPC collector，但仍保留同一套 budget receipt / scheduler schema。
+
 ### 13.3 与 DAP/VDAF 对齐
 
 即使 Phase 1 不部署完整 DAP，也建议 aggregate object model 对齐：
@@ -4118,6 +4389,7 @@ DP aggregate reporting 不能只靠 `epsilon` 字段和离线任务命名来治�
 - collector 是谁
 - budget 属于哪个 scope
 - 这是 requested / reserved / finalized 的哪一种预算状态
+- budget report extension 里携带的是外发上界还是 exact value
 - batch 是 leader/collector 视角下的哪一个稳定 collect 单位
 
 否则后面一旦要支持 shared budget、multi-surface reporting 或多个 collector，系统就会被迫把“预算语义”硬塞进离线任务名字和脚本参数里。
@@ -4136,6 +4408,8 @@ DP aggregate reporting 不能只靠 `epsilon` 字段和离线任务命名来治�
   - `Prio3SumVec`
 
 RFC 不需要强制“今天就部署哪一个 collector”，但应先把 metric type 和 primitive 对齐，否则未来很容易出现一套只服务本团队脚本的半成品 aggregation protocol。
+
+如果指标是多层 histogram / sum，且 VDAF primitive 不能自然表达业务维度，可以把 [Precio](https://github.com/microsoft/Precio) 放进 Profile C/D 的候选栈：它面向 private aggregate measurement 的 layered histograms and sums，有 Rust 实现，并支持 DP 输出。它不替代 `MMP Ask -> Claim -> Confirm`，只适合 aggregate reporting / settlement / cross-party verification plane。
 
 ### 13.5 bucket 与 reporting window 也是优化对象
 
@@ -4308,6 +4582,7 @@ device attestation 的目标是证明 touchpoint 环境更可信，而不是建�
 - `raw_ip`、`boot_time_ms`、`device_fp_hash`、OPRF input/output、`odm_info`、`claim_token` 不进入 `OptimizationTrainingRow`。
 - 端侧敏感信号有 `DeviceSensitiveSignalPolicy` 与 `DeviceSensitiveSignalDerivationRecord`；没有 policy 的 raw signal 不采集、不派生、不上报。
 - 如果对外宣称 DP aggregate release，必须有 `StreamingDpReleasePlan` 或 `AggregateBudgetSchedulerPolicy`；否则只能称为 thresholded / non-DP operational reporting。
+- 如果对外宣称 device/app-epoch DP aggregate release，必须有 `DeviceDpBudgetReceipt` 或在 `MeasurementConformanceProfile` 中显式声明该 DP profile 未启用；不能用服务端 quota 假冒端侧预算保证。
 
 `SHOULD` gate：
 
@@ -4394,6 +4669,7 @@ iOS optional SDK 的推荐实现：
   - [TensorFlow Privacy](https://github.com/tensorflow/privacy)
 - 用 DP 训练时，先跑 shadow / offline gate，记录 `dp_accountant_id`、`privacy_audit_profile_id` 和 `empirical_privacy_eval_id`；不要把实验 notebook 里的 epsilon 当成生产证明。
 - DP-SGD / DP-FTRL 的 accountant 必须和实际 sampler 对齐：如果训练实现使用 shuffle sampler，就不能只报告 Poisson subsampling accountant；建议把 `dp_sampling_method`、`dp_accounting_method` 和 empirical audit 结果写进 `TrainingPrivacyPolicy`。
+- selection adjustment / causal gate 优先使用 [EconML](https://github.com/py-why/econml)、[DoWhy](https://github.com/py-why/dowhy) 或 [DoubleML](https://github.com/DoubleML/doubleml-for-py) 这类成熟库，再配合 LightGBM / XGBoost 做 nuisance model；不要用手写 uplift 分数替代 cross-fitting、support audit 和 placebo/refutation test。
 
 ### 16.4 aggregate reporting
 
@@ -4423,8 +4699,10 @@ iOS optional SDK 的推荐实现：
 - composition leak test：同一 `advertiser_user_id`、`server_request_id`、`claim_token` 或 `odm_info` 不得同时出现在 MMP payload、optimization raw feature 和 aggregate release 明细中。
 - side-channel regression test：hit / miss / budget exhausted / consent disabled 路径的返回形态、错误码、日志量和粗粒度耗时必须保持稳定。
 - aggregate budget test：DP / thresholded report 必须有 report、batch、collector、budget、replay lifecycle。
+- device budget test：device/app-epoch DP profile 必须产生 `DeviceDpBudgetReceipt`；exact remaining budget 不得进入 MMP / AAP / BI / trainer，budget exhausted 路径不得形成可观察差异。
 - partner ineligibility test：SDK missing、region ineligible、consent disabled、S2S ineligible 必须落到 runtime trace，不能写成 attribution negative。
 - training manifest test：训练作业必须消费 `TrainingPrivacyPolicy`，并拒绝 prohibited raw feature。
+- selection-bias gate test：`OptimizationTrainingRow` 使用 request-level attributed label 时，必须能追到 `selection_adjustment_id` 或明确标成 `causal_signal_tier=attributed_only`；thin support / failed placebo 的 cohort 不得以满权重进入 online trainer。
 
 这些测试不保证系统“绝对隐私”，但能保证实现没有偏离 RFC 的主要边界：MMP 看不到 `req_id`，trainer 看不到 raw PII，对外 release 有预算和 replay 语义。
 
@@ -4442,6 +4720,7 @@ iOS optional SDK 的推荐实现：
 - Confirm 后的 token-to-`req_id` join
 - request-level labels
 - `TrainingPrivacyPolicy`，至少标明 `NO_DP_BASELINE` 与 prohibited raw features
+- 若 request-level label 进入 online trainer，至少生成 `SelectionAdjustedOptimizationRecord` 或显式标记 `causal_signal_tier=attributed_only`
 - thresholded aggregate reporting
 - opaque `odm_info` / device artifact，仅在兼容 ICM / AAP path 时启用
 
@@ -4454,6 +4733,7 @@ iOS optional SDK 的推荐实现：
 - versioned contribution policy
 - feature sensitivity manifest and semi-sensitive training shadow policy
 - DP-backed aggregate reporting
+- `DeviceDpBudgetReceipt`，仅当 aggregate DP profile 声称 device/app-epoch guarantee 时启用
 - policy-aware audit trail
 
 ### 17.3 Profile C: Cross-Party Hardened
@@ -4463,6 +4743,7 @@ iOS optional SDK 的推荐实现：
 - PJC/PSI reconciliation
 - stronger verifiable workflow
 - DAP/VDAF-aligned aggregate service
+- 可选 Precio-style layered histogram / sum collector，用于 VDAF primitive 不自然覆盖的 aggregate verification
 
 ### 17.4 Profile D: FHE-Hardened Optional
 
@@ -5737,6 +6018,7 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 - 多归因场景里 winner-only 与 fractional-credit 的默认策略是什么？
 - 各 region 是否允许 event-level partner-facing reporting？
 - aggregate reporting 的 DP budget 如何按 metric 和时间窗分配？
+- device/app-epoch DP profile 中，端侧 budget exhaustion 是否允许 `skipped_no_relevant_event` 少扣或不扣预算；如果允许，外发的 `reported_epsilon_micros` 应固定为 requested upper bound 还是按 task profile 分桶？
 - FHE hardened profile 的默认 POC 是否选择 BFV/BGV exact scoring，还是 CKKS / Concrete ML encrypted inference？
 - 如果 FHE response 由 SDK 解密，如何限制 SDK 从 score vector 中学习过多 candidate store 结构？
 - 如果 FHE response 改成 threshold decrypt，collector / helper 的 trust model 与 MMP legal role 如何定义？
@@ -5753,10 +6035,10 @@ POC 成功标准不应该是“FHE 能跑起来”，而是：
 1. 先把边界做对：raw device material 不出 AdNetwork SDK crypto boundary，`req_id` 不给 MMP，`odm_info` 不复用。
 2. 再把可用性做稳：采用 `MMP Ask -> AdNetwork SDK OPRF/PSM -> Claim -> MMP Confirm`，默认 Option 4：tracking-link `mmp_touch_token + opaque claim_token`。
 3. 再把优化闭环做稳：Confirm 后用 `mmp_touch_token -> req_id` 恢复 request-level label，支撑 creative_id x req_id 级别训练。
-4. 再把因果校准做稳：用 RCT / holdout / PIE-style calibration 给 attribution label 加 `incrementality_weight_micros`，不要把 `is_attributed=true` 当成 `incremental=true`。
+4. 再把因果与选择偏差校准做稳：用 RCT / holdout / PIE-style calibration 给 attribution label 加 `incrementality_weight_micros`，并用 `SelectionAdjustedOptimizationRecord` 给 thin-support 或 placebo 失败的 RTB cohort 降权；不要把 `is_attributed=true` 当成 `incremental=true` 或满权重训练样本。
 5. 再把训练隐私做稳：每个 trainer 必须有 `TrainingPrivacyPolicy`，区分 `NO_DP_BASELINE`、`LABEL_DP`、`SEMI_SENSITIVE_DP` 和 `FULL_USER_LEVEL_DP`，不要把 raw PII 派生物和归因 label 混进一张无治理训练表。
-6. 再把多标识符和实时报表边界做稳：multi-ID matching 必须有 `MultiIdentifierPrivateMatchPolicy`，streaming aggregate release 必须有 `StreamingDpReleasePlan`，不能用一个万能 user ID 或一个 `epsilon` 字段糊过去。
-7. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
+6. 再把多标识符和实时报表边界做稳：multi-ID matching 必须有 `MultiIdentifierPrivateMatchPolicy`，streaming aggregate release 必须有 `StreamingDpReleasePlan`，device/app-epoch DP 必须有 `DeviceDpBudgetReceipt`，不能用一个万能 user ID 或一个 `epsilon` 字段糊过去。
+7. 最后持续加固：aggregate DP、verifiable workflow、PJC/PSI、DAP/VDAF / Precio 对齐；FHE 只作为高敏 task 的 optional hardened profile，而不是默认替代 OPRF/PSM。
 
 一句话总结：真正有生产价值的 on-device measurement，不是把服务器删掉，也不是宣称所有 measurement data 都不出端，而是把“哪些数据能离开 SDK、去哪一层、以什么粒度、为了什么目的离开，谁能在 Confirm 后恢复 req_id，以及 trainer 对哪些字段承担什么隐私 profile”定义成严格协议。
 
@@ -5805,12 +6087,12 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.3 DAP / VDAF / Taskprov 已经足够成熟到值得对齐对象模型
 
-截至 2026-04-30：
+截至 2026-05-21：
 
-- [DAP draft-ietf-ppm-dap-17](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-01-30，Datatracker 当前仍显示 `WG Consensus: Waiting for Write-Up`；
+- [DAP draft-ietf-ppm-dap-18](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 最近一次更新时间是 2026-05-11，Datatracker 当前显示 `WG Consensus: Waiting for Write-Up`，但仍有 WGLC issue 处理与引用文档等待项；
 - [DAP Taskprov draft-ietf-ppm-dap-taskprov-03](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap-taskprov/) 最近一次修订发布于 2025-09-05，且 datatracker 在 2026-03-16 将其标记为 expired & archived，但其中的 task binding 语义仍然直接可用；
 - [VDAF draft-irtf-cfrg-vdaf-19](https://datatracker.ietf.org/doc/draft-irtf-cfrg-vdaf/) 最近一次更新时间是 2026-04-14；
-- [DAP Extensions for the Attribution API draft-thomson-ppm-dap-attribution-01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 最近一次更新时间是 2026-02-17，让 attribution 类 measurement 与 PPM/DAP 更接近。
+- [DAP Extensions for the Attribution API draft-thomson-ppm-dap-attribution-01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 发布于 2026-02-18，让 attribution 类 measurement 与 PPM/DAP 更接近，尤其把 privacy budget report extension、collector-selected batch mode、minimum privacy budget collection job extension 和 budget source task extension 写进 DAP 对齐路径。
 
 这意味着即使 Phase 1 不直接部署完整 DAP，aggregate object model 也应该主动对齐：
 
@@ -5819,6 +6101,9 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 - `batch_id`
 - `task_expiration`
 - `extension_fields`
+- `aggregation_job_extension`
+- `collection_job_extension`
+- `report_extension_sorting`
 
 更进一步，aggregate plane 不应再停留在“以后再看怎么聚合”的抽象层。既然 VDAF 对象模型已经稳定，生产 RFC 应直接偏向已有 primitive：
 
@@ -5938,7 +6223,7 @@ Google Research 2024 的 [Mayfly](https://research.google/pubs/mayfly-private-ag
 
 ### 20.11 W3C Attribution Level 1 让 aggregate plane 的边界更清晰
 
-[W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 当前索引显示的 Working Draft 日期是 `2026-05-14`。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
+[W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 当前公开 Working Draft 日期是 `2026-05-21`。它最重要的启发不是“移动 App 要照搬浏览器 API”，而是进一步确认了四件事：
 
 - on-device attribution 与 off-device aggregation 可以明确分层；
 - aggregate service `MUST` 处理 anti-replay，而不是只做求和；
@@ -6454,6 +6739,77 @@ Config 下发上下文
 4. 新增 `15.6 composition 与 clock evidence gates`，要求 Profile B+ 在启用 MMP/AAP + SRN Confirm + request-level optimization 时必须产出 composition record。
 5. 更新 `16.7 conformance test suite`，加入 launch-clock evidence、composition leak 与 side-channel regression 测试。
 
+### 20.31 截至 2026-05-20 的最新 delta：端侧 DP budget receipt 与 aggregate mechanism 选择
+
+本次复查没有发现需要推翻 `MMP Ask -> Ad Network Claim -> MMP Confirm -> server_request_id label release` 的证据。最新 [W3C privacy-preserving-attribution cover page](https://www.w3.org/TR/privacy-preserving-attribution/all/) 仍显示 Attribution Level 1 是 `2026-05-14` Working Draft；因此平台标准侧的新约束仍然是 aggregate / anti-replay / privacy budget / DP，而不是 request-level `req_id` 对外释放。
+
+第一，[W3C Differential Privacy Guidance](https://www.w3.org/TR/differential-privacy-guidance/) 在 `2026-02-12` Group Note Draft 中把 DP 系统评审核心从“epsilon 是多少”扩展为 trust model、central/local/distributed model、collection period、multi-dimensional leakage，以及 DP 是否被误用来替代 consent / agency。对本 RFC 的影响是：`privacy_profile` 不能只写 `epsilon=...`；必须同时写 `privacy_unit`、collection epoch、budget exhaustion 行为、release surface 和 consent dependency。
+
+第二，[Cookie Monster](https://spg.cs.ubc.ca/publication/2024-sosp/) 是目前最直接面向广告测量的 on-device DP budgeting 研究之一：它分析 Google / Apple / Meta / Mozilla 风格的隐私广告测量 API，用 individual DP 做更高效的预算消耗，并在 Chrome 原型与广告数据集上评估。其 [开源 artifact](https://github.com/columbia/cookiemonster) 也说明这种预算逻辑可以工程化为组件。对本 RFC 的影响是：如果 aggregate plane 选择 device/app-epoch DP，就不能只有服务端 `AggregateBudgetSchedulerPolicy`；还需要 `DeviceDpBudgetReceipt` 记录设备侧是否扣预算、跳过、耗尽或贡献 report。
+
+第三，[DPack](https://systems.cs.columbia.edu/dp-infrastructure/projects/PrivateKube/) 把 privacy budget 明确建模成不可再生的调度资源；它优化的是多任务 DP workload 下的预算效率，而不是广告 measurement 专属协议。对本 RFC 的影响是：privacy budget scheduler 要像生产资源调度器一样有 reservation、finalization、fairness/efficiency trade-off、quota 和 audit，而不是散落在 Spark / Airflow 参数里。
+
+第四，[Precio](https://www.microsoft.com/en-us/research/publication/aggregate-measurement-via-oblivious-shuffling/) 说明 private aggregate measurement 还有 DAP/VDAF 之外的成熟候选：它用 oblivious shuffling 计算 layered histograms and sums，面向 private ad measurement 场景，并有 [Rust implementation](https://github.com/microsoft/Precio)。对本 RFC 的影响是：aggregate plane 的 mechanism 选择应按 metric type 决定；`Prio3Count/Sum/Histogram/SumVec` 是默认映射，但高维 layered histogram / settlement 场景可以把 Precio 放入 Profile C/D 的 approved library list。
+
+落地结论：
+
+1. 新增 `DeviceDpBudgetReceipt`，只在 device/app-epoch DP profile 中成为必选对象；Phase 1 non-DP / quota-only profile 可以不启用，但必须诚实声明。
+2. 新增 `9.2D` mock payload，示范正常扣预算和 budget exhausted 两条路径，并明确 exact remaining budget 不得离开设备侧或 confidential audit。
+3. 新增 `13.2C`，把 budget exhausted / no relevant event / policy blocked 的 constant-shape response 与 side-channel mitigation 写成 aggregate reporting 规则。
+4. 更新 `15.5` 与 `16.7`，把 device budget receipt 和 exhaustion regression 纳入 conformance gate / test suite。
+5. 在 `13.4` 与 Profile C 中加入 Precio-style aggregate collector 作为可选生产组件；它只服务 aggregate plane，不替代 SRN Claim/Confirm。
+
+### 20.32 截至 2026-05-21 的最新 delta：DAP budget binding 不能泄露真实扣减
+
+本次复查没有发现需要改变 SRN 主链路的证据。最新 [W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 仍是 `2026-05-14` Working Draft；真正需要修正的是 aggregate plane 的预算绑定语义。
+
+第一，[DAP draft-ietf-ppm-dap-18](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 已在 `2026-05-11` 更新。相比本文之前记录的 `-17`，`-18` 把 collection job extensions、extensible task configuration、report extension sorting、aggregation job extensions 等对象继续协议化。对本 RFC 的影响是：`AggregateCollectorBudgetState` 不应只记录 BI 作业结果，还要能映射到 report extension、aggregation job extension、collection job extension 和 task config。
+
+第二，[DAP Extensions for the Attribution API -01](https://datatracker.ietf.org/doc/draft-thomson-ppm-dap-attribution/) 的关键提醒是：attribution report 需要绑定客户端花费的 privacy budget，使聚合器能按预算幅度加噪；但在 Attribution API 的 individual DP 场景里，实际少扣预算可能依赖私有信息，所以外发扩展应报告 requested expenditure，也就是最大可能花费，而不是 exact actual spend。对本 RFC 的影响是：`DeviceDpBudgetReceipt` 不能用 `deducted_epsilon_micros` 这类字段外发真实扣减；应拆成 `requested_epsilon_micros`、`reported_epsilon_micros` 和 `actual_deduction_bucket`。
+
+第三，工程落地时要把三种状态分开：`requested` 是 SDK 申请/保留的预算，`reported` 是可离开设备并进入 aggregate collector 的预算上界，`actual` 只允许在本地或 confidential audit 里以粗桶存在。这样 aggregate collector 可以保守加噪，MMP / AAP 不能通过预算差异推断设备上是否存在相关 impression / conversion。
+
+落地结论：
+
+1. `DeviceDpBudgetReceipt` 字段从 `deducted_epsilon_micros` 修正为 `reported_epsilon_micros + actual_deduction_bucket`。
+2. `9.2D` mock payload 明确 contributed report 使用 requested upper bound；budget exhausted path 仍是 device-only / constant-shape。
+3. `13.2C` 增加 DAP attribution budget binding 规则：外发预算值不能成为 private event existence side-channel。
+4. `20.3` 更新 DAP 当前状态为 `draft-ietf-ppm-dap-18`，并把 collection job / aggregation job / report extension 纳入 aggregate object model。
+
+### 20.33 截至 2026-05-22 的最新 delta：W3C 2026-05-21 把 zero report 和预算状态写进协议面
+
+本次复查没有发现新的论文或产品资料要求推翻 `MMP Ask -> Ad Network Claim -> MMP Confirm -> server_request_id label release` 主链路。真正需要修正的是：上一节把 W3C 最新状态停留在 `2026-05-14`，但 [W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 已在 `2026-05-21` 发布新的 Working Draft。
+
+第一，`2026-05-21` 草案在 overview 中明确：conversion query 没有找到 impression，或该站点 privacy budget 已耗尽时，浏览器仍构造全零 histogram；调用站点仍收到有效 conversion report。对本 RFC 的影响是：`budget_exhausted`、`no_matching_impression`、`user_disabled`、`unconfigured` 和 `policy_blocked` 不应在 MMP / AAP / site 可见层形成不同错误码、空响应、日志量、retry policy 或耗时曲线。本文因此给 `DeviceDpBudgetReceipt` 增加 `contribution_shape` 与 `zero_contribution_reason_bucket`，并在 `13.2C` 要求这些路径折叠为 all-zero / encrypted dummy / constant-shape report。
+
+第二，草案把 `privacy budget store`、`impression site quota store`、`attribution budget lock`、API activation、history clearing 和 clock choice 都放到 API internals / privacy considerations 里。对本 RFC 的影响是：设备侧 DP budget receipt 不能只记录 `epsilon`；还要能复盘“这次 contribution 属于哪个 budget store、哪个 quota epoch、是否拿过 budget lock、是否受 history clear 或 clock correction 影响”。但这些状态默认只进 confidential audit，不能进入 MMP payload、AAP payload、普通 BI 或 trainer raw features。
+
+第三，产品侧复查继续支持“ICM 是 partner compatibility surface，不是 SRN 主链路替代品”。Google 开发者文档仍要求 iOS ICM 从 ODM SDK / Firebase 取得 `aggregateConversionInfo` 并作为 App Conversion API 的 `odm_info` 传递；Airbridge 近期 SDK 文档把 iOS / Unity / Flutter / React Native 的 ICM 集成都写成 SDK version gate。对本 RFC 的影响不是新增一个 `icm_enabled` 布尔值，而是继续要求 `SdkMeasurementRuntimeTrace` / `MeasurementConformanceProfile` 记录 SDK family、version gate、region、consent、S2S fallback、`odm_info` 缺失原因和 supported engagement type。
+
+落地结论：
+
+1. `DeviceDpBudgetReceipt` 新增 `budget_store_scope`、`budget_lock_scope`、`activation_state`、`contribution_shape`、`zero_contribution_reason_bucket`、`impression_site_quota_epoch_id`、`history_clear_state` 和 `clock_epoch_policy_id`。
+2. `9.2D` mock payload 明确正常贡献和 budget exhausted 都保持可审计 receipt；耗尽路径的外部形态是 all-zero / constant-shape，不是可见失败。
+3. `13.2C` 明确：no match、budget exhausted、user disabled、unconfigured、policy blocked 在 partner-facing surface 不能被稳定区分。
+4. `SdkMeasurementRuntimeTrace.w3c_attribution_draft_date` 更新为 `2026-05-21`；历史章节里早先的 `2026-05-14` 保留为当时复查记录，但最新 RFC 语义以本节为准。
+
+### 20.34 截至 2026-05-23 的最新 delta：RTB attribution selection bias 必须进入优化门控
+
+本次复查没有发现新的标准或产品资料要求推翻主链路。最新 [W3C Attribution Level 1](https://www.w3.org/TR/attribution/) 仍是 `2026-05-21` Working Draft；[DAP](https://datatracker.ietf.org/doc/draft-ietf-ppm-dap/) 仍是 `draft-ietf-ppm-dap-18`；Google ICM / AAP 资料仍支持本文判断：ICM 是 partner compatibility surface，不是 MMP/SRN Confirm 的替代品。Google 开发者文档仍要求 iOS ODM SDK 在 first launch 后尽早取 `aggregateConversionInfo` 并作为 App Conversion API 的 `odm_info` 参数传递；Singular 文档也继续把 ICM 描述为 open beta、click-through install measurement、在缺少 user-level identifier 时提供 event-level insight。
+
+真正需要补进 RFC 的是优化面：新近可见的 [When Attribution Fails: Selection, Targeting, and Measurement in Real-Time Bidding Advertising](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6530478) 把 RTB attribution 的风险说得更直接。论文用大规模 impression-level 数据构造 Selection-Adjusted Benchmark，估计方法是 cross-fitted double machine learning；其核心提醒是，clicked impression 看起来更接近 conversion，不代表它有正向因果贡献，因为点击本身会被用户意图和动态定向内生化。论文还构造 Selection-Adjusted Campaign Signal，用于 campaign-level screening 和 follow-up experimentation，但明确它不是 campaign causal effect。
+
+对本 RFC 的影响是：`RequestScopedOptimizationLabel` 只回答“这次 request 在 SRN/MMP 流程里是否拿到 credit”；它不能直接回答“bidder 应该把这个 cohort 学成更高价值”。此前的 `IncrementalityCalibrationRecord` 已经把 attribution 和 incrementality 拆开，本次新增的 `SelectionAdjustedOptimizationRecord` 再补一层训练门控：在 label 进入 `OptimizationTrainingRow` 之前，必须记录 support bucket、residualized signal、placebo/refutation status、recommended sample weight 和 follow-up experiment policy。
+
+落地结论：
+
+1. 新增 `8.22A SelectionAdjustedOptimizationRecord`，把 RTB selection adjustment 建模成正式协议对象。
+2. `OptimizationTrainingRow` 新增 `selection_adjustment_id`、`selection_adjusted_sample_weight_micros` 和 `causal_signal_tier`，避免 `is_attributed=true` 默认满权重进入训练。
+3. 新增 `9.17A` mock payload，展示 thin-support cohort 如何被降权，而不是被当成高质量正样本。
+4. `16.3` 要求 selection gate 使用 EconML / DoWhy / DoubleML / LightGBM / XGBoost 这类成熟库，不自研 toy uplift。
+5. `16.7` 新增 selection-bias gate test：thin support、failed placebo 或 residualized signal unstable 的 cohort 不能满权重进入 online trainer。
+6. Phase 1 仍可以不对 optimization plane 上 DP；但不能省略 causal / selection provenance，否则个性化优化会把 measurement bias 学成出价策略。
+
 ## 21. 参考资料
 
 ### 21.1 Research
@@ -6496,6 +6852,10 @@ Config 下发上下文
 36. [Making Sense of Private Advertising: A Principled Approach to a Complex Ecosystem](https://petsymposium.org/popets/2026/popets-2026-0023.php)
 37. [Cookie Monster: Efficient On-device Budgeting for Differentially-Private Ad-Measurement Systems](https://arxiv.org/abs/2405.16719)
 38. [A Hardware-Anchored Privacy Middleware for PII Sharing Across Heterogeneous Embedded Consumer Devices](https://research.google/pubs/a-hardware-anchored-privacy-middleware-for-pii-sharing-across-heterogeneous-embedded-consumer-devices/)
+39. [Cookie Monster publication page](https://spg.cs.ubc.ca/publication/2024-sosp/)
+40. [DPack: Efficiency-Oriented Privacy Budget Scheduling](https://systems.cs.columbia.edu/dp-infrastructure/projects/PrivateKube/)
+41. [Precio: Private Aggregate Measurement via Oblivious Shuffling](https://www.microsoft.com/en-us/research/publication/aggregate-measurement-via-oblivious-shuffling/)
+42. [When Attribution Fails: Selection, Targeting, and Measurement in Real-Time Bidding Advertising](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6530478)
 
 ### 21.2 Standards
 
@@ -6515,6 +6875,8 @@ Config 下发上下文
 14. [IAB Tech Lab Data Deletion Request Framework](https://iabtechlab.com/standards/data-deletion-request-framework/)
 15. [W3C privacy-preserving-attribution cover page](https://www.w3.org/TR/privacy-preserving-attribution/all/)
 16. [W3C Standards and Drafts Index](https://www.w3.org/TR/?status%5B0%5D=draftStandard)
+17. [W3C Differential Privacy Guidance](https://www.w3.org/TR/differential-privacy-guidance/)
+18. [NIST SP 800-226: Guidelines for Evaluating Differential Privacy Guarantees](https://csrc.nist.gov/pubs/sp/800/226/final)
 
 ### 21.3 Product / Integration
 
@@ -6550,6 +6912,9 @@ Config 下发上下文
 30. [Apple Developer: Measuring ad performance with AdAttributionKit](https://developer.apple.com/app-store/ad-attribution/)
 31. [AppsFlyer: Privacy-preserving campaign measurement](https://support.appsflyer.com/hc/en-us/articles/20489739742609-Privacy-preserving-campaign-measurement)
 32. [Adjust Developer Hub: Google On-device Conversion Measurement](https://dev.adjust.com/en/sdk/ios/plugins/google-odm/)
+33. [Google Developers: Integrated Conversion Measurement](https://developers.google.com/app-conversion-tracking/api/integrated-conversion-measurement)
+34. [Airbridge iOS SDK v4: Google ICM attribution data](https://help.airbridge.io/en/developers/ios-sdk-v4)
+35. [Airbridge Flutter SDK v4: Google ICM attribution data](https://help.airbridge.io/en/developers/flutter-sdk-v4)
 
 ### 21.4 Engineering Components
 
@@ -6571,6 +6936,9 @@ Config 下发上下文
 16. [Concrete ML](https://docs.zama.org/concrete-ml/1.4/)
 17. [EconML](https://www.microsoft.com/en-us/research/project/econml/)
 18. [DoWhy](https://github.com/py-why/dowhy)
+19. [columbia/cookiemonster](https://github.com/columbia/cookiemonster)
+20. [Microsoft Precio](https://github.com/microsoft/Precio)
+21. [DoubleML](https://github.com/DoubleML/doubleml-for-py)
 
 ### 21.5 Patent / Prior Art
 
